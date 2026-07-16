@@ -1,0 +1,97 @@
+# Environment, local config, and secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.local
+secrets.properties
+keystore.properties
+local.properties
+*.jks
+*.keystore
+*.pem
+*.p12
+*.pfx
+
+# Android / Gradle
+.gradle/
+**/.gradle/
+build/
+**/build/
+!**/src/**/build/
+.externalNativeBuild/
+.cxx/
+captures/
+outputs/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+mapping.txt
+lint-results*.html
+lint-results*.xml
+
+# Keep Gradle Wrapper files versioned
+!gradlew
+!gradlew.bat
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+!android/gradlew
+!android/gradlew.bat
+!android/gradle/wrapper/gradle-wrapper.jar
+!android/gradle/wrapper/gradle-wrapper.properties
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+*.run.xml
+out/
+
+# Kotlin / Java generated files
+*.kotlin_module
+.kotlin/
+kotlin-js-store/
+.ksp/
+.kapt/
+
+# Python / FastAPI
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+dist/
+*.egg-info/
+pip-wheel-metadata/
+.ipynb_checkpoints/
+
+# Logs and runtime artifacts
+*.log
+uvicorn*.log
+*.pid
+tmp/
+temp/
+.cache/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.vscode/
+*.swp
+*.swo
+*~

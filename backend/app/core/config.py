@@ -1,0 +1,64 @@
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    app_name: str = "AI Travel API"
+    app_version: str = "0.1.0"
+    debug: bool = True
+    amap_web_service_key: str = ""
+    amap_base_url: str = "https://restapi.amap.com"
+    amap_connect_timeout_seconds: float = 5.0
+    amap_read_timeout_seconds: float = 8.0
+    ark_api_key: str = ""
+    ark_model: str = "doubao-seed-2-1-pro-260628"
+    ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_request_timeout_seconds: float = 240.0
+    ark_max_output_tokens: int = 1200
+    ark_temperature: float = 0.35
+    dev_cors_origins: str = (
+        "http://localhost:3000,"
+        "http://localhost:5173,"
+        "http://127.0.0.1:3000,"
+        "http://127.0.0.1:5173"
+    )
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.dev_cors_origins.split(",")
+            if origin.strip()
+        ]
+
+    @property
+    def amap_web_service_key_configured(self) -> bool:
+        return bool(self.amap_web_service_key.strip())
+
+    @property
+    def ark_api_key_configured(self) -> bool:
+        return bool(self.ark_api_key.strip())
+
+    @property
+    def ark_base_url_configured(self) -> bool:
+        return bool(self.ark_base_url.strip())
+
+    @property
+    def ark_configured(self) -> bool:
+        return (
+            self.ark_api_key_configured
+            and bool(self.ark_model.strip())
+            and self.ark_base_url_configured
+        )
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

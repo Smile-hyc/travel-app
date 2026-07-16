@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.AITravel" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+    </style>
+</resources>
+
