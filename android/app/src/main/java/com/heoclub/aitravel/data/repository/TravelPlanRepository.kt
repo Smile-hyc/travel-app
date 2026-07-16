@@ -4,6 +4,7 @@ import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.heoclub.aitravel.data.model.AiSuggestedAction
+import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.PlanDay
 import com.heoclub.aitravel.data.model.PlanItem
@@ -25,7 +26,10 @@ interface TravelPlanRepository {
         destination: String,
         dateRange: String,
         preferences: List<String>,
+        dayCount: Int? = null,
     ): TravelPlan
+
+    fun importGeneratedPlan(generated: AiPlanGenerationResponse): TravelPlan
 
     fun getPlan(planId: String): TravelPlan?
 
@@ -110,6 +114,7 @@ open class InMemoryTravelPlanRepository(
         destination: String,
         dateRange: String,
         preferences: List<String>,
+        dayCount: Int?,
     ): TravelPlan {
         val cleanDestination = destination.trim().ifBlank { "未命名目的地" }
         val now = System.currentTimeMillis()
@@ -118,13 +123,71 @@ open class InMemoryTravelPlanRepository(
             title = "${cleanDestination}旅行",
             destination = cleanDestination,
             dateRange = dateRange.trim().ifBlank { "未设置日期" },
-            dayCount = estimateDayCount(dateRange),
+            dayCount = dayCount?.coerceIn(1, 10) ?: estimateDayCount(dateRange),
             preferences = preferences.ifEmpty { listOf("轻松随心") },
             createdAt = now,
             revision = 1L,
             updatedAt = now,
         )
 
+        _plans.update { current -> listOf(plan) + current }
+        persistCurrentPlans()
+        return plan
+    }
+
+    override fun importGeneratedPlan(generated: AiPlanGenerationResponse): TravelPlan {
+        val now = System.currentTimeMillis()
+        val planId = UUID.randomUUID().toString()
+        val days = generated.days
+            .sortedBy { it.dayIndex }
+            .map { generatedDay ->
+                val dayId = "$planId-day-${generatedDay.dayIndex}"
+                PlanDay(
+                    id = dayId,
+                    dayIndex = generatedDay.dayIndex,
+                    title = generatedDay.title,
+                    items = generatedDay.places.mapIndexed { index, place ->
+                        PlanItem(
+                            id = place.id,
+                            source = place.source,
+                            sourcePoiId = place.sourcePoiId,
+                            name = place.name,
+                            category = place.category,
+                            categoryCode = place.categoryCode,
+                            typeName = place.typeName,
+                            typeCode = place.typeCode,
+                            address = place.address,
+                            provinceName = place.provinceName,
+                            cityName = place.cityName,
+                            districtName = place.districtName,
+                            adCode = place.adCode,
+                            cityCode = place.cityCode,
+                            latitude = place.latitude,
+                            longitude = place.longitude,
+                            dayId = dayId,
+                            dayIndex = generatedDay.dayIndex,
+                            visitOrder = index + 1,
+                            note = place.note,
+                            suggestedStart = place.suggestedStart,
+                            suggestedEnd = place.suggestedEnd,
+                            thumbnailUrl = place.thumbnailUrl,
+                            imageUrls = place.imageUrls,
+                        )
+                    },
+                )
+            }
+        val plan = TravelPlan(
+            id = planId,
+            title = generated.title,
+            destination = generated.destination,
+            dateRange = generated.dateRange,
+            dayCount = generated.dayCount,
+            preferences = generated.preferences.ifEmpty { listOf("智能规划") },
+            createdAt = now,
+            revision = 1L,
+            updatedAt = now,
+            days = days,
+        )
         _plans.update { current -> listOf(plan) + current }
         persistCurrentPlans()
         return plan

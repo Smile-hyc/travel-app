@@ -3,6 +3,9 @@ package com.heoclub.aitravel.data.remote
 import com.heoclub.aitravel.data.model.HealthResponse
 import com.heoclub.aitravel.data.model.AiChatRequest
 import com.heoclub.aitravel.data.model.AiChatResponse
+import com.heoclub.aitravel.data.model.AiPlanGenerationRequest
+import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
+import com.heoclub.aitravel.data.model.AiPlanJobStatusResponse
 import com.heoclub.aitravel.data.model.CitySearchResult
 import com.heoclub.aitravel.data.model.DayRoutePlan
 import com.heoclub.aitravel.data.model.DayRouteRequest
@@ -16,6 +19,7 @@ import com.heoclub.aitravel.data.model.RouteSegmentRequest
 import retrofit2.http.GET
 import retrofit2.http.Body
 import retrofit2.http.POST
+import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface ApiService {
@@ -70,4 +74,24 @@ interface ApiService {
     suspend fun chatWithAi(
         @Body request: AiChatRequest,
     ): AiChatResponse
+
+    @POST("api/ai/plans/generate")
+    suspend fun generateTravelPlan(
+        @Body request: AiPlanGenerationRequest,
+    ): AiPlanGenerationResponse
+
+    @POST("api/ai/plans/jobs")
+    suspend fun createTravelPlanJob(
+        @Body request: AiPlanGenerationRequest,
+    ): AiPlanJobStatusResponse
+
+    @GET("api/ai/plans/jobs/{jobId}")
+    suspend fun getTravelPlanJob(
+        @Path("jobId") jobId: String,
+    ): AiPlanJobStatusResponse
+
+    @POST("api/ai/plans/jobs/{jobId}/cancel")
+    suspend fun cancelTravelPlanJob(
+        @Path("jobId") jobId: String,
+    ): AiPlanJobStatusResponse
 }

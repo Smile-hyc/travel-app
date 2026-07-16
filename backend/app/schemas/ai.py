@@ -109,3 +109,107 @@ class AiChatResponse(BaseModel):
     actionWarnings: list[str] = Field(default_factory=list)
     createdAt: str
     model: str | None = None
+
+
+class AiPlanGenerationRequest(BaseModel):
+    destination: str = Field(min_length=1, max_length=60)
+    dateRange: str = Field(min_length=1, max_length=80)
+    dayCount: int = Field(ge=1, le=10)
+    preferences: list[str] = Field(default_factory=list, max_length=12)
+    freeText: str | None = Field(default=None, max_length=240)
+    pace: Literal["RELAXED", "BALANCED", "INTENSIVE"] = "BALANCED"
+    transportPreference: Literal["MIXED", "WALK", "TRANSIT", "DRIVE"] = "MIXED"
+    dailyStart: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    dailyEnd: str = Field(default="20:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    clientRequestId: str | None = Field(default=None, min_length=8, max_length=80)
+
+
+class AiGeneratedPlace(BaseModel):
+    id: str
+    source: str = "AMAP"
+    sourcePoiId: str
+    name: str
+    category: str
+    categoryCode: str
+    typeName: str | None = None
+    typeCode: str | None = None
+    address: str | None = None
+    provinceName: str | None = None
+    cityName: str | None = None
+    districtName: str | None = None
+    adCode: str | None = None
+    cityCode: str | None = None
+    latitude: float
+    longitude: float
+    thumbnailUrl: str | None = None
+    imageUrls: list[str] = Field(default_factory=list)
+    suggestedStart: str
+    suggestedEnd: str
+    note: str
+
+
+class AiGeneratedDay(BaseModel):
+    dayIndex: int
+    title: str
+    summary: str
+    places: list[AiGeneratedPlace] = Field(default_factory=list)
+    estimatedDistanceKm: float = 0.0
+    intensity: Literal["轻松", "适中", "充实"] = "适中"
+
+
+class AiPlanQuality(BaseModel):
+    realPoiRatio: float = 1.0
+    duplicatePlaceCount: int = 0
+    totalPlaceCount: int = 0
+    usedFallback: bool = False
+    dataSources: list[str] = Field(default_factory=lambda: ["AMAP", "ARK"])
+
+
+class AiPlanGenerationResponse(BaseModel):
+    requestId: str
+    title: str
+    destination: str
+    dateRange: str
+    dayCount: int
+    preferences: list[str] = Field(default_factory=list)
+    days: list[AiGeneratedDay] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    generatedAt: str
+    model: str | None = None
+    quality: AiPlanQuality = Field(default_factory=AiPlanQuality)
+
+
+AiPlanJobState = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
+
+AiPlanProgressEventType = Literal[
+    "ANALYSIS",
+    "DAY_STARTED",
+    "PLACE_ADDED",
+    "DAY_COMPLETED",
+    "PLAN_REFINED",
+]
+
+
+class AiPlanProgressEvent(BaseModel):
+    sequence: int = Field(ge=1)
+    type: AiPlanProgressEventType
+    message: str = Field(min_length=1, max_length=160)
+    dayIndex: int | None = Field(default=None, ge=1)
+    placeId: str | None = None
+    createdAt: str
+
+
+class AiPlanJobStatusResponse(BaseModel):
+    jobId: str
+    status: AiPlanJobState
+    progress: int = Field(ge=0, le=100)
+    stage: str
+    completedDays: int = 0
+    totalDays: int
+    activeDayIndex: int | None = None
+    partialDays: list[AiGeneratedDay] = Field(default_factory=list)
+    events: list[AiPlanProgressEvent] = Field(default_factory=list)
+    result: AiPlanGenerationResponse | None = None
+    error: str | None = None
+    createdAt: str
+    updatedAt: str

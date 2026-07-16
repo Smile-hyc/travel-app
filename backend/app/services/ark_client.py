@@ -14,7 +14,14 @@ class ArkClient:
     def model_name(self) -> str:
         return self._settings.ark_model
 
-    async def chat(self, messages: list[dict[str, str]]) -> str:
+    async def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
         if not self._settings.ark_configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -25,8 +32,8 @@ class ArkClient:
         payload = {
             "model": self._settings.ark_model,
             "messages": messages,
-            "temperature": self._settings.ark_temperature,
-            "max_tokens": self._settings.ark_max_output_tokens,
+            "temperature": self._settings.ark_temperature if temperature is None else temperature,
+            "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
         }
         headers = {
             "Authorization": f"Bearer {self._settings.ark_api_key}",
@@ -35,7 +42,7 @@ class ArkClient:
 
         timeout = httpx.Timeout(
             connect=10.0,
-            read=self._settings.ark_request_timeout_seconds,
+            read=self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
             write=20.0,
             pool=10.0,
         )

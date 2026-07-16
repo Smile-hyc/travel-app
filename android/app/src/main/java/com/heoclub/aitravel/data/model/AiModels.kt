@@ -92,3 +92,96 @@ data class AiSuggestedAction(
     val requiresRouteRefresh: Boolean = true,
     val affectedDayIndexes: List<Int> = emptyList(),
 )
+
+data class AiPlanGenerationRequest(
+    val destination: String,
+    val dateRange: String,
+    val dayCount: Int,
+    val preferences: List<String> = emptyList(),
+    val freeText: String? = null,
+    val pace: String = "BALANCED",
+    val transportPreference: String = "MIXED",
+    val dailyStart: String = "09:00",
+    val dailyEnd: String = "20:00",
+    val clientRequestId: String? = null,
+)
+
+data class AiGeneratedPlace(
+    val id: String,
+    val source: String = "AMAP",
+    val sourcePoiId: String,
+    val name: String,
+    val category: String,
+    val categoryCode: String,
+    val typeName: String? = null,
+    val typeCode: String? = null,
+    val address: String? = null,
+    val provinceName: String? = null,
+    val cityName: String? = null,
+    val districtName: String? = null,
+    val adCode: String? = null,
+    val cityCode: String? = null,
+    val latitude: Double,
+    val longitude: Double,
+    val thumbnailUrl: String? = null,
+    val imageUrls: List<String> = emptyList(),
+    val suggestedStart: String,
+    val suggestedEnd: String,
+    val note: String,
+)
+
+data class AiGeneratedDay(
+    val dayIndex: Int,
+    val title: String,
+    val summary: String,
+    val places: List<AiGeneratedPlace> = emptyList(),
+    val estimatedDistanceKm: Double = 0.0,
+    val intensity: String = "适中",
+)
+
+data class AiPlanQuality(
+    val realPoiRatio: Double = 1.0,
+    val duplicatePlaceCount: Int = 0,
+    val totalPlaceCount: Int = 0,
+    val usedFallback: Boolean = false,
+    val dataSources: List<String> = emptyList(),
+)
+
+data class AiPlanGenerationResponse(
+    val requestId: String,
+    val title: String,
+    val destination: String,
+    val dateRange: String,
+    val dayCount: Int,
+    val preferences: List<String> = emptyList(),
+    val days: List<AiGeneratedDay> = emptyList(),
+    val warnings: List<String> = emptyList(),
+    val generatedAt: String,
+    val model: String? = null,
+    val quality: AiPlanQuality = AiPlanQuality(),
+)
+
+data class AiPlanProgressEvent(
+    val sequence: Int,
+    val type: String,
+    val message: String,
+    val dayIndex: Int? = null,
+    val placeId: String? = null,
+    val createdAt: String,
+)
+
+data class AiPlanJobStatusResponse(
+    val jobId: String,
+    val status: String,
+    val progress: Int,
+    val stage: String,
+    val completedDays: Int = 0,
+    val totalDays: Int,
+    val activeDayIndex: Int? = null,
+    val partialDays: List<AiGeneratedDay> = emptyList(),
+    val events: List<AiPlanProgressEvent> = emptyList(),
+    val result: AiPlanGenerationResponse? = null,
+    val error: String? = null,
+    val createdAt: String,
+    val updatedAt: String,
+)

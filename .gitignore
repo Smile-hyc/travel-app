@@ -67,6 +67,7 @@ venv/
 env/
 ENV/
 .pytest_cache/
+pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -85,6 +86,9 @@ uvicorn*.log
 tmp/
 temp/
 .cache/
+.apk-analysis/
+.debug/
+.debug/
 
 # OS and editor files
 .DS_Store
