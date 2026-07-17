@@ -1,0 +1,182 @@
+package com.heoclub.aitravel.ui.createplan
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.heoclub.aitravel.data.model.AiPlanGenerationRequest
+import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
+import com.heoclub.aitravel.data.model.AiGeneratedDay
+import com.heoclub.aitravel.data.model.AiPlanProgressEvent
+import com.heoclub.aitravel.data.repository.AiRepository
+import com.heoclub.aitravel.data.repository.TravelPlanRepository
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.util.UUID
+
+data class AiPlanDraftInput(
+    val destination: String,
+    val dateRange: String,
+    val dayCount: Int,
+    val preferences: List<String>,
+    val freeText: String? = null,
+    val pace: String = "BALANCED",
+    val transportPreference: String = "MIXED",
+    val dailyStart: String = "09:00",
+    val dailyEnd: String = "20:00",
+)
+
+sealed interface AiPlanGenerationUiState {
+    data class Loading(
+        val progress: Int = 0,
+        val stage: String = "正在创建智能规划任务",
+        val completedDays: Int = 0,
+        val totalDays: Int = 0,
+        val activeDayIndex: Int? = null,
+        val partialDays: List<AiGeneratedDay> = emptyList(),
+        val events: List<AiPlanProgressEvent> = emptyList(),
+    ) : AiPlanGenerationUiState
+
+    data class Ready(
+        val result: AiPlanGenerationResponse,
+        val visibleDayCount: Int,
+        val savedPlanId: String,
+    ) : AiPlanGenerationUiState
+
+    data class Error(val message: String) : AiPlanGenerationUiState
+}
+
+class AiPlanGenerationViewModel(
+    private val input: AiPlanDraftInput,
+    private val aiRepository: AiRepository,
+    private val travelPlanRepository: TravelPlanRepository,
+) : ViewModel() {
+    private val _uiState = MutableStateFlow<AiPlanGenerationUiState>(AiPlanGenerationUiState.Loading())
+    val uiState: StateFlow<AiPlanGenerationUiState> = _uiState.asStateFlow()
+
+    private var generationJob: Job? = null
+    private var activeJobId: String? = null
+
+    init {
+        generate()
+    }
+
+    fun retry() {
+        generate()
+    }
+
+    fun cancel() {
+        generationJob?.cancel()
+        val jobId = activeJobId ?: return
+        activeJobId = null
+        viewModelScope.launch {
+            aiRepository.cancelPlanJob(jobId)
+        }
+    }
+
+    private fun generate() {
+        generationJob?.cancel()
+        generationJob = viewModelScope.launch {
+            _uiState.value = AiPlanGenerationUiState.Loading(totalDays = input.dayCount)
+            var snapshot = aiRepository.createPlanJob(
+                AiPlanGenerationRequest(
+                    destination = input.destination,
+                    dateRange = input.dateRange,
+                    dayCount = input.dayCount,
+                    preferences = input.preferences,
+                    freeText = input.freeText,
+                    pace = input.pace,
+                    transportPreference = input.transportPreference,
+                    dailyStart = input.dailyStart,
+                    dailyEnd = input.dailyEnd,
+                    clientRequestId = UUID.randomUUID().toString(),
+                ),
+            ).getOrElse { error ->
+                _uiState.value = AiPlanGenerationUiState.Error(
+                    error.message ?: "智能行程生成失败，请稍后重试。",
+                )
+                return@launch
+            }
+            activeJobId = snapshot.jobId
+
+            var result: AiPlanGenerationResponse? = null
+            while (result == null) {
+                when (snapshot.status) {
+                    "COMPLETED" -> {
+                        result = snapshot.result
+                        if (result == null) {
+                            _uiState.value = AiPlanGenerationUiState.Error("任务已完成，但没有返回可用行程。")
+                            return@launch
+                        }
+                    }
+
+                    "FAILED" -> {
+                        _uiState.value = AiPlanGenerationUiState.Error(
+                            snapshot.error ?: "智能规划任务失败，请调整条件后重试。",
+                        )
+                        return@launch
+                    }
+
+                    "CANCELLED" -> {
+                        _uiState.value = AiPlanGenerationUiState.Error("智能规划已取消。")
+                        return@launch
+                    }
+
+                    else -> {
+                        _uiState.value = AiPlanGenerationUiState.Loading(
+                            progress = snapshot.progress,
+                            stage = snapshot.stage,
+                            completedDays = snapshot.completedDays,
+                            totalDays = snapshot.totalDays,
+                            activeDayIndex = snapshot.activeDayIndex,
+                            partialDays = snapshot.partialDays,
+                            events = snapshot.events,
+                        )
+                        delay(650)
+                        snapshot = aiRepository.getPlanJob(snapshot.jobId).getOrElse { error ->
+                            _uiState.value = AiPlanGenerationUiState.Error(
+                                error.message ?: "读取生成进度失败，请稍后重试。",
+                            )
+                            return@launch
+                        }
+                    }
+                }
+            }
+            activeJobId = null
+
+            if (result.days.isEmpty()) {
+                _uiState.value = AiPlanGenerationUiState.Error(
+                    "没有生成可用的每日行程，请调整目的地或天数后重试。",
+                )
+                return@launch
+            }
+
+            val plan = travelPlanRepository.importGeneratedPlan(result)
+            result.days.indices.forEach { index ->
+                _uiState.value = AiPlanGenerationUiState.Ready(
+                    result = result,
+                    visibleDayCount = index + 1,
+                    savedPlanId = plan.id,
+                )
+                if (index < result.days.lastIndex) delay(520)
+            }
+        }
+    }
+
+    class Factory(
+        private val input: AiPlanDraftInput,
+        private val aiRepository: AiRepository,
+        private val travelPlanRepository: TravelPlanRepository,
+    ) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(AiPlanGenerationViewModel::class.java)) {
+                return AiPlanGenerationViewModel(input, aiRepository, travelPlanRepository) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
+    }
+}

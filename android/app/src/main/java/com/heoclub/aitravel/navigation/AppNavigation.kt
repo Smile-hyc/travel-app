@@ -34,6 +34,9 @@ import com.heoclub.aitravel.data.repository.AddPlaceResult
 import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
 import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
 import com.heoclub.aitravel.ui.assistant.AiAssistantViewModel
+import com.heoclub.aitravel.ui.createplan.AiPlanDraftInput
+import com.heoclub.aitravel.ui.createplan.AiPlanGenerationScreen
+import com.heoclub.aitravel.ui.createplan.AiPlanGenerationViewModel
 import com.heoclub.aitravel.ui.createplan.CreatePlanScreen
 import com.heoclub.aitravel.ui.createplan.CreatePlanViewModel
 import com.heoclub.aitravel.ui.detail.PlanDetailScreen
@@ -52,9 +55,36 @@ private object Routes {
     const val planDetailPattern = "plan-detail/{planId}"
     const val placeDetailPattern = "place-detail/{placeId}"
     const val assistantPattern = "assistant?question={question}&planId={planId}"
+    const val aiPlanGenerationPattern =
+        "ai-plan-generation?destination={destination}&dateRange={dateRange}&dayCount={dayCount}" +
+            "&preferences={preferences}&freeText={freeText}&pace={pace}&transport={transport}" +
+            "&dailyStart={dailyStart}&dailyEnd={dailyEnd}"
 
     fun planDetail(planId: String): String = "plan-detail/$planId"
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
+
+    fun aiPlanGeneration(
+        destination: String,
+        dateRange: String,
+        dayCount: Int,
+        preferences: List<String>,
+        freeText: String?,
+        pace: String,
+        transportPreference: String,
+        dailyStart: String,
+        dailyEnd: String,
+    ): String {
+        return "ai-plan-generation" +
+            "?destination=${Uri.encode(destination)}" +
+            "&dateRange=${Uri.encode(dateRange)}" +
+            "&dayCount=$dayCount" +
+            "&preferences=${Uri.encode(preferences.joinToString("|"))}" +
+            "&freeText=${Uri.encode(freeText.orEmpty())}" +
+            "&pace=${Uri.encode(pace)}" +
+            "&transport=${Uri.encode(transportPreference)}" +
+            "&dailyStart=${Uri.encode(dailyStart)}" +
+            "&dailyEnd=${Uri.encode(dailyEnd)}"
+    }
 
     fun assistant(
         question: String? = null,
@@ -161,12 +191,94 @@ fun AiTravelNavHost() {
             }
             composable(Routes.createPlan) {
                 val createPlanViewModel: CreatePlanViewModel = viewModel(
-                    factory = CreatePlanViewModel.Factory(application.container.travelPlanRepository),
+                    factory = CreatePlanViewModel.Factory(
+                        application.container.travelPlanRepository,
+                        application.container.exploreRepository,
+                    ),
                 )
                 CreatePlanScreen(
                     viewModel = createPlanViewModel,
                     onBack = { navController.popBackStack() },
                     onDone = { navController.popBackStack() },
+                    onStartAiPlanning = { input ->
+                        navController.navigate(
+                            Routes.aiPlanGeneration(
+                                destination = input.destination,
+                                dateRange = input.dateRange,
+                                dayCount = input.dayCount,
+                                preferences = input.preferences,
+                                freeText = input.freeText,
+                                pace = input.pace,
+                                transportPreference = input.transportPreference,
+                                dailyStart = input.dailyStart,
+                                dailyEnd = input.dailyEnd,
+                            ),
+                        )
+                    },
+                )
+            }
+            composable(
+                route = Routes.aiPlanGenerationPattern,
+                arguments = listOf(
+                    navArgument("destination") { type = NavType.StringType },
+                    navArgument("dateRange") { type = NavType.StringType },
+                    navArgument("dayCount") { type = NavType.IntType },
+                    navArgument("preferences") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("freeText") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("pace") {
+                        type = NavType.StringType
+                        defaultValue = "BALANCED"
+                    },
+                    navArgument("transport") {
+                        type = NavType.StringType
+                        defaultValue = "MIXED"
+                    },
+                    navArgument("dailyStart") {
+                        type = NavType.StringType
+                        defaultValue = "09:00"
+                    },
+                    navArgument("dailyEnd") {
+                        type = NavType.StringType
+                        defaultValue = "20:00"
+                    },
+                ),
+            ) { backStackEntry ->
+                val input = AiPlanDraftInput(
+                    destination = backStackEntry.arguments?.getString("destination").orEmpty(),
+                    dateRange = backStackEntry.arguments?.getString("dateRange").orEmpty(),
+                    dayCount = backStackEntry.arguments?.getInt("dayCount") ?: 1,
+                    preferences = backStackEntry.arguments?.getString("preferences")
+                        .orEmpty()
+                        .split('|')
+                        .filter(String::isNotBlank),
+                    freeText = backStackEntry.arguments?.getString("freeText")
+                        ?.takeIf(String::isNotBlank),
+                    pace = backStackEntry.arguments?.getString("pace") ?: "BALANCED",
+                    transportPreference = backStackEntry.arguments?.getString("transport") ?: "MIXED",
+                    dailyStart = backStackEntry.arguments?.getString("dailyStart") ?: "09:00",
+                    dailyEnd = backStackEntry.arguments?.getString("dailyEnd") ?: "20:00",
+                )
+                val generationViewModel: AiPlanGenerationViewModel = viewModel(
+                    factory = AiPlanGenerationViewModel.Factory(
+                        input = input,
+                        aiRepository = application.container.aiRepository,
+                        travelPlanRepository = application.container.travelPlanRepository,
+                    ),
+                )
+                AiPlanGenerationScreen(
+                    viewModel = generationViewModel,
+                    onBack = { navController.popBackStack() },
+                    onOpenPlan = { planId ->
+                        navController.navigate(Routes.planDetail(planId)) {
+                            popUpTo(Routes.createPlan) { inclusive = true }
+                        }
+                    },
                 )
             }
             composable(

@@ -24,7 +24,12 @@ class AmapClient:
                 write=self._settings.amap_read_timeout_seconds,
                 pool=self._settings.amap_read_timeout_seconds,
             )
-            self._client = httpx.AsyncClient(base_url=self._settings.amap_base_url, timeout=timeout)
+            # 高德国内接口直连更稳定，避免系统 SOCKS 代理造成地点检索超时。
+            self._client = httpx.AsyncClient(
+                base_url=self._settings.amap_base_url,
+                timeout=timeout,
+                trust_env=False,
+            )
 
     async def shutdown(self) -> None:
         if self._client is not None:

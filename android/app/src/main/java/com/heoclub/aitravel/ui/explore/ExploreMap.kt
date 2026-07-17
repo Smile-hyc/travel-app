@@ -45,6 +45,7 @@ import com.amap.api.maps.model.BitmapDescriptorFactory
 import com.amap.api.maps.model.CustomMapStyleOptions
 import com.amap.api.maps.model.LatLng
 import com.amap.api.maps.model.MarkerOptions
+import com.amap.api.maps.model.PolylineOptions
 import com.heoclub.aitravel.data.model.ExploreCategories
 import com.heoclub.aitravel.data.model.PlaceSummary
 import kotlinx.coroutines.flow.SharedFlow
@@ -56,6 +57,7 @@ fun ExploreMap(
     selectedPlaceId: String?,
     mapCommands: SharedFlow<MapCameraCommand>,
     onMarkerClick: (String) -> Unit,
+    routePlaces: List<PlaceSummary> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -114,9 +116,23 @@ fun ExploreMap(
         )
     }
 
-    LaunchedEffect(places, selectedPlaceId) {
+    LaunchedEffect(places, selectedPlaceId, routePlaces) {
         val amap = mapView.map
         amap.clear()
+        val routePoints = routePlaces.mapNotNull { place ->
+            val latitude = place.latitude ?: return@mapNotNull null
+            val longitude = place.longitude ?: return@mapNotNull null
+            LatLng(latitude, longitude)
+        }
+        if (routePoints.size >= 2) {
+            amap.addPolyline(
+                PolylineOptions()
+                    .addAll(routePoints)
+                    .width(12f)
+                    .color(AndroidColor.rgb(42, 169, 230))
+                    .zIndex(6f),
+            )
+        }
         amap.setOnMarkerClickListener { marker ->
             (marker.`object` as? String)?.let(onMarkerClick)
             true

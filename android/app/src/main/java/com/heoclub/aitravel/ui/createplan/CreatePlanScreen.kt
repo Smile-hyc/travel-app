@@ -21,9 +21,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,7 +36,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,17 +52,35 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.temporal.ChronoUnit
+import java.time.format.DateTimeFormatter
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreatePlanScreen(
     viewModel: CreatePlanViewModel,
     onBack: () -> Unit,
     onDone: () -> Unit,
+    onStartAiPlanning: (AiPlanDraftInput) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     var destination by remember { mutableStateOf("") }
-    var dateRange by remember { mutableStateOf("") }
+    var dayCount by remember { mutableStateOf(3) }
+    var startDate by remember { mutableStateOf(LocalDate.now()) }
+    var endDate by remember { mutableStateOf(startDate.plusDays((dayCount - 1).toLong())) }
+    var dateRange by remember { mutableStateOf(formatDateRange(startDate, endDate)) }
+    var freeText by remember { mutableStateOf("") }
+    var pace by remember { mutableStateOf("BALANCED") }
+    var transportPreference by remember { mutableStateOf("MIXED") }
+    var dailyStart by remember { mutableStateOf("09:00") }
+    var dailyEnd by remember { mutableStateOf("20:00") }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var destinationError by remember { mutableStateOf(false) }
+    val citySuggestions by viewModel.citySuggestions.collectAsState()
     val selectedPreferences = remember { mutableStateListOf<String>() }
     val preferences = listOf(
         "经典必玩",
@@ -101,28 +127,115 @@ fun CreatePlanScreen(
         StepTitle(number = "1", title = "你想去哪里？")
         OutlinedTextField(
             value = destination,
-            onValueChange = { destination = it },
+            onValueChange = {
+                destination = it
+                destinationError = false
+                viewModel.searchCities(it)
+            },
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = {
                 Icon(Icons.Outlined.LocationOn, contentDescription = null)
             },
-            placeholder = { Text("输入目的地，例如 成都") },
+            label = { Text("目的地") },
+            placeholder = { Text("例如 成都") },
+            isError = destinationError,
+            supportingText = if (destinationError) {
+                { Text("请输入并选择一个城市后再开始规划") }
+            } else {
+                null
+            },
             singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
+        if (citySuggestions.isNotEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.White,
+                shape = RoundedCornerShape(18.dp),
+                shadowElevation = 3.dp,
+            ) {
+                Column {
+                    citySuggestions.forEach { city ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    destination = city.name
+                                    destinationError = false
+                                    viewModel.clearCitySuggestions()
+                                }
+                                .padding(horizontal = 16.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Column(modifier = Modifier.padding(start = 10.dp)) {
+                                Text(city.name, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    city.provinceName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        OutlinedTextField(
+            value = freeText,
+            onValueChange = { freeText = it.take(240) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("补充想法（可选）") },
+            placeholder = { Text("例如：住在市中心、不要太赶") },
+            minLines = 2,
+            maxLines = 3,
             shape = RoundedCornerShape(18.dp),
         )
 
         StepTitle(number = "2", title = "你想去多久？")
-        OutlinedTextField(
-            value = dateRange,
-            onValueChange = { dateRange = it },
-            modifier = Modifier.fillMaxWidth(),
-            leadingIcon = {
-                Icon(Icons.Outlined.CalendarMonth, contentDescription = null)
-            },
-            placeholder = { Text("例如 7月20日 - 7月23日") },
-            singleLine = true,
+        OutlinedButton(
+            onClick = { showDatePicker = true },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
             shape = RoundedCornerShape(18.dp),
-        )
+        ) {
+            Icon(Icons.Outlined.CalendarMonth, contentDescription = null)
+            Text(dateRange, modifier = Modifier.padding(start = 10.dp).weight(1f))
+            Text("选择日期", color = MaterialTheme.colorScheme.primary)
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color.White,
+            shape = RoundedCornerShape(18.dp),
+            tonalElevation = 1.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("行程天数", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                IconButton(
+                    onClick = {
+                        dayCount = (dayCount - 1).coerceAtLeast(1)
+                        endDate = startDate.plusDays((dayCount - 1).toLong())
+                        dateRange = formatDateRange(startDate, endDate)
+                    },
+                    enabled = dayCount > 1,
+                ) {
+                    Icon(Icons.Outlined.Remove, contentDescription = "减少一天")
+                }
+                Text("$dayCount 天", modifier = Modifier.padding(horizontal = 8.dp), fontWeight = FontWeight.Bold)
+                IconButton(
+                    onClick = {
+                        dayCount = (dayCount + 1).coerceAtMost(10)
+                        endDate = startDate.plusDays((dayCount - 1).toLong())
+                        dateRange = formatDateRange(startDate, endDate)
+                    },
+                    enabled = dayCount < 10,
+                ) {
+                    Icon(Icons.Outlined.Add, contentDescription = "增加一天")
+                }
+            }
+        }
 
         StepTitle(number = "3", title = "旅行偏好")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -149,6 +262,55 @@ fun CreatePlanScreen(
             }
         }
 
+        StepTitle(number = "4", title = "节奏与交通")
+        Text("旅行节奏", fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf("RELAXED" to "轻松", "BALANCED" to "适中", "INTENSIVE" to "充实").forEach { (value, label) ->
+                PreferenceButton(
+                    text = label,
+                    selected = pace == value,
+                    modifier = Modifier.weight(1f),
+                    onClick = { pace = value },
+                )
+            }
+        }
+        Text("优先交通方式", fontWeight = FontWeight.SemiBold)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(
+                listOf("MIXED" to "智能混合", "TRANSIT" to "公交地铁"),
+                listOf("WALK" to "步行为主", "DRIVE" to "驾车为主"),
+            ).forEach { options ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    options.forEach { (value, label) ->
+                        PreferenceButton(
+                            text = label,
+                            selected = transportPreference == value,
+                            modifier = Modifier.weight(1f),
+                            onClick = { transportPreference = value },
+                        )
+                    }
+                }
+            }
+        }
+        Text("每日活动时段", fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(
+                Triple("08:00", "18:00", "早出早归"),
+                Triple("09:00", "20:00", "标准"),
+                Triple("10:00", "22:00", "晚起夜游"),
+            ).forEach { (start, end, label) ->
+                PreferenceButton(
+                    text = label,
+                    selected = dailyStart == start && dailyEnd == end,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        dailyStart = start
+                        dailyEnd = end
+                    },
+                )
+            }
+        }
+
         Spacer(modifier = Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(
@@ -157,19 +319,36 @@ fun CreatePlanScreen(
                         destination = destination,
                         dateRange = dateRange,
                         preferences = selectedPreferences,
+                        dayCount = dayCount,
                     )
                     onDone()
                 },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).height(52.dp),
                 shape = RoundedCornerShape(18.dp),
             ) {
                 Text("手动规划")
             }
             Button(
                 onClick = {
-                    Toast.makeText(context, "AI 智能规划将在后续阶段接入", Toast.LENGTH_SHORT).show()
+                    when {
+                        destination.isBlank() -> destinationError = true
+                        dateRange.isBlank() -> Toast.makeText(context, "请先填写出行日期", Toast.LENGTH_SHORT).show()
+                        else -> onStartAiPlanning(
+                            AiPlanDraftInput(
+                                destination = destination.trim(),
+                                dateRange = dateRange.trim(),
+                                dayCount = dayCount,
+                                preferences = selectedPreferences.toList(),
+                                freeText = freeText.trim().ifBlank { null },
+                                pace = pace,
+                                transportPreference = transportPreference,
+                                dailyStart = dailyStart,
+                                dailyEnd = dailyEnd,
+                            ),
+                        )
+                    }
                 },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).height(52.dp),
                 shape = RoundedCornerShape(18.dp),
             ) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
@@ -180,6 +359,58 @@ fun CreatePlanScreen(
             }
         }
     }
+
+    if (showDatePicker) {
+        val pickerState = rememberDateRangePickerState(
+            initialSelectedStartDateMillis = startDate.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli(),
+            initialSelectedEndDateMillis = endDate.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli(),
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val startMillis = pickerState.selectedStartDateMillis
+                        val endMillis = pickerState.selectedEndDateMillis
+                        if (startMillis != null && endMillis != null) {
+                            val start = Instant.ofEpochMilli(startMillis).atZone(ZoneOffset.UTC).toLocalDate()
+                            val end = Instant.ofEpochMilli(endMillis).atZone(ZoneOffset.UTC).toLocalDate()
+                            val selectedDays = ChronoUnit.DAYS.between(start, end).toInt() + 1
+                            if (selectedDays > 10) {
+                                Toast.makeText(context, "智能规划最多支持 10 天", Toast.LENGTH_SHORT).show()
+                            } else {
+                                startDate = start
+                                endDate = end
+                                dayCount = selectedDays.coerceAtLeast(1)
+                                dateRange = formatDateRange(start, end)
+                                showDatePicker = false
+                            }
+                        }
+                    },
+                ) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("取消") }
+            },
+        ) {
+            DateRangePicker(
+                state = pickerState,
+                title = { Text("选择出行日期", modifier = Modifier.padding(16.dp)) },
+                showModeToggle = false,
+            )
+        }
+    }
+}
+
+private fun defaultDateRange(dayCount: Int): String {
+    val start = LocalDate.now()
+    val end = start.plusDays((dayCount - 1).toLong())
+    return formatDateRange(start, end)
+}
+
+private fun formatDateRange(start: LocalDate, end: LocalDate): String {
+    val formatter = DateTimeFormatter.ofPattern("MM.dd")
+    return "${start.format(formatter)} - ${end.format(formatter)}"
 }
 
 @Composable
@@ -197,7 +428,7 @@ private fun HeroCard() {
             .padding(18.dp),
     ) {
         Text(
-            text = "先记录目的地和偏好，后续再让 AI 补全每日安排、路线和清单。",
+            text = "真实地点、跨天编排、节奏约束与质量检查，一次生成可继续编辑的行程。",
             modifier = Modifier.align(Alignment.CenterStart),
             color = Color(0xFF526173),
             style = MaterialTheme.typography.bodyLarge,
