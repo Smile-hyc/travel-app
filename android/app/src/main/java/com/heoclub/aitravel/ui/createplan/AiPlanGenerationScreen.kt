@@ -2,6 +2,8 @@ package com.heoclub.aitravel.ui.createplan
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,9 +38,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -57,22 +63,37 @@ import com.heoclub.aitravel.ui.components.PlaceCoverImage
 import com.heoclub.aitravel.ui.explore.ExploreMap
 import com.heoclub.aitravel.ui.explore.MapCameraCommand
 import kotlinx.coroutines.flow.MutableSharedFlow
+import androidx.compose.foundation.rememberScrollState
 
 @Composable
 fun AiPlanGenerationScreen(
     viewModel: AiPlanGenerationViewModel,
     onBack: () -> Unit,
     onOpenPlan: (String) -> Unit,
+    onOpenPlace: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val loading = uiState as? AiPlanGenerationUiState.Loading
     val ready = uiState as? AiPlanGenerationUiState.Ready
+    var selectedDayIndex by remember { mutableIntStateOf(1) }
+    var followActiveDay by remember { mutableStateOf(true) }
+    LaunchedEffect(loading?.activeDayIndex) {
+        if (followActiveDay) {
+            loading?.activeDayIndex?.let { selectedDayIndex = it }
+        }
+    }
+    LaunchedEffect(ready?.savedPlanId) {
+        if (ready != null) {
+            selectedDayIndex = 1
+            followActiveDay = false
+        }
+    }
     val activeLoadingDay = loading?.partialDays
-        ?.firstOrNull { it.dayIndex == loading.activeDayIndex }
+        ?.firstOrNull { it.dayIndex == selectedDayIndex }
         ?: loading?.partialDays?.lastOrNull { it.places.isNotEmpty() }
     val activeReadyDay = ready?.result?.days
-        ?.getOrNull((ready.visibleDayCount - 1).coerceAtLeast(0))
+        ?.firstOrNull { it.dayIndex == selectedDayIndex }
     val activeMapDay = activeLoadingDay ?: activeReadyDay
     val visiblePlaces = activeMapDay?.places
         .orEmpty()
@@ -146,6 +167,12 @@ fun AiPlanGenerationScreen(
                     activeDayIndex = state.activeDayIndex,
                     partialDays = state.partialDays,
                     events = state.events,
+                    selectedDayIndex = selectedDayIndex,
+                    onSelectDay = { dayIndex ->
+                        selectedDayIndex = dayIndex
+                        followActiveDay = false
+                    },
+                    onOpenPlace = onOpenPlace,
                     onCancel = {
                         viewModel.cancel()
                         onBack()
@@ -155,6 +182,9 @@ fun AiPlanGenerationScreen(
                 is AiPlanGenerationUiState.Ready -> ReadyPlanContent(
                     state = state,
                     onOpenPlan = { onOpenPlan(state.savedPlanId) },
+                    selectedDayIndex = selectedDayIndex,
+                    onSelectDay = { selectedDayIndex = it },
+                    onOpenPlace = onOpenPlace,
                 )
 
                 is AiPlanGenerationUiState.Error -> ErrorPlanContent(
@@ -221,9 +251,12 @@ private fun LoadingPlanContent(
     activeDayIndex: Int?,
     partialDays: List<com.heoclub.aitravel.data.model.AiGeneratedDay>,
     events: List<AiPlanProgressEvent>,
+    selectedDayIndex: Int,
+    onSelectDay: (Int) -> Unit,
+    onOpenPlace: (String) -> Unit,
     onCancel: () -> Unit,
 ) {
-    val activeDay = partialDays.firstOrNull { it.dayIndex == activeDayIndex }
+    val activeDay = partialDays.firstOrNull { it.dayIndex == selectedDayIndex }
         ?: partialDays.lastOrNull { it.places.isNotEmpty() }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp)) {
         Text("实时规划中", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -259,6 +292,16 @@ private fun LoadingPlanContent(
             contentPadding = PaddingValues(bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (partialDays.isNotEmpty()) {
+                item {
+                    DaySelector(
+                        days = partialDays,
+                        selectedDayIndex = activeDay?.dayIndex ?: selectedDayIndex,
+                        activeDayIndex = activeDayIndex,
+                        onSelectDay = onSelectDay,
+                    )
+                }
+            }
             if (events.isNotEmpty()) {
                 item { PlanningTimeline(events.takeLast(4)) }
             }
@@ -274,7 +317,7 @@ private fun LoadingPlanContent(
                     }
                 }
                 items(activeDay.places.takeLast(3), key = { it.id }) { place ->
-                    GeneratedPlaceCard(place)
+                    GeneratedPlaceCard(place, onOpenPlace = onOpenPlace)
                 }
             } else {
                 items(3) { index -> PlanSkeletonRow(index) }
@@ -287,6 +330,74 @@ private fun LoadingPlanContent(
         ) {
             Icon(Icons.Outlined.Close, contentDescription = null)
             Text("取消生成", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+@Composable
+private fun DaySelector(
+    days: List<com.heoclub.aitravel.data.model.AiGeneratedDay>,
+    selectedDayIndex: Int,
+    activeDayIndex: Int?,
+    onSelectDay: (Int) -> Unit,
+) {
+    val sortedDays = days.sortedBy { it.dayIndex }
+    if (sortedDays.size <= 3) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            sortedDays.forEach { day ->
+                DayChip(
+                    day = day,
+                    selected = day.dayIndex == selectedDayIndex,
+                    active = day.dayIndex == activeDayIndex,
+                    onClick = { onSelectDay(day.dayIndex) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            sortedDays.forEach { day ->
+                DayChip(
+                    day = day,
+                    selected = day.dayIndex == selectedDayIndex,
+                    active = day.dayIndex == activeDayIndex,
+                    onClick = { onSelectDay(day.dayIndex) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayChip(
+    day: com.heoclub.aitravel.data.model.AiGeneratedDay,
+    selected: Boolean,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.height(48.dp).clickable(onClick = onClick),
+        color = if (selected) MaterialTheme.colorScheme.primary else Color(0xFFF1F5F9),
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Text("Day ${day.dayIndex}", fontWeight = FontWeight.Bold)
+            Text(" · ${day.places.size}点", style = MaterialTheme.typography.labelSmall)
+            if (active) {
+                Text(" •", style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
@@ -349,6 +460,9 @@ private fun PlanSkeletonRow(index: Int) {
 private fun ReadyPlanContent(
     state: AiPlanGenerationUiState.Ready,
     onOpenPlan: () -> Unit,
+    selectedDayIndex: Int,
+    onSelectDay: (Int) -> Unit,
+    onOpenPlace: (String) -> Unit,
 ) {
     val complete = state.visibleDayCount >= state.result.days.size
     Column(modifier = Modifier.fillMaxSize()) {
@@ -378,6 +492,14 @@ private fun ReadyPlanContent(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            item {
+                DaySelector(
+                    days = state.result.days,
+                    selectedDayIndex = selectedDayIndex,
+                    activeDayIndex = null,
+                    onSelectDay = onSelectDay,
+                )
+            }
             if (state.result.warnings.isNotEmpty()) {
                 item {
                     Surface(color = Color(0xFFFFF4DF), shape = RoundedCornerShape(16.dp)) {
@@ -405,7 +527,7 @@ private fun ReadyPlanContent(
                 }
             }
             items(
-                state.result.days.take(state.visibleDayCount),
+                state.result.days.filter { it.dayIndex == selectedDayIndex },
                 key = { it.dayIndex },
             ) { day ->
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -416,7 +538,9 @@ private fun ReadyPlanContent(
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Text(day.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    day.places.forEach { place -> GeneratedPlaceCard(place) }
+                    day.places.forEach { place ->
+                        GeneratedPlaceCard(place, onOpenPlace = onOpenPlace)
+                    }
                 }
             }
         }
@@ -432,8 +556,12 @@ private fun ReadyPlanContent(
 }
 
 @Composable
-private fun GeneratedPlaceCard(place: AiGeneratedPlace) {
+private fun GeneratedPlaceCard(
+    place: AiGeneratedPlace,
+    onOpenPlace: (String) -> Unit,
+) {
     Card(
+        modifier = Modifier.clickable { onOpenPlace(place.id) },
         colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFD)),
         shape = RoundedCornerShape(18.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -466,6 +594,25 @@ private fun GeneratedPlaceCard(place: AiGeneratedPlace) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = when {
+                        place.scheduleVerified -> "时间已按营业信息校验"
+                        !place.openingHoursToday.isNullOrBlank() -> "营业：${place.openingHoursToday}"
+                        !place.openingHoursWeek.isNullOrBlank() -> "营业：${place.openingHoursWeek}"
+                        else -> "开放时间待确认"
+                    },
+                    modifier = Modifier.padding(top = 5.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (place.scheduleVerified) Color(0xFF167A55) else Color(0xFF9A6700),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "点击查看地点详情",
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
@@ -519,5 +666,11 @@ private fun AiGeneratedPlace.toPlaceSummary(): PlaceSummary {
         longitude = longitude,
         coverImageUrl = thumbnailUrl,
         imageUrls = imageUrls,
+        phone = phone,
+        rating = rating,
+        costAverage = costAverage,
+        businessArea = businessArea,
+        openingHoursToday = openingHoursToday,
+        openingHoursWeek = openingHoursWeek,
     )
 }

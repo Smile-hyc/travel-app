@@ -39,6 +39,8 @@ data class PlaceSummary(
     val coverImageUrl: String? = null,
     val imageUrls: List<String>? = emptyList(),
     val businessArea: String? = null,
+    val openingHoursToday: String? = null,
+    val openingHoursWeek: String? = null,
     val isFavorite: Boolean = false,
 ) {
     val categoryId: String

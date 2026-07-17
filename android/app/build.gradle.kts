@@ -12,6 +12,10 @@ val localProperties = Properties().apply {
     }
 }
 
+val debugApiBaseUrl = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
+    .orElse("http://10.0.2.2:8000/")
+    .get()
+
 android {
     namespace = "com.heoclub.aitravel"
     compileSdk = 34
@@ -34,7 +38,7 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "API_BASE_URL", "\"http://127.0.0.1:8000/\"")
+            buildConfigField("String", "API_BASE_URL", "\"$debugApiBaseUrl\"")
         }
         release {
             isMinifyEnabled = false

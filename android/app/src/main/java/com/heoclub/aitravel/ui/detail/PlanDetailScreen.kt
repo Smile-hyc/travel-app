@@ -80,6 +80,7 @@ fun PlanDetailScreen(
     viewModel: PlanDetailViewModel,
     onBack: () -> Unit,
     onAskAi: (String) -> Unit,
+    onOpenPlace: (PlanItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -121,6 +122,7 @@ fun PlanDetailScreen(
                 onApplyOptimization = viewModel::applyOptimization,
                 onDismissOptimization = viewModel::dismissOptimization,
                 onRetry = viewModel::retryRoute,
+                onOpenPlace = onOpenPlace,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -174,6 +176,7 @@ private fun PlanDetailSheet(
     onApplyOptimization: () -> Unit,
     onDismissOptimization: () -> Unit,
     onRetry: () -> Unit,
+    onOpenPlace: (PlanItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val displayRoute = uiState.optimization?.route ?: uiState.route
@@ -245,6 +248,7 @@ private fun PlanDetailSheet(
                 route = displayRoute,
                 previewing = uiState.optimization != null,
                 onMoveItem = onMoveItem,
+                onOpenPlace = onOpenPlace,
             )
 
             UnplannedSection(
@@ -439,6 +443,7 @@ private fun DayItinerary(
     route: DayRoutePlan?,
     previewing: Boolean,
     onMoveItem: (String, MoveDirection) -> Unit,
+    onOpenPlace: (PlanItem) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -474,6 +479,7 @@ private fun DayItinerary(
                     canMoveDown = !previewing && index < items.lastIndex,
                     onMoveUp = { if (!previewing) onMoveItem(item.id, MoveDirection.UP) },
                     onMoveDown = { if (!previewing) onMoveItem(item.id, MoveDirection.DOWN) },
+                    onOpenPlace = { onOpenPlace(item) },
                 )
             }
         }
@@ -560,8 +566,12 @@ private fun PlanItemCard(
     canMoveDown: Boolean,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
+    onOpenPlace: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        modifier = Modifier.clickable(onClick = onOpenPlace),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(color = Color(0xFFE8F7FF), shape = CircleShape) {
                 Text(
@@ -582,6 +592,11 @@ private fun PlanItemCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "点击查看地点详情",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall,
                 )
             }
             IconButton(onClick = onMoveUp, enabled = canMoveUp) {

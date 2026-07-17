@@ -117,6 +117,8 @@ class AiPlanGenerationRequest(BaseModel):
     dayCount: int = Field(ge=1, le=10)
     preferences: list[str] = Field(default_factory=list, max_length=12)
     freeText: str | None = Field(default=None, max_length=240)
+    arrivalStation: str | None = Field(default=None, max_length=60)
+    hotelName: str | None = Field(default=None, max_length=80)
     pace: Literal["RELAXED", "BALANCED", "INTENSIVE"] = "BALANCED"
     transportPreference: Literal["MIXED", "WALK", "TRANSIT", "DRIVE"] = "MIXED"
     dailyStart: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -143,6 +145,13 @@ class AiGeneratedPlace(BaseModel):
     longitude: float
     thumbnailUrl: str | None = None
     imageUrls: list[str] = Field(default_factory=list)
+    phone: str | None = None
+    rating: str | None = None
+    costAverage: str | None = None
+    businessArea: str | None = None
+    openingHoursToday: str | None = None
+    openingHoursWeek: str | None = None
+    scheduleVerified: bool = False
     suggestedStart: str
     suggestedEnd: str
     note: str

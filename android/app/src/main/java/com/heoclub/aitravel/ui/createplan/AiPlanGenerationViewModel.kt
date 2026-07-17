@@ -7,7 +7,10 @@ import com.heoclub.aitravel.data.model.AiPlanGenerationRequest
 import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
 import com.heoclub.aitravel.data.model.AiGeneratedDay
 import com.heoclub.aitravel.data.model.AiPlanProgressEvent
+import com.heoclub.aitravel.data.model.AiGeneratedPlace
+import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.repository.AiRepository
+import com.heoclub.aitravel.data.repository.ExploreRepository
 import com.heoclub.aitravel.data.repository.TravelPlanRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -23,6 +26,8 @@ data class AiPlanDraftInput(
     val dayCount: Int,
     val preferences: List<String>,
     val freeText: String? = null,
+    val arrivalStation: String? = null,
+    val hotelName: String? = null,
     val pace: String = "BALANCED",
     val transportPreference: String = "MIXED",
     val dailyStart: String = "09:00",
@@ -53,6 +58,7 @@ class AiPlanGenerationViewModel(
     private val input: AiPlanDraftInput,
     private val aiRepository: AiRepository,
     private val travelPlanRepository: TravelPlanRepository,
+    private val exploreRepository: ExploreRepository,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow<AiPlanGenerationUiState>(AiPlanGenerationUiState.Loading())
     val uiState: StateFlow<AiPlanGenerationUiState> = _uiState.asStateFlow()
@@ -88,6 +94,8 @@ class AiPlanGenerationViewModel(
                     dayCount = input.dayCount,
                     preferences = input.preferences,
                     freeText = input.freeText,
+                    arrivalStation = input.arrivalStation,
+                    hotelName = input.hotelName,
                     pace = input.pace,
                     transportPreference = input.transportPreference,
                     dailyStart = input.dailyStart,
@@ -126,6 +134,7 @@ class AiPlanGenerationViewModel(
                     }
 
                     else -> {
+                        upsertGeneratedPlaces(snapshot.partialDays)
                         _uiState.value = AiPlanGenerationUiState.Loading(
                             progress = snapshot.progress,
                             stage = snapshot.stage,
@@ -146,6 +155,7 @@ class AiPlanGenerationViewModel(
                 }
             }
             activeJobId = null
+            upsertGeneratedPlaces(result.days)
 
             if (result.days.isEmpty()) {
                 _uiState.value = AiPlanGenerationUiState.Error(
@@ -155,26 +165,59 @@ class AiPlanGenerationViewModel(
             }
 
             val plan = travelPlanRepository.importGeneratedPlan(result)
-            result.days.indices.forEach { index ->
-                _uiState.value = AiPlanGenerationUiState.Ready(
-                    result = result,
-                    visibleDayCount = index + 1,
-                    savedPlanId = plan.id,
-                )
-                if (index < result.days.lastIndex) delay(520)
-            }
+            _uiState.value = AiPlanGenerationUiState.Ready(
+                result = result,
+                visibleDayCount = result.days.size,
+                savedPlanId = plan.id,
+            )
         }
+    }
+
+    private fun upsertGeneratedPlaces(days: List<AiGeneratedDay>) {
+        days.flatMap { it.places }.forEach { place ->
+            exploreRepository.upsertPlace(place.toPlaceSummary())
+        }
+    }
+
+    private fun AiGeneratedPlace.toPlaceSummary(): PlaceSummary {
+        return PlaceSummary(
+            id = id,
+            source = source,
+            sourcePoiId = sourcePoiId,
+            name = name,
+            category = category,
+            categoryCode = categoryCode,
+            typeName = typeName,
+            typeCode = typeCode,
+            address = address,
+            provinceName = provinceName,
+            cityName = cityName,
+            districtName = districtName,
+            adCode = adCode,
+            cityCode = cityCode,
+            latitude = latitude,
+            longitude = longitude,
+            phone = phone,
+            rating = rating,
+            costAverage = costAverage,
+            coverImageUrl = thumbnailUrl,
+            imageUrls = imageUrls,
+            businessArea = businessArea,
+            openingHoursToday = openingHoursToday,
+            openingHoursWeek = openingHoursWeek,
+        )
     }
 
     class Factory(
         private val input: AiPlanDraftInput,
         private val aiRepository: AiRepository,
         private val travelPlanRepository: TravelPlanRepository,
+        private val exploreRepository: ExploreRepository,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             if (modelClass.isAssignableFrom(AiPlanGenerationViewModel::class.java)) {
-                return AiPlanGenerationViewModel(input, aiRepository, travelPlanRepository) as T
+                return AiPlanGenerationViewModel(input, aiRepository, travelPlanRepository, exploreRepository) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }

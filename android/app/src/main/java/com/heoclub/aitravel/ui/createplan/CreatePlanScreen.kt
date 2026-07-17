@@ -74,6 +74,8 @@ fun CreatePlanScreen(
     var endDate by remember { mutableStateOf(startDate.plusDays((dayCount - 1).toLong())) }
     var dateRange by remember { mutableStateOf(formatDateRange(startDate, endDate)) }
     var freeText by remember { mutableStateOf("") }
+    var arrivalStation by remember { mutableStateOf("") }
+    var hotelName by remember { mutableStateOf("") }
     var pace by remember { mutableStateOf("BALANCED") }
     var transportPreference by remember { mutableStateOf("MIXED") }
     var dailyStart by remember { mutableStateOf("09:00") }
@@ -181,6 +183,35 @@ fun CreatePlanScreen(
                 }
             }
         }
+        Text(
+            "出发与住宿锚点（可选）",
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "填写后会优先采用；留空则按目的地自动选择交通枢纽和住宿参考。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = arrivalStation,
+            onValueChange = { arrivalStation = it.take(60) },
+            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
+            label = { Text("到达火车站") },
+            placeholder = { Text("例如 北京南站") },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
+        OutlinedTextField(
+            value = hotelName,
+            onValueChange = { hotelName = it.take(80) },
+            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
+            label = { Text("入住酒店") },
+            placeholder = { Text("例如 王府井附近酒店") },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
         OutlinedTextField(
             value = freeText,
             onValueChange = { freeText = it.take(240) },
@@ -340,6 +371,8 @@ fun CreatePlanScreen(
                                 dayCount = dayCount,
                                 preferences = selectedPreferences.toList(),
                                 freeText = freeText.trim().ifBlank { null },
+                                arrivalStation = arrivalStation.trim().ifBlank { null },
+                                hotelName = hotelName.trim().ifBlank { null },
                                 pace = pace,
                                 transportPreference = transportPreference,
                                 dailyStart = dailyStart,
