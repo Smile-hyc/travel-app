@@ -955,7 +955,7 @@ private fun PlanRouteMap(
             modifier = modifier.background(Brush.verticalGradient(listOf(Color(0xFFEAF5FF), Color(0xFFF8FBFF)))),
             contentAlignment = Alignment.Center,
         ) {
-            Text("当前模拟器无法加载真实高德地图")
+            Text("当前设备无法加载真实高德地图")
         }
         return
     }
@@ -1073,8 +1073,7 @@ private fun createNumberedMarker(context: Context, number: Int): Bitmap {
 private fun isAmapNativeRuntimeSupported(context: Context): Boolean {
     val nativeLibraryDir = context.applicationInfo.nativeLibraryDir.orEmpty()
     if (nativeLibraryDir.contains("arm64") || nativeLibraryDir.contains("armeabi")) return true
-    val primaryAbi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
-    return primaryAbi == "arm64-v8a" || primaryAbi == "armeabi-v7a"
+    return Build.SUPPORTED_ABIS.any { abi -> abi == "arm64-v8a" || abi == "armeabi-v7a" }
 }
 
 private fun orderedPreviewItems(

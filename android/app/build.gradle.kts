@@ -11,6 +11,7 @@ val localProperties = Properties().apply {
         file.inputStream().use(::load)
     }
 }
+val debugApiBaseUrl = localProperties.getProperty("API_BASE_URL", "http://127.0.0.1:8000/")
 
 val debugApiBaseUrl = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
     .orElse("http://10.0.2.2:8000/")
