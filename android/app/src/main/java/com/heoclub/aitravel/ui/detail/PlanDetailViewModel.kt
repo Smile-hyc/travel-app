@@ -9,7 +9,6 @@ import com.heoclub.aitravel.data.model.PlanDay
 import com.heoclub.aitravel.data.model.RouteModes
 import com.heoclub.aitravel.data.model.TravelPlan
 import com.heoclub.aitravel.data.repository.AddPlaceResult
-import com.heoclub.aitravel.data.repository.MoveDirection
 import com.heoclub.aitravel.data.repository.RouteRepository
 import com.heoclub.aitravel.data.repository.TravelPlanRepository
 import com.heoclub.aitravel.data.repository.toRoutePlace
@@ -94,10 +93,23 @@ class PlanDetailViewModel(
         loadRoute()
     }
 
-    fun moveItem(itemId: String, direction: MoveDirection) {
+    fun reorderItems(orderedItemIds: List<String>) {
         val state = _uiState.value
-        _uiState.update { it.copy(optimization = null) }
-        travelPlanRepository.movePlanItem(planId, state.selectedDayIndex, itemId, direction)
+        if (orderedItemIds == state.selectedDay?.items.orEmpty().map { it.id }) return
+        routeJob?.cancel()
+        _uiState.update {
+            it.copy(
+                optimization = null,
+                route = null,
+                isLoadingRoute = true,
+                routeError = null,
+            )
+        }
+        travelPlanRepository.applyOptimizedOrder(
+            planId = planId,
+            dayIndex = state.selectedDayIndex,
+            orderedPlaceIds = orderedItemIds,
+        )
     }
 
     fun moveUnplannedItemToDay(itemId: String, dayIndex: Int) {
@@ -105,6 +117,11 @@ class PlanDetailViewModel(
         if (result == AddPlaceResult.MISSING_LOCATION) {
             _uiState.update { it.copy(routeError = "这个待规划地点缺少坐标，不能加入路线 DAY。") }
         }
+    }
+
+    fun deletePlan(): Boolean {
+        routeJob?.cancel()
+        return travelPlanRepository.deletePlan(planId)
     }
 
     fun optimizeRoute() {

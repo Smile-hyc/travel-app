@@ -107,6 +107,12 @@ private object Routes {
     }
 }
 
+private data class ExplorePlanContext(
+    val planId: String,
+    val destination: String,
+    val requestKey: Long,
+)
+
 @Composable
 fun AiTravelNavHost() {
     val navController = rememberNavController()
@@ -121,6 +127,7 @@ fun AiTravelNavHost() {
     val currentLocationState by currentLocationRepository.state.collectAsState()
     val exploreMapViewHolder = rememberExploreMapViewHolder()
     var pendingPlaceToAdd by remember { mutableStateOf<PlaceSummary?>(null) }
+    var explorePlanContext by remember { mutableStateOf<ExplorePlanContext?>(null) }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
@@ -169,6 +176,9 @@ fun AiTravelNavHost() {
                         NavigationBarItem(
                             selected = selected,
                             onClick = {
+                                if (destination != AppDestination.Explore) {
+                                    explorePlanContext = null
+                                }
                                 navController.navigate(destination.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true
@@ -234,7 +244,12 @@ fun AiTravelNavHost() {
                     viewModel = exploreViewModel,
                     mapViewHolder = exploreMapViewHolder,
                     locationState = currentLocationState,
-                    onLocate = requestCurrentLocation,
+                    requestedDestination = explorePlanContext?.destination,
+                    destinationRequestKey = explorePlanContext?.requestKey,
+                    onLocate = {
+                        explorePlanContext = null
+                        requestCurrentLocation()
+                    },
                     onOpenPlace = { placeId -> navController.navigate(Routes.placeDetail(placeId)) },
                     onAddPlace = { place -> pendingPlaceToAdd = place },
                 )
@@ -353,6 +368,20 @@ fun AiTravelNavHost() {
                     viewModel = detailViewModel,
                     onBack = { navController.popBackStack() },
                     onAskAi = { id -> navController.navigate(Routes.assistant(planId = id)) },
+                    onContinueAdding = { id, destination ->
+                        explorePlanContext = ExplorePlanContext(
+                            planId = id,
+                            destination = destination,
+                            requestKey = System.nanoTime(),
+                        )
+                        navController.navigate(AppDestination.Explore.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                 )
             }
             composable(
@@ -423,6 +452,7 @@ fun AiTravelNavHost() {
         AddPlaceToPlanDialog(
             plans = travelPlans,
             placeName = place.name,
+            initialPlanId = explorePlanContext?.planId,
             onDismiss = { pendingPlaceToAdd = null },
             onCreatePlan = { navController.navigate(Routes.createPlan) },
             onConfirm = { plan, target ->
