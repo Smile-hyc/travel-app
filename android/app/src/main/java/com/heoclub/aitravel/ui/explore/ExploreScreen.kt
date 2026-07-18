@@ -67,6 +67,8 @@ fun ExploreScreen(
     viewModel: ExploreViewModel,
     mapViewHolder: ExploreMapViewHolder,
     locationState: CurrentLocationUiState,
+    requestedDestination: String? = null,
+    destinationRequestKey: Long? = null,
     onLocate: () -> Unit,
     onOpenPlace: (String) -> Unit,
     onAddPlace: (PlaceSummary) -> Unit,
@@ -77,8 +79,15 @@ fun ExploreScreen(
     var panelExpanded by remember { mutableFloatStateOf(0f) }
     val expanded = panelExpanded > 0.5f
 
-    LaunchedEffect(locationState.location?.updateSequence) {
-        locationState.location?.let(viewModel::useCurrentLocation)
+    LaunchedEffect(destinationRequestKey) {
+        requestedDestination
+            ?.takeIf(String::isNotBlank)
+            ?.let(viewModel::openDestinationCity)
+    }
+    LaunchedEffect(locationState.location?.updateSequence, destinationRequestKey) {
+        if (requestedDestination.isNullOrBlank()) {
+            locationState.location?.let(viewModel::useCurrentLocation)
+        }
     }
     LaunchedEffect(locationState.errorMessage) {
         locationState.errorMessage?.let { message ->

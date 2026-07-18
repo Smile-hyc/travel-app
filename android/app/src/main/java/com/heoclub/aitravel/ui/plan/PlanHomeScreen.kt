@@ -1,10 +1,12 @@
 package com.heoclub.aitravel.ui.plan
 
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +53,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import com.heoclub.aitravel.R
 import com.heoclub.aitravel.data.location.CurrentLocationUiState
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
 import com.heoclub.aitravel.ui.components.PlaceCoverImage
 
 @Composable
@@ -62,6 +68,7 @@ fun PlanHomeScreen(
 ) {
     val plans by viewModel.plans.collectAsState()
     val context = LocalContext.current
+    var planPendingDeletion by remember { mutableStateOf<TravelPlan?>(null) }
 
     LazyColumn(
         modifier = modifier
@@ -94,11 +101,23 @@ fun PlanHomeScreen(
                 plan = plan,
                 featured = index == 0,
                 onClick = { onOpenPlan(plan.id) },
+                onLongClick = { planPendingDeletion = plan },
             )
         }
         item {
             Spacer(modifier = Modifier.height(92.dp))
         }
+    }
+
+    planPendingDeletion?.let { plan ->
+        DeletePlanConfirmationDialog(
+            planTitle = plan.title,
+            onConfirm = {
+                viewModel.deletePlan(plan.id)
+                planPendingDeletion = null
+            },
+            onDismiss = { planPendingDeletion = null },
+        )
     }
 }
 
@@ -268,14 +287,20 @@ private fun PlansHeading(planCount: Int) {
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun TravelPlanItem(
     plan: TravelPlan,
     featured: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
         shape = RoundedCornerShape(28.dp),
         color = Color(0xFFFCFDFE),
         border = BorderStroke(1.dp, Color(0xFFDDE6F0)),

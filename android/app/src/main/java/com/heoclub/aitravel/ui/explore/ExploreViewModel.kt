@@ -43,6 +43,7 @@ class ExploreViewModel(
     private var loadPlacesJob: Job? = null
     private var tipsJob: Job? = null
     private var citySearchJob: Job? = null
+    private var destinationJob: Job? = null
     private var weatherJob: Job? = null
     private var loadPlacesRequestId: Long = 0L
     private var weatherRequestId: Long = 0L
@@ -223,6 +224,25 @@ class ExploreViewModel(
         )
         loadWeather()
         loadPlaces(resetPage = true)
+    }
+
+    fun openDestinationCity(destination: String) {
+        val query = destination.trim()
+        if (query.isBlank()) return
+
+        destinationJob?.cancel()
+        val localCity = bestMatchingCity(query, ExploreCityData.allCities)
+        if (localCity != null) {
+            selectCity(localCity)
+            return
+        }
+
+        destinationJob = viewModelScope.launch {
+            runCatching { exploreRepository.searchCities(query) }
+                .getOrNull()
+                ?.let { cities -> bestMatchingCity(query, cities) }
+                ?.let(::selectCity)
+        }
     }
 
     fun openPlaceSearch() {
@@ -428,6 +448,21 @@ class ExploreViewModel(
             is IOException -> "请检查后端服务是否启动，或网络是否可用"
             else -> throwable.message?.takeIf { it.isNotBlank() } ?: "地点服务暂时不可用"
         }
+    }
+
+    private fun bestMatchingCity(query: String, cities: List<ExploreCity>): ExploreCity? {
+        val normalizedQuery = normalizeCityName(query)
+        return cities.firstOrNull { normalizeCityName(it.displayName) == normalizedQuery }
+            ?: cities.firstOrNull { normalizeCityName(it.name) == normalizedQuery }
+            ?: cities.firstOrNull {
+                normalizeCityName(it.displayName).contains(normalizedQuery) ||
+                    normalizedQuery.contains(normalizeCityName(it.displayName))
+            }
+    }
+
+    private fun normalizeCityName(value: String): String {
+        return listOf("特别行政区", "自治州", "地区", "市")
+            .fold(value.trim().replace(" ", "")) { name, suffix -> name.removeSuffix(suffix) }
     }
 
     class Factory(

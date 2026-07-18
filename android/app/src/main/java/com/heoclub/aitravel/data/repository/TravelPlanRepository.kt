@@ -33,6 +33,8 @@ interface TravelPlanRepository {
 
     fun getPlan(planId: String): TravelPlan?
 
+    fun deletePlan(planId: String): Boolean
+
     fun addPlaceToPlan(
         planId: String,
         place: PlaceSummary,
@@ -102,11 +104,14 @@ data class AiUndoResult(
 open class InMemoryTravelPlanRepository(
     initialPlans: List<TravelPlan> = emptyList(),
     private val onPlansChanged: (List<TravelPlan>) -> Unit = {},
+    seedDefaultPlanWhenEmpty: Boolean = true,
 ) : TravelPlanRepository {
     private var lastAiUndoSnapshot: AiUndoSnapshot? = null
 
     private val _plans = MutableStateFlow(
-        sanitizePlans(initialPlans).ifEmpty { listOf(defaultInitialPlan()) },
+        sanitizePlans(initialPlans).let { plans ->
+            if (plans.isEmpty() && seedDefaultPlanWhenEmpty) listOf(defaultInitialPlan()) else plans
+        },
     )
     override val plans: StateFlow<List<TravelPlan>> = _plans.asStateFlow()
 
@@ -195,6 +200,20 @@ open class InMemoryTravelPlanRepository(
 
     override fun getPlan(planId: String): TravelPlan? {
         return _plans.value.firstOrNull { it.id == planId }
+    }
+
+    override fun deletePlan(planId: String): Boolean {
+        var deleted = false
+        _plans.update { current ->
+            val updated = current.filterNot { it.id == planId }
+            deleted = updated.size != current.size
+            updated
+        }
+        if (deleted) {
+            lastAiUndoSnapshot = lastAiUndoSnapshot?.takeUnless { it.planId == planId }
+            persistCurrentPlans()
+        }
+        return deleted
     }
 
     override fun addPlaceToPlan(
@@ -590,6 +609,7 @@ class PersistentTravelPlanRepository private constructor(
 ) : InMemoryTravelPlanRepository(
     initialPlans = localStore.loadPlans(),
     onPlansChanged = localStore::savePlans,
+    seedDefaultPlanWhenEmpty = !localStore.hasSavedPlans(),
 ) {
     constructor(context: Context) : this(TravelPlanLocalStore(context.applicationContext))
 }
@@ -600,6 +620,8 @@ private class TravelPlanLocalStore(
     private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val gson = Gson()
     private val planListType = object : TypeToken<List<TravelPlan>>() {}.type
+
+    fun hasSavedPlans(): Boolean = preferences.contains(KEY_PLANS)
 
     fun loadPlans(): List<TravelPlan> {
         val json = preferences.getString(KEY_PLANS, null) ?: return emptyList()

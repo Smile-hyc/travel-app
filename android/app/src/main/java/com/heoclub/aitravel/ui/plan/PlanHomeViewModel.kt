@@ -7,9 +7,11 @@ import com.heoclub.aitravel.data.repository.TravelPlanRepository
 import kotlinx.coroutines.flow.StateFlow
 
 class PlanHomeViewModel(
-    travelPlanRepository: TravelPlanRepository,
+    private val travelPlanRepository: TravelPlanRepository,
 ) : ViewModel() {
     val plans: StateFlow<List<TravelPlan>> = travelPlanRepository.plans
+
+    fun deletePlan(planId: String): Boolean = travelPlanRepository.deletePlan(planId)
 
     class Factory(
         private val travelPlanRepository: TravelPlanRepository,
@@ -23,4 +25,3 @@ class PlanHomeViewModel(
         }
     }
 }
-
