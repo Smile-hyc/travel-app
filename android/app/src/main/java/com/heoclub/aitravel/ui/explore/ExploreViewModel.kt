@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.heoclub.aitravel.data.local.ExploreCityData
+import com.heoclub.aitravel.data.location.CurrentLocation
 import com.heoclub.aitravel.data.model.ExploreCategories
 import com.heoclub.aitravel.data.model.ExploreCity
 import com.heoclub.aitravel.data.model.PlaceSuggestion
@@ -163,6 +164,36 @@ class ExploreViewModel(
             it.copy(
                 expandedProvinceName = if (it.expandedProvinceName == provinceName) null else provinceName,
             )
+        }
+    }
+
+    fun useCurrentLocation(location: CurrentLocation) {
+        val previousCity = _uiState.value.selectedCity
+        val resolvedAdCode = location.adCode.ifBlank { previousCity.adCode }
+        val locatedCity = ExploreCity(
+            id = "located-${resolvedAdCode.ifBlank { location.cityName }}",
+            name = location.cityName,
+            displayName = location.cityName,
+            provinceName = location.provinceName,
+            adCode = resolvedAdCode,
+            latitude = location.latitude,
+            longitude = location.longitude,
+            defaultZoom = 14.2f,
+        )
+        val cityChanged = previousCity.adCode != locatedCity.adCode ||
+            previousCity.displayName != locatedCity.displayName
+        _uiState.update {
+            it.copy(
+                selectedCity = locatedCity,
+                selectedPlaceId = if (cityChanged) null else it.selectedPlaceId,
+                currentPage = if (cityChanged) 1 else it.currentPage,
+                hasMore = if (cityChanged) false else it.hasMore,
+                placesError = if (cityChanged) null else it.placesError,
+            )
+        }
+        if (cityChanged) {
+            loadWeather()
+            loadPlaces(resetPage = true)
         }
     }
 

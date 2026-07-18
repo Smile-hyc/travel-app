@@ -1,6 +1,7 @@
 package com.heoclub.aitravel.di
 
 import android.content.Context
+import com.heoclub.aitravel.data.location.CurrentLocationRepository
 import com.heoclub.aitravel.data.remote.RetrofitClient
 import com.heoclub.aitravel.data.repository.DefaultHealthRepository
 import com.heoclub.aitravel.data.repository.AiRepository
@@ -24,6 +25,7 @@ class AppContainer(
     )
 
     val healthRepository: HealthRepository = DefaultHealthRepository(apiService)
+    val currentLocationRepository = CurrentLocationRepository(context)
     val travelPlanRepository: TravelPlanRepository = PersistentTravelPlanRepository(context)
     val exploreRepository: ExploreRepository = RemoteExploreRepository(apiService)
     val routeRepository: RouteRepository = RemoteRouteRepository(apiService)
