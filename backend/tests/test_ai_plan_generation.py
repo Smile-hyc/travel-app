@@ -303,3 +303,165 @@ def test_plan_job_exposes_partial_days_and_planning_events() -> None:
     assert snapshot.partialDays[0].places[0].name == "故宫博物院"
     assert snapshot.events[0].sequence == 1
     assert snapshot.events[0].type == "PLACE_ADDED"
+
+
+def test_constraint_planner_uses_station_hotel_meal_and_open_hours() -> None:
+    class FailingArkClient:
+        model_name = "test-model"
+
+        async def chat(self, *args, **kwargs) -> str:
+            raise HTTPException(status_code=502, detail="模型暂时不可用")
+
+    class ConstraintPoiService:
+        async def search_cities(self, *, keyword: str, limit: int):
+            return [
+                CitySearchResult(
+                    id="110000",
+                    name="北京市",
+                    adCode="110000",
+                    latitude=39.9042,
+                    longitude=116.4074,
+                ),
+            ]
+
+        async def search_pois(self, *, category: str, keyword=None, **kwargs):
+            if category == "transport":
+                items = [
+                    PlaceSummary(
+                        id="station",
+                        sourcePoiId="station",
+                        name="北京南站",
+                        category="transport",
+                        categoryCode="transport",
+                        typeName="火车站",
+                        rating="4.8",
+                        latitude=39.865,
+                        longitude=116.379,
+                    ),
+                ]
+            elif category == "lodging":
+                items = [
+                    PlaceSummary(
+                        id="hotel",
+                        sourcePoiId="hotel",
+                        name="北京王府井酒店",
+                        category="lodging",
+                        categoryCode="lodging",
+                        rating="4.7",
+                        latitude=39.914,
+                        longitude=116.412,
+                    ),
+                ]
+            else:
+                opening = "09:00-17:00" if category == "scenic" else "11:00-22:00"
+                items = [
+                    PlaceSummary(
+                        id=f"{category}-{index}",
+                        sourcePoiId=f"{category}-{index}",
+                        name=f"{category}-{index}",
+                        category=category,
+                        categoryCode=category,
+                        rating=str(4.9 - index * 0.1),
+                        openingHoursToday=opening,
+                        openingHoursWeek=f"周一至周日 {opening}",
+                        districtName="东城区",
+                        latitude=39.90 + index * 0.004,
+                        longitude=116.40 + index * 0.004,
+                    )
+                    for index in range(8)
+                ]
+            return PaginatedPlaces(
+                items=items,
+                page=1,
+                pageSize=len(items),
+                total=len(items),
+                hasMore=False,
+            )
+
+    service = TravelPlanGenerationService(
+        FailingArkClient(),
+        ConstraintPoiService(),
+        reveal_delay_seconds=0,
+    )
+    result = asyncio.run(
+        service.generate(
+            AiPlanGenerationRequest(
+                destination="北京",
+                dateRange="07.17 - 07.18",
+                dayCount=2,
+                arrivalStation="北京南站",
+                hotelName="北京王府井酒店",
+            ),
+        ),
+    )
+
+    first_categories = [place.category for place in result.days[0].places]
+    assert first_categories[:2] == ["transport", "lodging"]
+    assert any(place.category == "food" for day in result.days for place in day.places)
+    for place in (place for day in result.days for place in day.places if place.category == "scenic"):
+        assert "09:00" <= place.suggestedStart < place.suggestedEnd <= "17:00"
+        assert place.scheduleVerified is True
+
+
+def test_ai_optimization_timeout_falls_back_without_long_stall() -> None:
+    class SlowArkClient:
+        model_name = "slow-model"
+
+        async def chat(self, *args, **kwargs) -> str:
+            await asyncio.sleep(60)
+            return "{}"
+
+    class MinimalPoiService:
+        async def search_cities(self, *, keyword: str, limit: int):
+            return [CitySearchResult(id="1", name="北京市", adCode="110000", latitude=39.9, longitude=116.4)]
+
+        async def search_pois(self, *, category: str, **kwargs):
+            offset = {"scenic": 0, "food": 100, "transport": 200, "lodging": 300}.get(category, 400)
+            items = [
+                PlaceSummary(
+                    id=f"{category}-{index}",
+                    sourcePoiId=f"{offset + index}",
+                    name=f"{category}-{index}",
+                    category=category,
+                    categoryCode=category,
+                    typeName="火车站" if category == "transport" else None,
+                    latitude=39.9 + index * 0.003,
+                    longitude=116.4 + index * 0.003,
+                )
+                for index in range(8)
+            ]
+            return PaginatedPlaces(items=items, page=1, pageSize=8, total=8, hasMore=False)
+
+    service = TravelPlanGenerationService(
+        SlowArkClient(),
+        MinimalPoiService(),
+        reveal_delay_seconds=0,
+        ai_optimization_timeout_seconds=0.05,
+    )
+    result = asyncio.run(
+        service.generate(
+            AiPlanGenerationRequest(destination="北京", dateRange="07.17", dayCount=1),
+        ),
+    )
+    assert result.quality.usedFallback is True
+    assert any("自动采用" in warning for warning in result.warnings)
+
+
+def test_weekly_closure_is_respected_for_trip_date() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    museum = PlaceSummary(
+        id="museum",
+        sourcePoiId="museum",
+        name="示例博物馆",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+        openingHoursWeek="周二至周日 09:00-17:00；周一闭馆",
+    )
+    monday_request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="07.20 - 07.20",
+        dayCount=1,
+    )
+    assert service._is_open_on_trip_day(museum, monday_request, 1) is False

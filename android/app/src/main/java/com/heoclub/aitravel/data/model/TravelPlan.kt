@@ -56,4 +56,11 @@ data class PlanItem(
     val transportModeToNext: String = "walking",
     val thumbnailUrl: String? = null,
     val imageUrls: List<String> = emptyList(),
+    val phone: String? = null,
+    val rating: String? = null,
+    val costAverage: String? = null,
+    val businessArea: String? = null,
+    val openingHoursToday: String? = null,
+    val openingHoursWeek: String? = null,
+    val scheduleVerified: Boolean = false,
 )

@@ -131,8 +131,9 @@ class AiPlanJobManager:
             if partial_days is not None:
                 record.partial_days = [day.model_copy(deep=True) for day in partial_days]
             if event is not None:
-                sequenced_event = event.model_copy(update={"sequence": len(record.events) + 1})
-                record.events = [*record.events, sequenced_event][-48:]
+                if not record.events or record.events[-1].message != event.message:
+                    sequenced_event = event.model_copy(update={"sequence": len(record.events) + 1})
+                    record.events = [*record.events, sequenced_event][-48:]
             if active_day_index is not None:
                 record.active_day_index = active_day_index
             record.updated_at = _now()

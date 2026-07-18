@@ -253,14 +253,35 @@ private fun mockPlace(
 }
 
 private fun placeholderDetail(summary: PlaceSummary): PlaceDetail {
+    val openingHours = summary.openingHoursWeek
+        ?: summary.openingHoursToday
+        ?: "高德暂未提供开放时间，出发前请向景区或商家确认"
+    val positives = buildList {
+        add("高德真实地点与坐标")
+        summary.rating?.let { add("高德评分 $it") }
+        if (!summary.openingHoursToday.isNullOrBlank() || !summary.openingHoursWeek.isNullOrBlank()) {
+            add("已取得公开营业时间")
+        }
+    }
+    val cautions = buildList {
+        if (summary.openingHoursToday.isNullOrBlank() && summary.openingHoursWeek.isNullOrBlank()) {
+            add("开放时间需再次确认")
+        }
+        add("节假日、预约和临时闭馆可能调整")
+    }
     return PlaceDetail(
         summary = summary,
-        openingHours = "详情真实化将在下一阶段接入",
+        openingHours = openingHours,
         phone = summary.phone ?: "暂无公开电话",
-        description = "${summary.name} 来自高德 POI 或本地预览数据。本阶段先完成地图、列表和搜索联动，详情页后续再真实化。",
-        positiveHighlights = listOf("真实地点坐标", "可在地图中定位", "可作为行程锚点"),
-        negativeHighlights = listOf("详情内容待补全", "营业时间待接入", "评价内容待接入"),
-        sourceLabels = listOf(summary.source, "POI 基础信息"),
+        description = listOfNotNull(
+            summary.typeName,
+            summary.districtName,
+            summary.address,
+            summary.businessArea?.let { "${it}商圈" },
+        ).joinToString(" · ").ifBlank { "${summary.name} 的高德 POI 详情。" },
+        positiveHighlights = positives,
+        negativeHighlights = cautions,
+        sourceLabels = listOf(summary.source, "POI 2.0 商业信息"),
         relatedPlans = emptyList(),
     )
 }

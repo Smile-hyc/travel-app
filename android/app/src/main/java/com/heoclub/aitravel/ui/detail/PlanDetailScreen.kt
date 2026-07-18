@@ -103,6 +103,7 @@ fun PlanDetailScreen(
     onBack: () -> Unit,
     onAskAi: (String) -> Unit,
     onContinueAdding: (String, String) -> Unit,
+    onOpenPlace: (PlanItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -154,6 +155,7 @@ fun PlanDetailScreen(
                 onApplyOptimization = viewModel::applyOptimization,
                 onDismissOptimization = viewModel::dismissOptimization,
                 onRetry = viewModel::retryRoute,
+                onOpenPlace = onOpenPlace,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -224,6 +226,7 @@ private fun PlanDetailSheet(
     onApplyOptimization: () -> Unit,
     onDismissOptimization: () -> Unit,
     onRetry: () -> Unit,
+    onOpenPlace: (PlanItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val displayRoute = uiState.optimization?.route ?: uiState.route
@@ -333,6 +336,7 @@ private fun PlanDetailSheet(
                 routeLoading = uiState.isLoadingRoute,
                 previewing = uiState.optimization != null,
                 onReorderItems = onReorderItems,
+                onOpenPlace = onOpenPlace,
             )
 
             UnplannedSection(
@@ -544,6 +548,7 @@ private fun DayItinerary(
     routeLoading: Boolean,
     previewing: Boolean,
     onReorderItems: (List<String>) -> Unit,
+    onOpenPlace: (PlanItem) -> Unit,
 ) {
     var visualItems by remember(day?.id) { mutableStateOf(items) }
     var activeItemId by remember(day?.id) { mutableStateOf<String?>(null) }
@@ -739,6 +744,7 @@ private fun DayItinerary(
                         },
                         dragEnabled = dragEnabled,
                         isDragging = active,
+                        onOpenPlace = { onOpenPlace(item) },
                         modifier = Modifier
                             .zIndex(if (active) 1f else 0f)
                             .onSizeChanged { size -> itemHeights[item.id] = size.height }
@@ -859,6 +865,7 @@ private fun PlanItemCard(
     nextSegmentText: String?,
     dragEnabled: Boolean,
     isDragging: Boolean,
+    onOpenPlace: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val containerColor by animateColorAsState(
@@ -879,7 +886,9 @@ private fun PlanItemCard(
     )
 
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(enabled = !isDragging, onClick = onOpenPlace),
         color = containerColor,
         shape = RoundedCornerShape(16.dp),
         shadowElevation = elevation,
@@ -908,6 +917,11 @@ private fun PlanItemCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "点击查看地点详情",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelSmall,
                     )
                 }
                 Icon(

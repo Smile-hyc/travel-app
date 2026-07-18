@@ -47,6 +47,8 @@ class PlaceSummary(BaseModel):
     coverImageUrl: str | None = None
     imageUrls: list[str] = Field(default_factory=list)
     businessArea: str | None = None
+    openingHoursToday: str | None = None
+    openingHoursWeek: str | None = None
 
 
 class PlaceSuggestion(BaseModel):

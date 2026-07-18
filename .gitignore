@@ -88,7 +88,9 @@ temp/
 .cache/
 .apk-analysis/
 .debug/
-.debug/
+.agents/
+.xml
+.png
 
 # OS and editor files
 .DS_Store

@@ -5,7 +5,7 @@ import json
 import math
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -45,10 +45,12 @@ class TravelPlanGenerationService:
         ark_client: ArkClient,
         poi_service: AmapPoiService,
         reveal_delay_seconds: float = 0.24,
+        ai_optimization_timeout_seconds: float = 18.0,
     ) -> None:
         self._ark_client = ark_client
         self._poi_service = poi_service
         self._reveal_delay_seconds = reveal_delay_seconds
+        self._ai_optimization_timeout_seconds = ai_optimization_timeout_seconds
 
     async def generate(
         self,
@@ -67,10 +69,12 @@ class TravelPlanGenerationService:
         categories = self._categories_for(request.preferences)
         target_count = min(36, max(request.dayCount * PACE_PLACE_COUNTS[request.pace] + 6, 12))
         per_category = min(24, max(8, math.ceil(target_count / len(categories)) + 4))
+        station_query = (request.arrivalStation or "").strip() or f"{city.name.rstrip('市')}站"
+        hotel_query = (request.hotelName or "").strip() or "酒店"
         search_results = await asyncio.gather(
             *[
                 self._poi_service.search_pois(
-                    keyword=None,
+                    keyword=self._category_search_keyword(city.name, category),
                     adcode=city.adCode,
                     category=category,
                     page=1,
@@ -79,6 +83,22 @@ class TravelPlanGenerationService:
                 )
                 for category in categories
             ],
+            self._poi_service.search_pois(
+                keyword=station_query,
+                adcode=city.adCode,
+                category="transport",
+                page=1,
+                page_size=12,
+                city_limit=True,
+            ),
+            self._poi_service.search_pois(
+                keyword=hotel_query,
+                adcode=city.adCode,
+                category="lodging",
+                page=1,
+                page_size=16,
+                city_limit=True,
+            ),
         )
         candidates = self._dedupe_candidates(
             [place for result in search_results for place in result.items],
@@ -89,8 +109,21 @@ class TravelPlanGenerationService:
                 detail=f"{destination}当前可用的真实地点数据不足，请稍后重试或缩短行程天数。",
             )
 
-        self._notify(progress, 44, f"已筛选 {len(candidates)} 个高德真实地点")
-        fallback = self._build_heuristic_days(request, candidates)
+        station = self._select_station(candidates, station_query)
+        hotel = self._select_hotel(candidates, request.hotelName, station)
+        anchor_text = "、".join(place.name for place in (station, hotel) if place is not None)
+        self._notify(
+            progress,
+            44,
+            f"已筛选 {len(candidates)} 个高德真实地点" + (f"，锚点为 {anchor_text}" if anchor_text else ""),
+        )
+        fallback = self._build_heuristic_days(
+            request,
+            candidates,
+            station=station,
+            hotel=hotel,
+            city_name=city.name,
+        )
         await self._publish_draft(progress, fallback)
         warnings: list[str] = []
         model_name: str | None = self._ark_client.model_name
@@ -108,10 +141,16 @@ class TravelPlanGenerationService:
                 ),
                 active_day_index=fallback[-1].dayIndex if fallback else None,
             )
-            ai_payload = await self._generate_with_ai(request, city.name, candidates)
+            ai_payload = await self._optimize_with_heartbeat(
+                request,
+                city.name,
+                candidates,
+                fallback,
+                progress,
+            )
             self._notify(progress, 86, "AI 编排完成，正在校验地点与时间", len(fallback))
             days = self._merge_ai_result(request, ai_payload, candidates, fallback)
-        except (HTTPException, ValueError, json.JSONDecodeError, TypeError) as exc:
+        except (HTTPException, ValueError, json.JSONDecodeError, TypeError, asyncio.TimeoutError) as exc:
             days = fallback
             model_name = None
             used_fallback = True
@@ -264,23 +303,38 @@ class TravelPlanGenerationService:
     def _dedupe_candidates(self, places: list[PlaceSummary]) -> list[PlaceSummary]:
         result: list[PlaceSummary] = []
         seen: set[str] = set()
+        seen_brands: set[tuple[str, str]] = set()
         for place in places:
             if place.sourcePoiId in seen or place.latitude is None or place.longitude is None:
                 continue
             if any(self._same_real_world_place(place, existing) for existing in result):
                 continue
+            brand = self._brand_key(place.name)
+            brand_key = (place.category, brand)
+            if place.category in {"food", "drink", "lodging"} and brand and brand_key in seen_brands:
+                continue
             seen.add(place.sourcePoiId)
+            if brand:
+                seen_brands.add(brand_key)
             result.append(place)
         return result
 
+    def _brand_key(self, name: str) -> str:
+        if not any(mark in name for mark in ("(", "（", "店", "酒店", "宾馆")):
+            return ""
+        base = re.split(r"[（(]", name, maxsplit=1)[0]
+        base = re.sub(r"(?:旗舰店|总店|分店|酒店|宾馆|店)$", "", base)
+        return re.sub(r"[^\w\u4e00-\u9fff]", "", base).lower()
+
     def _same_real_world_place(self, left: PlaceSummary, right: PlaceSummary) -> bool:
-        if self._distance(left, right) > 0.6:
-            return False
+        distance = self._distance(left, right)
         left_name = re.sub(r"[^\w\u4e00-\u9fff]", "", left.name).lower()
         right_name = re.sub(r"[^\w\u4e00-\u9fff]", "", right.name).lower()
         shorter, longer = sorted((left_name, right_name), key=len)
-        if len(shorter) >= 3 and shorter in longer:
+        if len(shorter) >= 3 and shorter in longer and distance <= 1.5:
             return True
+        if distance > 0.6:
+            return False
         if re.search(r"[\u4e00-\u9fff]", left_name) is None or re.search(r"[\u4e00-\u9fff]", right_name) is None:
             return False
         common_prefix = 0
@@ -290,12 +344,146 @@ class TravelPlanGenerationService:
             common_prefix += 1
         return common_prefix >= 3
 
+    def _category_search_keyword(self, city_name: str, category: str) -> str | None:
+        city = city_name.rstrip("市")
+        if category != "food":
+            return None
+        local_food_keywords = {
+            "北京": "北京烤鸭",
+            "上海": "本帮菜",
+            "成都": "川菜火锅",
+            "重庆": "重庆火锅",
+            "西安": "西安特色小吃",
+            "广州": "广府粤菜",
+            "南京": "南京特色美食",
+            "杭州": "杭帮菜",
+            "苏州": "苏帮菜",
+            "厦门": "闽南小吃",
+        }
+        return local_food_keywords.get(city, f"{city}特色美食")
+
+    def _select_station(self, candidates: list[PlaceSummary], query: str) -> PlaceSummary | None:
+        clean_query = re.sub(r"\s+", "", query)
+        stations = [
+            place
+            for place in candidates
+            if place.category == "transport"
+            and (
+                any(keyword in (place.typeName or "") for keyword in ("火车站", "铁路", "高铁"))
+                or (
+                    place.name.endswith("站")
+                    and not any(keyword in place.name for keyword in ("地铁", "公交", "客运", "收费"))
+                )
+            )
+        ]
+        if not stations:
+            return None
+        return max(
+            stations,
+            key=lambda place: (
+                20.0 if clean_query and clean_query in re.sub(r"\s+", "", place.name) else 0.0
+            ) + self._quality_score(place),
+        )
+
+    def _select_hotel(
+        self,
+        candidates: list[PlaceSummary],
+        requested_name: str | None,
+        station: PlaceSummary | None,
+    ) -> PlaceSummary | None:
+        hotels = [place for place in candidates if place.category == "lodging"]
+        if not hotels:
+            return None
+        requested = re.sub(r"\s+", "", requested_name or "")
+        if requested:
+            exact = [place for place in hotels if requested in re.sub(r"\s+", "", place.name)]
+            if exact:
+                return max(exact, key=self._quality_score)
+        scenic = sorted(
+            (place for place in candidates if place.category == "scenic"),
+            key=self._quality_score,
+            reverse=True,
+        )[:6]
+        center_places = scenic or ([station] if station is not None else [])
+
+        def hotel_score(place: PlaceSummary) -> float:
+            distance_penalty = 0.0
+            if center_places:
+                distance_penalty = sum(self._distance(place, target) for target in center_places) / len(center_places)
+            name_penalty = 4.0 if any(word in place.name for word in ("公寓", "民宿", "招待所")) else 0.0
+            return self._quality_score(place) - distance_penalty * 0.8 - name_penalty
+
+        return max(hotels, key=hotel_score)
+
+    def _quality_score(self, place: PlaceSummary) -> float:
+        try:
+            rating = float(place.rating or 0)
+        except ValueError:
+            rating = 0.0
+        photo_bonus = 1.2 if place.coverImageUrl else 0.0
+        address_bonus = 0.4 if place.address else 0.0
+        branch_penalty = 0.8 if any(mark in place.name for mark in ("入口", "售票处", "停车场")) else 0.0
+        return rating * 3.0 + photo_bonus + address_bonus - branch_penalty
+
+    async def _optimize_with_heartbeat(
+        self,
+        request: AiPlanGenerationRequest,
+        city_name: str,
+        candidates: list[PlaceSummary],
+        fallback: list[AiGeneratedDay],
+        progress: ProgressCallback | None,
+    ) -> dict[str, Any]:
+        task = asyncio.create_task(self._generate_with_ai(request, city_name, candidates))
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        timeout = max(0.05, self._ai_optimization_timeout_seconds)
+        heartbeat = 0
+        try:
+            while True:
+                elapsed = loop.time() - started_at
+                remaining = timeout - elapsed
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                done, _ = await asyncio.wait({task}, timeout=min(2.0, remaining))
+                if task in done:
+                    return task.result()
+                heartbeat += 1
+                progress_value = min(84, 74 + heartbeat * 2)
+                self._notify(
+                    progress,
+                    progress_value,
+                    f"正在校验营业时间与跨天顺序（约剩 {max(1, round(remaining))} 秒）",
+                    len(fallback),
+                    partial_days=fallback,
+                    event=self._event(
+                        "ANALYSIS",
+                        "正在检查景点开放时段、午晚餐时间和每天的区域跨度；草案已可用，不会无限等待。",
+                    ),
+                    active_day_index=fallback[-1].dayIndex if fallback else None,
+                )
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=f"AI 优化超过 {int(timeout)} 秒，已自动采用通过时间约束的路线草案。",
+            ) from exc
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def _generate_with_ai(
         self,
         request: AiPlanGenerationRequest,
         city_name: str,
         candidates: list[PlaceSummary],
     ) -> dict[str, Any]:
+        ordered_candidates = sorted(
+            candidates,
+            key=lambda place: (
+                0 if place.category in {"transport", "lodging"} else 1,
+                -self._quality_score(place),
+            ),
+        )
         compact_candidates = [
             {
                 "sourcePoiId": place.sourcePoiId,
@@ -306,8 +494,11 @@ class TravelPlanGenerationService:
                 "district": place.districtName,
                 "latitude": place.latitude,
                 "longitude": place.longitude,
+                "rating": place.rating,
+                "openingHoursToday": place.openingHoursToday,
+                "openingHoursWeek": place.openingHoursWeek,
             }
-            for place in candidates[: min(len(candidates), max(24, request.dayCount * 7))]
+            for place in ordered_candidates[: min(len(ordered_candidates), max(24, request.dayCount * 7))]
         ]
         prompt = {
             "destination": city_name,
@@ -315,6 +506,8 @@ class TravelPlanGenerationService:
             "dayCount": request.dayCount,
             "preferences": self._clean_preferences(request.preferences),
             "freeText": (request.freeText or "").strip(),
+            "arrivalStation": (request.arrivalStation or "").strip(),
+            "hotelName": (request.hotelName or "").strip(),
             "pace": request.pace,
             "transportPreference": request.transportPreference,
             "dailyTimeWindow": f"{request.dailyStart}-{request.dailyEnd}",
@@ -325,7 +518,9 @@ class TravelPlanGenerationService:
                 "role": "system",
                 "content": (
                     "你是结构化旅行行程规划器。只能使用候选地点中的 sourcePoiId，不能虚构地点。"
-                    "综合用户偏好、地点类别、行政区和经纬度，尽量让同一天的地点相近，并穿插餐饮。"
+                    "综合用户偏好、地点类别、行政区、经纬度、评分和开放时间，尽量让同一天的地点相近。"
+                    "第一天优先按火车站、酒店寄存行李、景点、用餐组织；餐饮放在11:30-13:30或17:30-19:30。"
+                    "景点的游览区间必须完全落在已提供的开放时间内；缺少开放时间时仅安排在09:30-16:30。"
                     f"旅行节奏为 {request.pace}，每天目标地点数为 {PACE_PLACE_COUNTS[request.pace]}，"
                     f"每日活动必须处于 {request.dailyStart}-{request.dailyEnd}，交通偏好为 {request.transportPreference}。"
                     "同一地点不可重复。只输出 JSON，不要 Markdown。"
@@ -341,7 +536,7 @@ class TravelPlanGenerationService:
             messages,
             max_tokens=min(5000, max(2200, request.dayCount * 650)),
             temperature=0.25,
-            timeout_seconds=90.0,
+            timeout_seconds=self._ai_optimization_timeout_seconds + 2.0,
         )
         return json.loads(self._extract_json(raw))
 
@@ -393,11 +588,13 @@ class TravelPlanGenerationService:
 
             fallback_day = fallback_by_day[day_index]
             for place in fallback_day.places:
-                if len(generated_places) >= min(4, len(candidates)):
+                if len(generated_places) >= min(5, len(candidates)):
                     break
                 if place.sourcePoiId not in used:
                     used.add(place.sourcePoiId)
                     generated_places.append(place)
+
+            generated_places = self._reschedule_generated_sequence(request, generated_places, day_index)
 
             result.append(
                 AiGeneratedDay(
@@ -411,54 +608,321 @@ class TravelPlanGenerationService:
             )
         return result
 
+    def _reschedule_generated_sequence(
+        self,
+        request: AiPlanGenerationRequest,
+        places: list[AiGeneratedPlace],
+        day_index: int,
+    ) -> list[AiGeneratedPlace]:
+        summaries = [
+            PlaceSummary(
+                id=place.id,
+                source=place.source,
+                sourcePoiId=place.sourcePoiId,
+                name=place.name,
+                category=place.category,
+                categoryCode=place.categoryCode,
+                typeName=place.typeName,
+                typeCode=place.typeCode,
+                address=place.address,
+                provinceName=place.provinceName,
+                cityName=place.cityName,
+                districtName=place.districtName,
+                adCode=place.adCode,
+                cityCode=place.cityCode,
+                latitude=place.latitude,
+                longitude=place.longitude,
+                phone=place.phone,
+                rating=place.rating,
+                costAverage=place.costAverage,
+                coverImageUrl=place.thumbnailUrl,
+                imageUrls=place.imageUrls,
+                businessArea=place.businessArea,
+                openingHoursToday=place.openingHoursToday,
+                openingHoursWeek=place.openingHoursWeek,
+            )
+            for place in places
+        ]
+        return self._schedule_places(request, summaries, day_index)
+
     def _build_heuristic_days(
         self,
         request: AiPlanGenerationRequest,
         candidates: list[PlaceSummary],
+        station: PlaceSummary | None = None,
+        hotel: PlaceSummary | None = None,
+        city_name: str | None = None,
     ) -> list[AiGeneratedDay]:
-        scenic = [place for place in candidates if place.category == "scenic"]
-        food = [place for place in candidates if place.category in {"food", "drink"}]
-        other = [place for place in candidates if place.category not in {"scenic", "food", "drink"}]
-        ordered = scenic + other + food
+        scenic = sorted(
+            (place for place in candidates if place.category == "scenic"),
+            key=self._quality_score,
+            reverse=True,
+        )
+        food = sorted(
+            (place for place in candidates if place.category in {"food", "drink"}),
+            key=lambda place: self._quality_score(place) + self._local_food_score(city_name or request.destination, place),
+            reverse=True,
+        )
         used: set[str] = set()
         days: list[AiGeneratedDay] = []
-        per_day = min(PACE_PLACE_COUNTS[request.pace], max(2, len(candidates) // request.dayCount))
+        scenic_target = {"RELAXED": 2, "BALANCED": 3, "INTENSIVE": 3}[request.pace]
 
         for day_index in range(1, request.dayCount + 1):
-            seed = next((place for place in ordered if place.sourcePoiId not in used), None)
+            seed = next((place for place in scenic if place.sourcePoiId not in used), None)
             if seed is None:
                 break
             selected = [seed]
             used.add(seed.sourcePoiId)
-            while len(selected) < per_day:
-                available = [place for place in candidates if place.sourcePoiId not in used]
+            target = scenic_target if day_index > 1 else max(1, scenic_target - int(station is not None) - int(hotel is not None))
+            while len(selected) < target:
+                available = [place for place in scenic if place.sourcePoiId not in used]
                 if not available:
                     break
-                needs_food = len(selected) == per_day - 1 and not any(
-                    place.category in {"food", "drink"} for place in selected
-                )
-                pool = [place for place in available if place.category in {"food", "drink"}] if needs_food else available
-                if not pool:
-                    pool = available
                 center = selected[-1]
-                next_place = min(pool, key=lambda place: self._distance(center, place))
+                next_place = min(
+                    available,
+                    key=lambda place: self._distance(center, place) - self._quality_score(place) * 0.08,
+                )
                 selected.append(next_place)
                 used.add(next_place.sourcePoiId)
 
+            meal_anchor = selected[0]
+            available_food = [place for place in food if place.sourcePoiId not in used]
+            meal = min(
+                available_food,
+                key=lambda place: self._distance(meal_anchor, place) - self._quality_score(place) * 0.06,
+                default=None,
+            )
+            if meal is not None:
+                used.add(meal.sourcePoiId)
+
+            sequence: list[PlaceSummary] = []
+            if day_index == 1:
+                sequence.extend(place for place in (station, hotel) if place is not None)
+            if selected:
+                sequence.append(selected[0])
+                if meal is not None:
+                    sequence.append(meal)
+                sequence.extend(selected[1:])
+            generated_places = self._schedule_places(request, sequence, day_index)
+            if not generated_places:
+                continue
+            area = next(
+                (place.districtName for place in selected if place.districtName),
+                request.destination,
+            )
             days.append(
                 AiGeneratedDay(
                     dayIndex=day_index,
-                    title=f"DAY {day_index} · {selected[0].districtName or request.destination}",
-                    summary="按地点距离顺路串联，兼顾游玩节奏与用餐停留。",
-                    places=[
-                        self._to_generated_place(place, index, {}, request)
-                        for index, place in enumerate(selected)
-                    ],
-                    estimatedDistanceKm=self._day_distance_from_summaries(selected),
-                    intensity=self._intensity_count(len(selected)),
+                    title=f"DAY {day_index} · {area}",
+                    summary=(
+                        "抵达车站后先到酒店寄存行李，再按开放时段游览和用餐。"
+                        if day_index == 1 and (station is not None or hotel is not None)
+                        else "按知名度、开放时间与距离成组，午餐后继续同区域游览。"
+                    ),
+                    places=generated_places,
+                    estimatedDistanceKm=self._day_distance(generated_places),
+                    intensity=self._intensity_count(len(generated_places)),
                 ),
             )
         return days
+
+    def _local_food_score(self, city_name: str, place: PlaceSummary) -> float:
+        city = city_name.rstrip("市")
+        characteristic_words = {
+            "北京": ("烤鸭", "炸酱面", "涮肉", "北京菜", "老字号", "卤煮"),
+            "上海": ("本帮", "生煎", "小笼", "红烧肉"),
+            "成都": ("川菜", "火锅", "串串", "担担面", "钟水饺"),
+            "重庆": ("重庆火锅", "小面", "江湖菜"),
+            "西安": ("肉夹馍", "泡馍", "凉皮", "陕菜"),
+            "广州": ("粤菜", "早茶", "烧鹅", "肠粉"),
+            "南京": ("盐水鸭", "鸭血粉丝", "金陵"),
+            "杭州": ("杭帮菜", "西湖醋鱼", "龙井虾仁"),
+        }.get(city, (city, "特色", "老字号"))
+        bonus = 6.0 if any(word in place.name or word in (place.typeName or "") for word in characteristic_words) else 0.0
+        if any(chain in place.name for chain in ("麦当劳", "肯德基", "星巴克", "汉堡王", "必胜客")):
+            bonus -= 12.0
+        return bonus
+
+    def _schedule_places(
+        self,
+        request: AiPlanGenerationRequest,
+        places: list[PlaceSummary],
+        day_index: int,
+    ) -> list[AiGeneratedPlace]:
+        current = self._time_to_minutes(request.dailyStart)
+        day_end = self._time_to_minutes(request.dailyEnd)
+        generated: list[AiGeneratedPlace] = []
+        meal_count = 0
+        previous: PlaceSummary | None = None
+
+        for position, place in enumerate(places):
+            if previous is not None:
+                transfer_minutes = min(55, max(15, round(self._distance(previous, place) * 8)))
+                current += transfer_minutes
+            duration = self._visit_duration_minutes(place.category, request.pace)
+            opening_ranges = self._opening_ranges_for_day(place, request, day_index)
+            has_opening_data = bool(opening_ranges)
+            if place.category == "scenic" and not self._is_open_on_trip_day(place, request, day_index):
+                continue
+
+            if place.category == "scenic":
+                if has_opening_data:
+                    slot = self._find_open_slot(opening_ranges, current, duration)
+                    if slot is None:
+                        continue
+                    current = slot[0]
+                    verified = True
+                else:
+                    current = max(current, 9 * 60 + 30)
+                    if current + duration > 17 * 60 + 30:
+                        continue
+                    verified = False
+            elif place.category in {"food", "drink"}:
+                desired = 11 * 60 + 30 if meal_count == 0 else 17 * 60 + 30
+                current = max(current, desired)
+                if has_opening_data:
+                    slot = self._find_open_slot(opening_ranges, current, duration)
+                    if slot is None:
+                        continue
+                    current = slot[0]
+                    verified = True
+                else:
+                    verified = False
+                meal_count += 1
+            elif place.category == "lodging":
+                duration = 45
+                verified = False
+            elif place.category == "transport":
+                duration = 40
+                verified = False
+            else:
+                verified = False
+
+            if current + duration > day_end:
+                break
+            start = self._minutes_to_time(current)
+            end = self._minutes_to_time(current + duration)
+            note = self._schedule_note(place, verified)
+            generated.append(
+                self._to_generated_place(
+                    place,
+                    position,
+                    {"start": start, "end": end, "note": note},
+                    request,
+                    schedule_verified=verified,
+                ),
+            )
+            current += duration
+            previous = place
+        return generated
+
+    def _visit_duration_minutes(self, category: str, pace: str) -> int:
+        if category in {"food", "drink"}:
+            return 75
+        if category == "scenic":
+            return {"RELAXED": 120, "BALANCED": 105, "INTENSIVE": 90}[pace]
+        return 60
+
+    def _opening_window(self, place: PlaceSummary) -> tuple[int | None, int | None, bool]:
+        ranges = self._opening_ranges(place)
+        if ranges:
+            start, end = max(ranges, key=lambda item: item[1] - item[0])
+            return start, end, True
+        return None, None, False
+
+    def _opening_ranges(self, place: PlaceSummary) -> list[tuple[int, int]]:
+        today = self._parse_time_ranges(place.openingHoursToday)
+        return today or self._parse_time_ranges(place.openingHoursWeek)
+
+    def _find_open_slot(
+        self,
+        ranges: list[tuple[int, int]],
+        earliest: int,
+        duration: int,
+    ) -> tuple[int, int] | None:
+        for open_start, open_end in sorted(ranges):
+            start = max(earliest, open_start)
+            if start + duration <= open_end:
+                return start, start + duration
+        return None
+
+    def _opening_ranges_for_day(
+        self,
+        place: PlaceSummary,
+        request: AiPlanGenerationRequest,
+        day_index: int,
+    ) -> list[tuple[int, int]]:
+        week_ranges = self._parse_time_ranges(place.openingHoursWeek)
+        if week_ranges:
+            return week_ranges
+        trip_date = self._trip_date(request, day_index)
+        if trip_date is not None and trip_date.date() == datetime.now().date():
+            return self._parse_time_ranges(place.openingHoursToday)
+        return []
+
+    def _is_open_on_trip_day(
+        self,
+        place: PlaceSummary,
+        request: AiPlanGenerationRequest,
+        day_index: int,
+    ) -> bool:
+        text = place.openingHoursWeek or ""
+        trip_date = self._trip_date(request, day_index)
+        if not text or trip_date is None or "周" not in text:
+            return True
+        day_chars = "一二三四五六日"
+        day_char = day_chars[trip_date.weekday()]
+        if re.search(rf"周{day_char}[^；;。]*(?:闭馆|休息|不开放)", text):
+            return False
+        allowed: set[str] = set()
+        for start, end in re.findall(r"周([一二三四五六日])\s*至\s*周?([一二三四五六日])", text):
+            start_index = day_chars.index(start)
+            end_index = day_chars.index(end)
+            if start_index <= end_index:
+                allowed.update(day_chars[start_index : end_index + 1])
+        allowed.update(re.findall(r"周([一二三四五六日])", text))
+        return not allowed or day_char in allowed
+
+    def _trip_date(self, request: AiPlanGenerationRequest, day_index: int) -> datetime | None:
+        match = re.search(r"(\d{1,2})[.\-/](\d{1,2})", request.dateRange)
+        if match is None:
+            return None
+        try:
+            start = datetime(datetime.now().year, int(match.group(1)), int(match.group(2)))
+        except ValueError:
+            return None
+        return start + timedelta(days=max(0, day_index - 1))
+
+    def _parse_time_ranges(self, value: str | None) -> list[tuple[int, int]]:
+        if not value:
+            return []
+        ranges: list[tuple[int, int]] = []
+        for start, end in re.findall(
+            r"((?:[01]?\d|2[0-3]):[0-5]\d)\s*[-—至]\s*((?:[01]?\d|2[0-3]):[0-5]\d)",
+            value,
+        ):
+            start_minutes = self._time_to_minutes(self._normalize_hour(start))
+            end_minutes = self._time_to_minutes(self._normalize_hour(end))
+            if end_minutes > start_minutes:
+                ranges.append((start_minutes, end_minutes))
+        return ranges
+
+    def _normalize_hour(self, value: str) -> str:
+        hour, minute = value.split(":", 1)
+        return f"{int(hour):02d}:{minute}"
+
+    def _schedule_note(self, place: PlaceSummary, verified: bool) -> str:
+        hours = place.openingHoursToday or place.openingHoursWeek
+        if place.category == "transport":
+            return "抵达后预留约 40 分钟用于出站、取行李和换乘。"
+        if place.category == "lodging":
+            return "先寄存行李或办理入住；实际入住时间以酒店政策为准。"
+        if place.category in {"food", "drink"}:
+            return f"安排在正常用餐时段。{f'高德营业信息：{hours}' if verified and hours else '营业时间请在详情页确认。'}"
+        if verified and hours:
+            return f"游览时间已落在高德开放时段内：{hours}"
+        return "开放时间数据暂缺，已保守安排在 09:30-17:30；出发前请在详情页确认。"
 
     def _to_generated_place(
         self,
@@ -466,8 +930,17 @@ class TravelPlanGenerationService:
         position: int,
         ai: dict[str, Any],
         request: AiPlanGenerationRequest,
+        schedule_verified: bool | None = None,
     ) -> AiGeneratedPlace:
         default_start, default_end = self._default_slot(request, position)
+        proposed_start = self._clean_time(ai.get("start"), default_start)
+        proposed_end = self._clean_time(ai.get("end"), default_end)
+        suggested_start, suggested_end, automatically_verified = self._validated_slot(
+            place,
+            proposed_start,
+            proposed_end,
+            request,
+        )
         return AiGeneratedPlace(
             id=place.id,
             source=place.source,
@@ -487,14 +960,63 @@ class TravelPlanGenerationService:
             longitude=place.longitude or 0.0,
             thumbnailUrl=place.coverImageUrl,
             imageUrls=place.imageUrls,
-            suggestedStart=self._clean_time(ai.get("start"), default_start),
-            suggestedEnd=self._clean_time(ai.get("end"), default_end),
+            phone=place.phone,
+            rating=place.rating,
+            costAverage=place.costAverage,
+            businessArea=place.businessArea,
+            openingHoursToday=place.openingHoursToday,
+            openingHoursWeek=place.openingHoursWeek,
+            scheduleVerified=(
+                schedule_verified
+                if schedule_verified is not None
+                else automatically_verified
+            ),
+            suggestedStart=suggested_start,
+            suggestedEnd=suggested_end,
             note=self._clean_text(
                 ai.get("note"),
                 "根据地点实际开放信息安排停留，出发前建议再次确认。",
                 80,
             ),
         )
+
+    def _validated_slot(
+        self,
+        place: PlaceSummary,
+        start: str,
+        end: str,
+        request: AiPlanGenerationRequest,
+    ) -> tuple[str, str, bool]:
+        start_minutes = self._time_to_minutes(start)
+        end_minutes = self._time_to_minutes(end)
+        duration = max(45, end_minutes - start_minutes)
+        opening_ranges = self._opening_ranges(place)
+        if opening_ranges:
+            slot = self._find_open_slot(opening_ranges, start_minutes, duration)
+            if slot is None:
+                slot = self._find_open_slot(opening_ranges, 0, duration)
+            if slot is not None:
+                return self._minutes_to_time(slot[0]), self._minutes_to_time(slot[1]), True
+        if place.category == "scenic":
+            conservative_start = max(start_minutes, 9 * 60 + 30)
+            conservative_end = min(conservative_start + duration, 17 * 60 + 30)
+            if conservative_end - conservative_start < 45:
+                conservative_start = 15 * 60 + 45
+                conservative_end = 17 * 60 + 15
+            return self._minutes_to_time(conservative_start), self._minutes_to_time(conservative_end), False
+        if place.category in {"food", "drink"}:
+            meal_start = 11 * 60 + 30 if start_minutes < 15 * 60 else 17 * 60 + 30
+            meal_end = min(meal_start + duration, self._time_to_minutes(request.dailyEnd))
+            return self._minutes_to_time(meal_start), self._minutes_to_time(meal_end), False
+        return start, end, False
+
+    def _slot_is_within_opening_hours(self, place: PlaceSummary, start: str, end: str) -> bool:
+        open_start, open_end, verified = self._opening_window(place)
+        if not verified or open_start is None or open_end is None:
+            return False
+        start_minutes = self._time_to_minutes(start)
+        end_minutes = self._time_to_minutes(end)
+        return open_start <= start_minutes < end_minutes <= open_end
 
     def _distance(self, left: PlaceSummary, right: PlaceSummary) -> float:
         left_lat = math.radians(left.latitude or 0.0)

@@ -38,6 +38,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.heoclub.aitravel.AiTravelApplication
 import com.heoclub.aitravel.data.model.PlaceSummary
+import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.repository.AddPlaceResult
 import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
 import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
@@ -67,7 +68,7 @@ private object Routes {
     const val aiPlanGenerationPattern =
         "ai-plan-generation?destination={destination}&dateRange={dateRange}&dayCount={dayCount}" +
             "&preferences={preferences}&freeText={freeText}&pace={pace}&transport={transport}" +
-            "&dailyStart={dailyStart}&dailyEnd={dailyEnd}"
+            "&dailyStart={dailyStart}&dailyEnd={dailyEnd}&arrivalStation={arrivalStation}&hotelName={hotelName}"
 
     fun planDetail(planId: String): String = "plan-detail/$planId"
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
@@ -82,6 +83,8 @@ private object Routes {
         transportPreference: String,
         dailyStart: String,
         dailyEnd: String,
+        arrivalStation: String?,
+        hotelName: String?,
     ): String {
         return "ai-plan-generation" +
             "?destination=${Uri.encode(destination)}" +
@@ -92,7 +95,9 @@ private object Routes {
             "&pace=${Uri.encode(pace)}" +
             "&transport=${Uri.encode(transportPreference)}" +
             "&dailyStart=${Uri.encode(dailyStart)}" +
-            "&dailyEnd=${Uri.encode(dailyEnd)}"
+            "&dailyEnd=${Uri.encode(dailyEnd)}" +
+            "&arrivalStation=${Uri.encode(arrivalStation.orEmpty())}" +
+            "&hotelName=${Uri.encode(hotelName.orEmpty())}"
     }
 
     fun assistant(
@@ -283,6 +288,8 @@ fun AiTravelNavHost() {
                                 transportPreference = input.transportPreference,
                                 dailyStart = input.dailyStart,
                                 dailyEnd = input.dailyEnd,
+                                arrivalStation = input.arrivalStation,
+                                hotelName = input.hotelName,
                             ),
                         )
                     },
@@ -318,6 +325,14 @@ fun AiTravelNavHost() {
                         type = NavType.StringType
                         defaultValue = "20:00"
                     },
+                    navArgument("arrivalStation") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("hotelName") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
                 ),
             ) { backStackEntry ->
                 val input = AiPlanDraftInput(
@@ -334,12 +349,15 @@ fun AiTravelNavHost() {
                     transportPreference = backStackEntry.arguments?.getString("transport") ?: "MIXED",
                     dailyStart = backStackEntry.arguments?.getString("dailyStart") ?: "09:00",
                     dailyEnd = backStackEntry.arguments?.getString("dailyEnd") ?: "20:00",
+                    arrivalStation = backStackEntry.arguments?.getString("arrivalStation")?.takeIf(String::isNotBlank),
+                    hotelName = backStackEntry.arguments?.getString("hotelName")?.takeIf(String::isNotBlank),
                 )
                 val generationViewModel: AiPlanGenerationViewModel = viewModel(
                     factory = AiPlanGenerationViewModel.Factory(
                         input = input,
                         aiRepository = application.container.aiRepository,
                         travelPlanRepository = application.container.travelPlanRepository,
+                        exploreRepository = application.container.exploreRepository,
                     ),
                 )
                 AiPlanGenerationScreen(
@@ -350,6 +368,7 @@ fun AiTravelNavHost() {
                             popUpTo(Routes.createPlan) { inclusive = true }
                         }
                     },
+                    onOpenPlace = { placeId -> navController.navigate(Routes.placeDetail(placeId)) },
                 )
             }
             composable(
@@ -381,6 +400,11 @@ fun AiTravelNavHost() {
                             launchSingleTop = true
                             restoreState = true
                         }
+                    },
+                    onOpenPlace = { item ->
+                        val place = item.toPlaceSummary()
+                        application.container.exploreRepository.upsertPlace(place)
+                        navController.navigate(Routes.placeDetail(place.id))
                     },
                 )
             }
@@ -467,4 +491,33 @@ fun AiTravelNavHost() {
             },
         )
     }
+}
+
+private fun PlanItem.toPlaceSummary(): PlaceSummary {
+    return PlaceSummary(
+        id = id,
+        source = source,
+        sourcePoiId = sourcePoiId,
+        name = name,
+        category = category,
+        categoryCode = categoryCode,
+        typeName = typeName,
+        typeCode = typeCode,
+        address = address,
+        provinceName = provinceName,
+        cityName = cityName,
+        districtName = districtName,
+        adCode = adCode,
+        cityCode = cityCode,
+        latitude = latitude,
+        longitude = longitude,
+        phone = phone,
+        rating = rating,
+        costAverage = costAverage,
+        coverImageUrl = thumbnailUrl,
+        imageUrls = imageUrls,
+        businessArea = businessArea,
+        openingHoursToday = openingHoursToday,
+        openingHoursWeek = openingHoursWeek,
+    )
 }

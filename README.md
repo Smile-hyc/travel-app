@@ -191,8 +191,14 @@ http://127.0.0.1:8000/docs
 | AI | POST | `/api/ai/chat` | 计划上下文 AI 对话 |
 | AI | POST | `/api/ai/plans/generate` | 基于真实 POI 生成结构化多日行程 |
 | AI | POST | `/api/ai/plans/jobs` | 创建异步智能规划任务，重复请求 ID 幂等 |
-| AI | GET | `/api/ai/plans/jobs/{jobId}` | 查询真实进度、增量地点/事件和最终结果 |
+| AI | GET | `/api/ai/plans/jobs/{jobId}` | 查询真实进度、Day 增量地点、规划事件和最终结果 |
 | AI | POST | `/api/ai/plans/jobs/{jobId}/cancel` | 取消正在执行的规划任务 |
+
+Android 调试默认使用模拟器宿主地址 `http://10.0.2.2:8000/`。真机配合 `adb reverse tcp:8000 tcp:8000` 时，可这样构建而不修改源码：
+
+```powershell
+.\gradlew.bat :app:assembleDebug -PAI_TRAVEL_API_BASE_URL=http://127.0.0.1:8000/
+```
 
 ## 环境变量与密钥
 

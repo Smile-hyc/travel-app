@@ -177,6 +177,13 @@ open class InMemoryTravelPlanRepository(
                             suggestedEnd = place.suggestedEnd,
                             thumbnailUrl = place.thumbnailUrl,
                             imageUrls = place.imageUrls,
+                            phone = place.phone,
+                            rating = place.rating,
+                            costAverage = place.costAverage,
+                            businessArea = place.businessArea,
+                            openingHoursToday = place.openingHoursToday,
+                            openingHoursWeek = place.openingHoursWeek,
+                            scheduleVerified = place.scheduleVerified,
                         )
                     },
                 )
@@ -596,6 +603,12 @@ open class InMemoryTravelPlanRepository(
             visitOrder = visitOrder,
             thumbnailUrl = displayCoverImageUrl,
             imageUrls = displayImageUrls,
+            phone = phone,
+            rating = rating,
+            costAverage = costAverage,
+            businessArea = businessArea,
+            openingHoursToday = openingHoursToday,
+            openingHoursWeek = openingHoursWeek,
         )
     }
 

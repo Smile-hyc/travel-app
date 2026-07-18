@@ -144,13 +144,30 @@ class AmapPoiService:
         params: dict[str, Any] = {
             "keywords": effective_keyword,
             "types": category_mapping.type_codes,
-            "city": normalized_adcode,
-            "citylimit": str(city_limit).lower(),
-            "offset": page_size,
-            "page": page,
-            "extensions": "all",
+            "region": normalized_adcode,
+            "city_limit": str(city_limit).lower(),
+            "page_size": min(page_size, 25),
+            "page_num": page,
+            "show_fields": "business,photos",
         }
-        payload = await self._client.get("/v3/place/text", params)
+        try:
+            payload = await self._client.get("/v5/place/text", params)
+        except HTTPException:
+            # POI 2.0 may be unavailable for some Web service keys. Keep the
+            # existing v3 path as a graceful fallback; opening hours will then
+            # be marked as unverified instead of invented.
+            payload = await self._client.get(
+                "/v3/place/text",
+                {
+                    "keywords": effective_keyword,
+                    "types": category_mapping.type_codes,
+                    "city": normalized_adcode,
+                    "citylimit": str(city_limit).lower(),
+                    "offset": page_size,
+                    "page": page,
+                    "extensions": "all",
+                },
+            )
         total = _safe_int(payload.get("count"))
         items = [
             _parse_place(item, category=category, category_code=category_mapping.code)
@@ -171,6 +188,7 @@ class AmapPoiService:
 def _parse_place(raw: dict[str, Any], *, category: str, category_code: str) -> PlaceSummary:
     longitude, latitude = _parse_location(raw.get("location"))
     biz_ext = raw.get("biz_ext") if isinstance(raw.get("biz_ext"), dict) else {}
+    business = raw.get("business") if isinstance(raw.get("business"), dict) else {}
     photos = raw.get("photos") if isinstance(raw.get("photos"), list) else []
     source_poi_id = _clean_string(raw.get("id")) or _clean_string(raw.get("name")) or "unknown"
     images = _parse_place_images(photos, source_poi_id=source_poi_id, place_name=_clean_string(raw.get("name")))
@@ -192,13 +210,15 @@ def _parse_place(raw: dict[str, Any], *, category: str, category_code: str) -> P
         latitude=latitude,
         longitude=longitude,
         distanceMeters=_safe_int_or_none(raw.get("distance")),
-        phone=_clean_string(raw.get("tel")),
-        rating=_clean_string(biz_ext.get("rating")),
-        costAverage=_clean_string(biz_ext.get("cost")),
+        phone=_clean_string(business.get("tel")) or _clean_string(raw.get("tel")),
+        rating=_clean_string(business.get("rating")) or _clean_string(biz_ext.get("rating")),
+        costAverage=_clean_string(business.get("cost")) or _clean_string(biz_ext.get("cost")),
         images=images,
         coverImageUrl=images[0].url if images else None,
         imageUrls=[image.url for image in images],
-        businessArea=_clean_string(raw.get("business_area")),
+        businessArea=_clean_string(business.get("business_area")) or _clean_string(raw.get("business_area")),
+        openingHoursToday=_clean_string(business.get("opentime_today")),
+        openingHoursWeek=_clean_string(business.get("opentime_week")),
     )
 
 
