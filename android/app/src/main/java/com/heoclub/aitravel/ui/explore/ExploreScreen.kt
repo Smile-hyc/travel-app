@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +40,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -54,6 +56,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.heoclub.aitravel.data.location.CurrentLocationUiState
 import com.heoclub.aitravel.data.model.ExploreCategory
 import com.heoclub.aitravel.data.model.PlaceCollection
 import com.heoclub.aitravel.data.model.PlaceSummary
@@ -62,6 +65,11 @@ import com.heoclub.aitravel.ui.components.PlaceCoverImage
 @Composable
 fun ExploreScreen(
     viewModel: ExploreViewModel,
+    mapViewHolder: ExploreMapViewHolder,
+    locationState: CurrentLocationUiState,
+    requestedDestination: String? = null,
+    destinationRequestKey: Long? = null,
+    onLocate: () -> Unit,
     onOpenPlace: (String) -> Unit,
     onAddPlace: (PlaceSummary) -> Unit,
     modifier: Modifier = Modifier,
@@ -71,12 +79,30 @@ fun ExploreScreen(
     var panelExpanded by remember { mutableFloatStateOf(0f) }
     val expanded = panelExpanded > 0.5f
 
+    LaunchedEffect(destinationRequestKey) {
+        requestedDestination
+            ?.takeIf(String::isNotBlank)
+            ?.let(viewModel::openDestinationCity)
+    }
+    LaunchedEffect(locationState.location?.updateSequence, destinationRequestKey) {
+        if (requestedDestination.isNullOrBlank()) {
+            locationState.location?.let(viewModel::useCurrentLocation)
+        }
+    }
+    LaunchedEffect(locationState.errorMessage) {
+        locationState.errorMessage?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         ExploreMap(
             places = uiState.places,
             selectedPlaceId = uiState.selectedPlaceId,
             mapCommands = viewModel.mapCommands,
             onMarkerClick = viewModel::selectPlace,
+            mapViewHolder = mapViewHolder,
+            currentLocation = locationState.location,
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -112,17 +138,24 @@ fun ExploreScreen(
         Surface(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
+                .offset(y = 72.dp)
                 .padding(end = 18.dp),
             shape = CircleShape,
             color = Color.White,
             shadowElevation = 4.dp,
         ) {
             IconButton(
-                onClick = {
-                    Toast.makeText(context, "真实定位会在后续阶段开放", Toast.LENGTH_SHORT).show()
-                },
+                onClick = onLocate,
+                enabled = !locationState.isLocating,
             ) {
-                Icon(Icons.Outlined.MyLocation, contentDescription = "回到当前位置")
+                if (locationState.isLocating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(21.dp),
+                        strokeWidth = 2.5.dp,
+                    )
+                } else {
+                    Icon(Icons.Outlined.MyLocation, contentDescription = "回到当前位置")
+                }
             }
         }
 

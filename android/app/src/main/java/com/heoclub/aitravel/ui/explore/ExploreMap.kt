@@ -46,10 +46,119 @@ import com.amap.api.maps.model.CustomMapStyleOptions
 import com.amap.api.maps.model.LatLng
 import com.amap.api.maps.model.MarkerOptions
 import com.amap.api.maps.model.PolylineOptions
+import com.heoclub.aitravel.R
+import com.heoclub.aitravel.data.location.CurrentLocation
 import com.heoclub.aitravel.data.model.ExploreCategories
 import com.heoclub.aitravel.data.model.PlaceSummary
 import kotlinx.coroutines.flow.SharedFlow
 import android.graphics.Color as AndroidColor
+
+class ExploreMapViewHolder(
+    private val context: Context,
+) {
+    private var mapView: MapView? = null
+    private var resumed = false
+    private var renderedContent: RenderedMapContent? = null
+    private var lastAnimatedPlaceId: String? = null
+
+    fun obtain(): MapView {
+        return mapView ?: MapView(context).apply {
+            onCreate(Bundle())
+            map.mapType = AMap.MAP_TYPE_NORMAL
+            map.showBuildings(false)
+            map.showIndoorMap(false)
+            map.showMapText(true)
+            map.uiSettings.isZoomControlsEnabled = false
+            map.uiSettings.isMyLocationButtonEnabled = false
+            map.uiSettings.isCompassEnabled = false
+            applyTravelMapStyle(context, map)
+            map.moveCamera(
+                CameraUpdateFactory.newLatLngZoom(
+                    LatLng(39.9105, 116.3972),
+                    13.2f,
+                ),
+            )
+        }.also { mapView = it }
+    }
+
+    fun resume() {
+        if (resumed) return
+        obtain().onResume()
+        resumed = true
+    }
+
+    fun pause() {
+        if (!resumed) return
+        mapView?.onPause()
+        resumed = false
+    }
+
+    fun destroy() {
+        pause()
+        mapView?.onDestroy()
+        mapView = null
+        renderedContent = null
+        lastAnimatedPlaceId = null
+    }
+
+    fun needsContentUpdate(
+        places: List<PlaceSummary>,
+        selectedPlaceId: String?,
+        routePlaces: List<PlaceSummary>,
+        currentLocation: CurrentLocation?,
+    ): Boolean {
+        val content = RenderedMapContent(
+            places = places.toList(),
+            selectedPlaceId = selectedPlaceId,
+            routePlaces = routePlaces.toList(),
+            currentLocation = currentLocation,
+        )
+        if (content == renderedContent) return false
+        renderedContent = content
+        return true
+    }
+
+    fun needsSelectedPlaceAnimation(selectedPlaceId: String?): Boolean {
+        if (selectedPlaceId == null) {
+            lastAnimatedPlaceId = null
+            return false
+        }
+        if (selectedPlaceId == lastAnimatedPlaceId) return false
+        lastAnimatedPlaceId = selectedPlaceId
+        return true
+    }
+
+    private data class RenderedMapContent(
+        val places: List<PlaceSummary>,
+        val selectedPlaceId: String?,
+        val routePlaces: List<PlaceSummary>,
+        val currentLocation: CurrentLocation?,
+    )
+}
+
+@Composable
+internal fun rememberExploreMapViewHolder(): ExploreMapViewHolder {
+    val context = LocalContext.current
+    val holder = remember(context) { ExploreMapViewHolder(context) }
+    DisposableEffect(holder) {
+        onDispose(holder::destroy)
+    }
+    return holder
+}
+
+@Composable
+private fun rememberMapViewHolder(providedHolder: ExploreMapViewHolder?): ExploreMapViewHolder {
+    val context = LocalContext.current
+    val holder = remember(context, providedHolder) {
+        providedHolder ?: ExploreMapViewHolder(context)
+    }
+    DisposableEffect(holder, providedHolder) {
+        onDispose {
+            if (providedHolder == null) holder.destroy()
+        }
+    }
+    return holder
+}
 
 @Composable
 fun ExploreMap(
@@ -57,7 +166,9 @@ fun ExploreMap(
     selectedPlaceId: String?,
     mapCommands: SharedFlow<MapCameraCommand>,
     onMarkerClick: (String) -> Unit,
+    mapViewHolder: ExploreMapViewHolder? = null,
     routePlaces: List<PlaceSummary> = emptyList(),
+    currentLocation: CurrentLocation? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -67,46 +178,30 @@ fun ExploreMap(
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
-    val mapView = remember {
-        MapView(context).apply { onCreate(Bundle()) }
-    }
+    val activeMapViewHolder = rememberMapViewHolder(mapViewHolder)
+    val mapView = remember(activeMapViewHolder) { activeMapViewHolder.obtain() }
 
-    DisposableEffect(lifecycleOwner, mapView) {
+    DisposableEffect(lifecycleOwner, mapView, activeMapViewHolder) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
+                Lifecycle.Event.ON_RESUME -> activeMapViewHolder.resume()
+                Lifecycle.Event.ON_PAUSE -> activeMapViewHolder.pause()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            activeMapViewHolder.resume()
+        }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            mapView.onDestroy()
+            activeMapViewHolder.pause()
         }
     }
 
     Box(modifier = modifier) {
         AndroidView(
-            factory = {
-                mapView.apply {
-                    map.mapType = AMap.MAP_TYPE_NORMAL
-                    map.showBuildings(false)
-                    map.showIndoorMap(false)
-                    map.showMapText(true)
-                    map.uiSettings.isZoomControlsEnabled = false
-                    map.uiSettings.isMyLocationButtonEnabled = false
-                    map.uiSettings.isCompassEnabled = false
-                    applyTravelMapStyle(context, map)
-                    map.moveCamera(
-                        CameraUpdateFactory.newLatLngZoom(
-                            LatLng(39.9105, 116.3972),
-                            13.2f,
-                        ),
-                    )
-                }
-            },
+            factory = { mapView },
             modifier = Modifier.fillMaxSize(),
         )
         Box(
@@ -116,9 +211,31 @@ fun ExploreMap(
         )
     }
 
-    LaunchedEffect(places, selectedPlaceId, routePlaces) {
+    LaunchedEffect(places, selectedPlaceId, routePlaces, currentLocation) {
         val amap = mapView.map
+        amap.setOnMarkerClickListener { marker ->
+            (marker.`object` as? String)?.let(onMarkerClick)
+            true
+        }
+        if (!activeMapViewHolder.needsContentUpdate(
+                places = places,
+                selectedPlaceId = selectedPlaceId,
+                routePlaces = routePlaces,
+                currentLocation = currentLocation,
+            )
+        ) {
+            return@LaunchedEffect
+        }
         amap.clear()
+        currentLocation?.let { location ->
+            amap.addMarker(
+                MarkerOptions()
+                    .position(LatLng(location.latitude, location.longitude))
+                    .icon(BitmapDescriptorFactory.fromBitmap(createCurrentLocationMarkerBitmap(context)))
+                    .anchor(0.5f, 0.5f)
+                    .zIndex(50f),
+            )
+        }
         val routePoints = routePlaces.mapNotNull { place ->
             val latitude = place.latitude ?: return@mapNotNull null
             val longitude = place.longitude ?: return@mapNotNull null
@@ -132,10 +249,6 @@ fun ExploreMap(
                     .color(AndroidColor.rgb(42, 169, 230))
                     .zIndex(6f),
             )
-        }
-        amap.setOnMarkerClickListener { marker ->
-            (marker.`object` as? String)?.let(onMarkerClick)
-            true
         }
         visibleMapPlaces(places, selectedPlaceId).forEach { place ->
             val latitude = place.latitude ?: return@forEach
@@ -153,11 +266,25 @@ fun ExploreMap(
     }
 
     LaunchedEffect(selectedPlaceId) {
+        if (!activeMapViewHolder.needsSelectedPlaceAnimation(selectedPlaceId)) {
+            return@LaunchedEffect
+        }
         val selectedPlace = places.firstOrNull { it.id == selectedPlaceId }
         val latitude = selectedPlace?.latitude
         val longitude = selectedPlace?.longitude
         if (latitude != null && longitude != null) {
             mapView.map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(latitude, longitude), 14.2f))
+        }
+    }
+
+    LaunchedEffect(currentLocation?.updateSequence) {
+        currentLocation?.let { location ->
+            mapView.map.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(
+                    LatLng(location.latitude, location.longitude),
+                    16.2f,
+                ),
+            )
         }
     }
 
@@ -288,20 +415,16 @@ private fun createPlaceMarkerBitmap(
         canvas.drawCircle(centerX, iconCenterY, iconSize / 2f - dp(1.5f), ringPaint)
     }
 
-    val iconBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = categoryBackgroundColor(place.categoryId)
-    }
-    canvas.drawCircle(centerX, iconCenterY, iconSize * 0.33f, iconBackgroundPaint)
-
-    val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = categoryTextColor(place.categoryId)
-        textSize = dp(if (selected) 17f else 15f)
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        textAlign = Paint.Align.CENTER
-    }
-    val iconText = categoryMarkerText(place.categoryId)
-    val iconTextY = iconCenterY - (iconPaint.descent() + iconPaint.ascent()) / 2f
-    canvas.drawText(iconText, centerX, iconTextY, iconPaint)
+    val markerIcon = context.getDrawable(categoryMarkerIconRes(place.categoryId))?.mutate()
+    val markerIconSize = iconSize * if (selected) 0.58f else 0.54f
+    markerIcon?.setTint(AndroidColor.rgb(31, 122, 224))
+    markerIcon?.setBounds(
+        (centerX - markerIconSize / 2f).toInt(),
+        (iconCenterY - markerIconSize / 2f).toInt(),
+        (centerX + markerIconSize / 2f).toInt(),
+        (iconCenterY + markerIconSize / 2f).toInt(),
+    )
+    markerIcon?.draw(canvas)
 
     val labelBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.argb(if (selected) 238 else 218, 255, 255, 255)
@@ -323,6 +446,31 @@ private fun createPlaceMarkerBitmap(
         labelPaint,
     )
 
+    return bitmap
+}
+
+private fun createCurrentLocationMarkerBitmap(context: Context): Bitmap {
+    val density = context.resources.displayMetrics.density
+    val size = (42f * density).toInt()
+    val center = size / 2f
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.WHITE
+        setShadowLayer(5f * density, 0f, 2f * density, AndroidColor.argb(70, 31, 72, 120))
+    }
+    canvas.drawCircle(center, center, 15f * density, outerPaint)
+
+    val locationPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.rgb(31, 122, 224)
+    }
+    canvas.drawCircle(center, center, 10f * density, locationPaint)
+
+    val centerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.WHITE
+    }
+    canvas.drawCircle(center, center, 3.5f * density, centerPaint)
     return bitmap
 }
 
@@ -354,35 +502,13 @@ private fun applyTravelMapStyle(context: Context, map: AMap) {
     }
 }
 
-private fun categoryMarkerText(categoryId: String): String {
+private fun categoryMarkerIconRes(categoryId: String): Int {
     return when (categoryId) {
-        ExploreCategories.FOOD -> "食"
-        ExploreCategories.DRINK -> "饮"
-        ExploreCategories.SHOPPING -> "购"
-        ExploreCategories.LODGING -> "住"
-        ExploreCategories.TRANSPORT -> "行"
-        else -> "景"
-    }
-}
-
-private fun categoryBackgroundColor(categoryId: String): Int {
-    return when (categoryId) {
-        ExploreCategories.FOOD -> AndroidColor.rgb(255, 239, 218)
-        ExploreCategories.DRINK -> AndroidColor.rgb(223, 244, 255)
-        ExploreCategories.SHOPPING -> AndroidColor.rgb(251, 221, 255)
-        ExploreCategories.LODGING -> AndroidColor.rgb(225, 242, 255)
-        ExploreCategories.TRANSPORT -> AndroidColor.rgb(232, 238, 255)
-        else -> AndroidColor.rgb(222, 246, 224)
-    }
-}
-
-private fun categoryTextColor(categoryId: String): Int {
-    return when (categoryId) {
-        ExploreCategories.FOOD -> AndroidColor.rgb(239, 139, 38)
-        ExploreCategories.DRINK -> AndroidColor.rgb(57, 160, 211)
-        ExploreCategories.SHOPPING -> AndroidColor.rgb(203, 85, 223)
-        ExploreCategories.LODGING -> AndroidColor.rgb(75, 145, 210)
-        ExploreCategories.TRANSPORT -> AndroidColor.rgb(86, 105, 210)
-        else -> AndroidColor.rgb(73, 178, 88)
+        ExploreCategories.FOOD -> R.drawable.ic_marker_food
+        ExploreCategories.DRINK -> R.drawable.ic_marker_drink
+        ExploreCategories.SHOPPING -> R.drawable.ic_marker_shopping
+        ExploreCategories.LODGING -> R.drawable.ic_marker_lodging
+        ExploreCategories.TRANSPORT -> R.drawable.ic_marker_transport
+        else -> R.drawable.ic_marker_scenic
     }
 }

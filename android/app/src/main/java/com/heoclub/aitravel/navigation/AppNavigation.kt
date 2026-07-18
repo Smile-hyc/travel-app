@@ -1,7 +1,13 @@
 package com.heoclub.aitravel.navigation
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.SmartToy
@@ -12,6 +18,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -44,6 +52,7 @@ import com.heoclub.aitravel.ui.detail.PlanDetailScreen
 import com.heoclub.aitravel.ui.detail.PlanDetailViewModel
 import com.heoclub.aitravel.ui.discover.DiscoverScreen
 import com.heoclub.aitravel.ui.explore.ExploreViewModel
+import com.heoclub.aitravel.ui.explore.rememberExploreMapViewHolder
 import com.heoclub.aitravel.ui.home.HomeViewModel
 import com.heoclub.aitravel.ui.plan.PlanHomeScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeViewModel
@@ -103,6 +112,12 @@ private object Routes {
     }
 }
 
+private data class ExplorePlanContext(
+    val planId: String,
+    val destination: String,
+    val requestKey: Long,
+)
+
 @Composable
 fun AiTravelNavHost() {
     val navController = rememberNavController()
@@ -113,7 +128,46 @@ fun AiTravelNavHost() {
     val mainDestinations = AppDestination.entries
     val showPrimaryChrome = currentRoute in mainDestinations.map { it.route }
     val travelPlans by application.container.travelPlanRepository.plans.collectAsState()
+    val currentLocationRepository = application.container.currentLocationRepository
+    val currentLocationState by currentLocationRepository.state.collectAsState()
+    val exploreMapViewHolder = rememberExploreMapViewHolder()
     var pendingPlaceToAdd by remember { mutableStateOf<PlaceSummary?>(null) }
+    var explorePlanContext by remember { mutableStateOf<ExplorePlanContext?>(null) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            currentLocationRepository.refreshLocation()
+        } else {
+            currentLocationRepository.reportPermissionDenied()
+        }
+    }
+    val requestCurrentLocation: () -> Unit = {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            application,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                application,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+        if (hasPermission) {
+            currentLocationRepository.refreshLocation()
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+            )
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        requestCurrentLocation()
+    }
 
     Scaffold(
         bottomBar = {
@@ -127,6 +181,9 @@ fun AiTravelNavHost() {
                         NavigationBarItem(
                             selected = selected,
                             onClick = {
+                                if (destination != AppDestination.Explore) {
+                                    explorePlanContext = null
+                                }
                                 navController.navigate(destination.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true
@@ -166,6 +223,10 @@ fun AiTravelNavHost() {
             navController = navController,
             startDestination = AppDestination.Plan.route,
             modifier = Modifier.padding(innerPadding),
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None },
         ) {
             composable(AppDestination.Plan.route) {
                 val planHomeViewModel: PlanHomeViewModel = viewModel(
@@ -173,6 +234,8 @@ fun AiTravelNavHost() {
                 )
                 PlanHomeScreen(
                     viewModel = planHomeViewModel,
+                    locationState = currentLocationState,
+                    onLocate = requestCurrentLocation,
                     onCreatePlan = { navController.navigate(Routes.createPlan) },
                     onOpenPlan = { planId -> navController.navigate(Routes.planDetail(planId)) },
                     onAskAi = { question -> navController.navigate(Routes.assistant(question = question)) },
@@ -184,6 +247,14 @@ fun AiTravelNavHost() {
                 )
                 DiscoverScreen(
                     viewModel = exploreViewModel,
+                    mapViewHolder = exploreMapViewHolder,
+                    locationState = currentLocationState,
+                    requestedDestination = explorePlanContext?.destination,
+                    destinationRequestKey = explorePlanContext?.requestKey,
+                    onLocate = {
+                        explorePlanContext = null
+                        requestCurrentLocation()
+                    },
                     onOpenPlace = { placeId -> navController.navigate(Routes.placeDetail(placeId)) },
                     onAddPlace = { place -> pendingPlaceToAdd = place },
                 )
@@ -316,6 +387,20 @@ fun AiTravelNavHost() {
                     viewModel = detailViewModel,
                     onBack = { navController.popBackStack() },
                     onAskAi = { id -> navController.navigate(Routes.assistant(planId = id)) },
+                    onContinueAdding = { id, destination ->
+                        explorePlanContext = ExplorePlanContext(
+                            planId = id,
+                            destination = destination,
+                            requestKey = System.nanoTime(),
+                        )
+                        navController.navigate(AppDestination.Explore.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     onOpenPlace = { item ->
                         val place = item.toPlaceSummary()
                         application.container.exploreRepository.upsertPlace(place)
@@ -391,6 +476,7 @@ fun AiTravelNavHost() {
         AddPlaceToPlanDialog(
             plans = travelPlans,
             placeName = place.name,
+            initialPlanId = explorePlanContext?.planId,
             onDismiss = { pendingPlaceToAdd = null },
             onCreatePlan = { navController.navigate(Routes.createPlan) },
             onConfirm = { plan, target ->

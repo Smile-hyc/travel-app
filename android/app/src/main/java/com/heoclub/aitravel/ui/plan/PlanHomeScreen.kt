@@ -1,9 +1,12 @@
 package com.heoclub.aitravel.ui.plan
 
 import android.widget.Toast
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,18 +18,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -35,21 +36,31 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import com.heoclub.aitravel.R
+import com.heoclub.aitravel.data.location.CurrentLocationUiState
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
+import com.heoclub.aitravel.ui.components.PlaceCoverImage
 
 @Composable
 fun PlanHomeScreen(
     viewModel: PlanHomeViewModel,
+    locationState: CurrentLocationUiState,
+    onLocate: () -> Unit,
     onCreatePlan: () -> Unit,
     onOpenPlan: (String) -> Unit,
     onAskAi: (String) -> Unit,
@@ -57,13 +68,14 @@ fun PlanHomeScreen(
 ) {
     val plans by viewModel.plans.collectAsState()
     val context = LocalContext.current
+    var planPendingDeletion by remember { mutableStateOf<TravelPlan?>(null) }
 
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(Color(0xFFF7F9FC))
             .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
         item {
             Spacer(modifier = Modifier.height(12.dp))
@@ -75,20 +87,37 @@ fun PlanHomeScreen(
             )
         }
         item {
-            WelcomePanel(onAskAi = onAskAi)
+            WelcomeSection(
+                locationState = locationState,
+                onLocate = onLocate,
+                onAskAi = onAskAi,
+            )
         }
         item {
-            SectionTitle(title = "我的计划")
+            PlansHeading(planCount = plans.size)
         }
-        items(plans, key = { it.id }) { plan ->
-            TravelPlanCard(
+        itemsIndexed(plans, key = { _, plan -> plan.id }) { index, plan ->
+            TravelPlanItem(
                 plan = plan,
+                featured = index == 0,
                 onClick = { onOpenPlan(plan.id) },
+                onLongClick = { planPendingDeletion = plan },
             )
         }
         item {
             Spacer(modifier = Modifier.height(92.dp))
         }
+    }
+
+    planPendingDeletion?.let { plan ->
+        DeletePlanConfirmationDialog(
+            planTitle = plan.title,
+            onConfirm = {
+                viewModel.deletePlan(plan.id)
+                planPendingDeletion = null
+            },
+            onDismiss = { planPendingDeletion = null },
+        )
     }
 }
 
@@ -108,15 +137,15 @@ private fun PlanHeader(
                 .background(MaterialTheme.colorScheme.primary),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "AI",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
+            Image(
+                painter = painterResource(id = R.drawable.tuling_logo),
+                contentDescription = "途灵",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
             )
         }
         Text(
-            text = "AI旅行助手",
+            text = "途灵",
             modifier = Modifier
                 .weight(1f)
                 .padding(start = 12.dp),
@@ -137,145 +166,223 @@ private fun PlanHeader(
 }
 
 @Composable
-private fun WelcomePanel(onAskAi: (String) -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        shape = RoundedCornerShape(28.dp),
-    ) {
-        Box(
+private fun WelcomeSection(
+    locationState: CurrentLocationUiState,
+    onLocate: () -> Unit,
+    onAskAi: (String) -> Unit,
+) {
+    val cityText = locationState.location?.cityName ?: when {
+        locationState.isLocating -> "定位中…"
+        locationState.errorMessage != null -> "点击获取定位"
+        else -> "等待定位"
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = "下一站，想去哪里？",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF071A3D),
+        )
+        Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    brush = Brush.linearGradient(
-                        listOf(Color(0xFFEAF5FF), Color(0xFFFFFFFF)),
-                    ),
-                    shape = RoundedCornerShape(28.dp),
-                )
-                .padding(18.dp),
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(onClick = onLocate)
+                .padding(vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            CityLineArt(modifier = Modifier.matchParentSize())
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "陪你规划下一段旅程",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF071A3D),
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Outlined.LocationOn,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = "当前城市：成都市",
-                        modifier = Modifier.padding(start = 6.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                AiQuestionPill(
-                    text = "帮我介绍今天的行程",
-                    onClick = { onAskAi("帮我介绍今天的行程") },
-                )
-                AiQuestionPill(
-                    text = "目的地有哪些值得去的地方？",
-                    onClick = { onAskAi("目的地有哪些值得去的地方？") },
-                )
-            }
+            Icon(
+                imageVector = Icons.Outlined.LocationOn,
+                contentDescription = "刷新当前位置",
+                modifier = Modifier.size(19.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = "当前城市  $cityText",
+                modifier = Modifier.padding(start = 7.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Column {
+            AiActionRow(
+                text = "介绍一下今天的行程",
+                onClick = { onAskAi("帮我介绍今天的行程") },
+            )
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 48.dp),
+                color = Color(0xFFDDE5EE),
+            )
+            AiActionRow(
+                text = "发现目的地值得去的地方",
+                onClick = { onAskAi("目的地有哪些值得去的地方？") },
+            )
         }
     }
 }
 
 @Composable
-private fun AiQuestionPill(
+private fun AiActionRow(
     text: String,
     onClick: () -> Unit,
 ) {
-    Surface(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        color = Color.White,
-        shape = RoundedCornerShape(18.dp),
-        shadowElevation = 3.dp,
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Surface(
+            modifier = Modifier.size(36.dp),
+            color = Color(0xFFE5F0FF),
+            shape = CircleShape,
         ) {
-            Surface(
-                color = Color(0xFFE6EDFF),
-                shape = CircleShape,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.SmartToy,
-                    contentDescription = null,
-                    modifier = Modifier.padding(8.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Text(
-                text = text,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 12.dp),
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
             Icon(
-                imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+                imageVector = Icons.Outlined.SmartToy,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(8.dp),
+                tint = MaterialTheme.colorScheme.primary,
             )
         }
+        Text(
+            text = text,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium,
+            color = Color(0xFF14243A),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = Color(0xFF718096),
+        )
     }
 }
 
 @Composable
-private fun TravelPlanCard(
+private fun PlansHeading(planCount: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text(
+            text = "我的计划",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFF071A3D),
+        )
+        Text(
+            text = "$planCount 段旅程",
+            color = Color(0xFF718096),
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun TravelPlanItem(
     plan: TravelPlan,
+    featured: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
-    Card(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        shape = RoundedCornerShape(22.dp),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
+        shape = RoundedCornerShape(28.dp),
+        color = Color(0xFFFCFDFE),
+        border = BorderStroke(1.dp, Color(0xFFDDE6F0)),
+        tonalElevation = 0.dp,
+        shadowElevation = 3.dp,
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            TravelCover(plan.destination)
-            Text(
-                text = plan.title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF071A3D),
+        Column(modifier = Modifier.padding(10.dp)) {
+            TravelPlanCover(
+                plan = plan,
+                height = if (featured) 196.dp else 164.dp,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Outlined.CalendarMonth,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+
+            Column(
+                modifier = Modifier.padding(
+                    start = 8.dp,
+                    top = 14.dp,
+                    end = 8.dp,
+                    bottom = 8.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = plan.title,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF071A3D),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Surface(
+                        modifier = Modifier.size(36.dp),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ArrowForward,
+                                contentDescription = "打开${plan.title}",
+                                modifier = Modifier.size(19.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = Color(0xFFE8EDF3),
                 )
-                Text(
-                    text = plan.dateRange,
-                    modifier = Modifier.padding(start = 8.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Text(
-                text = "${plan.dayCount.coerceAtLeast(0)}天 · ${plan.placeCount}个地点",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                plan.preferences.take(3).forEach { tag ->
-                    TagChip(text = tag)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Outlined.CalendarMonth,
+                        contentDescription = null,
+                        modifier = Modifier.size(19.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = plan.dateRange,
+                        modifier = Modifier.padding(start = 7.dp),
+                        color = Color(0xFF365F8D),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = "${plan.dayCount.coerceAtLeast(0)}天  ·  ${plan.placeCount}个地点",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+
+                if (plan.preferences.isNotEmpty()) {
+                    Text(
+                        text = plan.preferences.take(3).joinToString("  ·  "),
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -283,56 +390,56 @@ private fun TravelPlanCard(
 }
 
 @Composable
-private fun TravelCover(destination: String) {
+private fun TravelPlanCover(
+    plan: TravelPlan,
+    height: androidx.compose.ui.unit.Dp,
+) {
+    val shape = RoundedCornerShape(20.dp)
+    val remoteCover = plan.firstRemoteCoverUrl()
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(118.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Color(0xFFEAF5FF)),
+            .height(height)
+            .clip(shape)
+            .background(Color(0xFFE3EDF7)),
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawCircle(Color(0xFFBFE3FF), radius = size.width * 0.28f, center = Offset(size.width * 0.8f, size.height * 0.2f))
-            drawCircle(Color(0xFF91D3C3), radius = size.width * 0.22f, center = Offset(size.width * 0.15f, size.height * 0.95f))
-            drawCircle(Color(0xFF5FA8FF), radius = size.width * 0.08f, center = Offset(size.width * 0.75f, size.height * 0.78f))
-            drawLine(Color.White.copy(alpha = 0.75f), Offset(size.width * 0.18f, size.height * 0.72f), Offset(size.width * 0.95f, size.height * 0.35f), strokeWidth = 8f)
+        when {
+            remoteCover != null -> PlaceCoverImage(
+                imageUrl = remoteCover,
+                placeName = plan.destination,
+                modifier = Modifier.fillMaxSize(),
+                shape = shape,
+                contentScale = ContentScale.Crop,
+            )
+
+            plan.destination.contains("成都") -> Image(
+                painter = painterResource(id = R.drawable.plan_cover_chengdu),
+                contentDescription = "成都安顺桥旅行封面",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+
+            else -> PlaceCoverImage(
+                imageUrl = null,
+                placeName = plan.destination,
+                modifier = Modifier.fillMaxSize(),
+                shape = shape,
+            )
         }
-        Text(
-            text = destination,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(16.dp),
-            color = Color(0xFF071A3D),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-        )
     }
 }
 
-@Composable
-private fun SectionTitle(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Bold,
-        color = Color(0xFF071A3D),
-    )
-}
-
-@Composable
-private fun TagChip(text: String) {
-    Surface(
-        color = Color(0xFFEAF2FF),
-        shape = RoundedCornerShape(50),
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            color = MaterialTheme.colorScheme.primary,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
+private fun TravelPlan.firstRemoteCoverUrl(): String? {
+    val items = days
+        .sortedBy { it.dayIndex }
+        .flatMap { day -> day.items.sortedBy { it.visitOrder } } + unplannedItems
+    return items.asSequence()
+        .flatMap { item -> (item.imageUrls + listOfNotNull(item.thumbnailUrl)).asSequence() }
+        .map(String::trim)
+        .firstOrNull { url ->
+            url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true)
+        }
 }
 
 @Composable
@@ -356,14 +463,5 @@ private fun CircleIconButton(
                 tint = Color(0xFF071A3D),
             )
         }
-    }
-}
-
-@Composable
-private fun CityLineArt(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        drawCircle(Color.White.copy(alpha = 0.65f), radius = size.width * 0.18f, center = Offset(size.width * 0.95f, size.height * 0.1f))
-        drawLine(Color(0xFFB7D9FF), Offset(size.width * 0.62f, size.height * 0.78f), Offset(size.width * 0.92f, size.height * 0.35f), strokeWidth = 4f)
-        drawLine(Color(0xFFB7D9FF), Offset(size.width * 0.7f, size.height * 0.78f), Offset(size.width * 0.92f, size.height * 0.35f), strokeWidth = 4f)
     }
 }

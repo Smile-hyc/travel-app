@@ -34,12 +34,18 @@ import com.heoclub.aitravel.data.repository.AddPlaceTarget
 fun AddPlaceToPlanDialog(
     plans: List<TravelPlan>,
     placeName: String,
+    initialPlanId: String? = null,
     onDismiss: () -> Unit,
     onCreatePlan: (() -> Unit)? = null,
     onConfirm: (TravelPlan, AddPlaceTarget) -> AddPlaceResult,
     onResult: (String) -> Unit,
 ) {
-    var selectedPlanId by remember(plans) { mutableStateOf(plans.firstOrNull()?.id) }
+    var selectedPlanId by remember(plans, initialPlanId) {
+        mutableStateOf(
+            initialPlanId?.takeIf { id -> plans.any { it.id == id } }
+                ?: plans.firstOrNull()?.id,
+        )
+    }
     var selectedTarget by remember(selectedPlanId) { mutableStateOf<AddPlaceTarget>(AddPlaceTarget.Day(1)) }
     val selectedPlan = plans.firstOrNull { it.id == selectedPlanId }
 

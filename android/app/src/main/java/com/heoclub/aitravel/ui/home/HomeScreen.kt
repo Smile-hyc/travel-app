@@ -67,7 +67,7 @@ private fun WelcomeCard() {
         ) {
             AssistChip(
                 onClick = {},
-                label = { Text("AI Travel Assistant") },
+                label = { Text("途灵") },
             )
             Text(
                 text = "今天想去哪里？",

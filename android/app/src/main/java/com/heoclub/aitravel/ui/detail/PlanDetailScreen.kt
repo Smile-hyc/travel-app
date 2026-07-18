@@ -7,8 +7,17 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,10 +37,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DragHandle
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,15 +56,27 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -72,7 +94,7 @@ import com.heoclub.aitravel.data.model.PlanDay
 import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.RouteModes
 import com.heoclub.aitravel.data.model.TravelPlan
-import com.heoclub.aitravel.data.repository.MoveDirection
+import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
 import android.graphics.Color as AndroidColor
 
 @Composable
@@ -80,6 +102,7 @@ fun PlanDetailScreen(
     viewModel: PlanDetailViewModel,
     onBack: () -> Unit,
     onAskAi: (String) -> Unit,
+    onContinueAdding: (String, String) -> Unit,
     onOpenPlace: (PlanItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -95,6 +118,12 @@ fun PlanDetailScreen(
         items = uiState.selectedDay?.items.orEmpty(),
         optimizedPlaceIds = uiState.optimization?.optimizedPlaceIds,
     )
+    var sheetExpanded by remember { mutableStateOf(false) }
+    var showDeleteConfirmation by remember(plan.id) { mutableStateOf(false) }
+    val mapHeight by animateDpAsState(
+        targetValue = if (sheetExpanded) 0.dp else 360.dp,
+        label = "计划详情地图高度",
+    )
 
     Box(
         modifier = modifier
@@ -107,16 +136,20 @@ fun PlanDetailScreen(
                 route = displayRoute,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(360.dp),
+                    .height(mapHeight),
             )
             PlanDetailSheet(
                 plan = plan,
                 uiState = uiState,
+                expanded = sheetExpanded,
+                onExpandedChange = { sheetExpanded = it },
                 onBack = onBack,
                 onAskAi = { onAskAi(plan.id) },
+                onContinueAdding = { onContinueAdding(plan.id, plan.destination) },
+                onDelete = { showDeleteConfirmation = true },
                 onSelectDay = viewModel::selectDay,
                 onSelectMode = viewModel::selectMode,
-                onMoveItem = viewModel::moveItem,
+                onReorderItems = viewModel::reorderItems,
                 onMoveUnplannedToDay = viewModel::moveUnplannedItemToDay,
                 onOptimize = viewModel::optimizeRoute,
                 onApplyOptimization = viewModel::applyOptimization,
@@ -127,18 +160,31 @@ fun PlanDetailScreen(
             )
         }
 
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(18.dp),
-            color = Color.White,
-            shape = CircleShape,
-            shadowElevation = 4.dp,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+        if (!sheetExpanded) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(18.dp),
+                color = Color.White,
+                shape = CircleShape,
+                shadowElevation = 4.dp,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                }
             }
         }
+    }
+
+    if (showDeleteConfirmation) {
+        DeletePlanConfirmationDialog(
+            planTitle = plan.title,
+            onConfirm = {
+                showDeleteConfirmation = false
+                if (viewModel.deletePlan()) onBack()
+            },
+            onDismiss = { showDeleteConfirmation = false },
+        )
     }
 }
 
@@ -166,11 +212,15 @@ private fun MissingPlan(
 private fun PlanDetailSheet(
     plan: TravelPlan,
     uiState: PlanDetailUiState,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
     onBack: () -> Unit,
     onAskAi: () -> Unit,
+    onContinueAdding: () -> Unit,
+    onDelete: () -> Unit,
     onSelectDay: (Int) -> Unit,
     onSelectMode: (String) -> Unit,
-    onMoveItem: (String, MoveDirection) -> Unit,
+    onReorderItems: (List<String>) -> Unit,
     onMoveUnplannedToDay: (String, Int) -> Unit,
     onOptimize: () -> Unit,
     onApplyOptimization: () -> Unit,
@@ -184,10 +234,15 @@ private fun PlanDetailSheet(
         items = uiState.selectedDay?.items.orEmpty(),
         optimizedPlaceIds = uiState.optimization?.optimizedPlaceIds,
     )
+    val dragThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
 
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        shape = if (expanded) {
+            RoundedCornerShape(0.dp)
+        } else {
+            RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp)
+        },
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
     ) {
@@ -198,10 +253,42 @@ private fun PlanDetailSheet(
                 .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (expanded) 44.dp else 22.dp)
+                    .pointerInput(expanded, dragThresholdPx) {
+                        var accumulatedDrag = 0f
+                        detectVerticalDragGestures(
+                            onDragStart = { accumulatedDrag = 0f },
+                            onVerticalDrag = { change, dragAmount ->
+                                change.consume()
+                                accumulatedDrag += dragAmount
+                            },
+                            onDragEnd = {
+                                when {
+                                    accumulatedDrag <= -dragThresholdPx -> onExpandedChange(true)
+                                    accumulatedDrag >= dragThresholdPx -> onExpandedChange(false)
+                                }
+                                accumulatedDrag = 0f
+                            },
+                            onDragCancel = { accumulatedDrag = 0f },
+                        )
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (expanded) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .size(width = 48.dp, height = 5.dp)
+                        .clickable { onExpandedChange(!expanded) }
                         .background(Color(0xFFD8DEE8), RoundedCornerShape(50)),
                 )
             }
@@ -246,8 +333,9 @@ private fun PlanDetailSheet(
                 day = uiState.selectedDay,
                 items = displayItems,
                 route = displayRoute,
+                routeLoading = uiState.isLoadingRoute,
                 previewing = uiState.optimization != null,
-                onMoveItem = onMoveItem,
+                onReorderItems = onReorderItems,
                 onOpenPlace = onOpenPlace,
             )
 
@@ -267,13 +355,29 @@ private fun PlanDetailSheet(
                     Text("问 AI", modifier = Modifier.padding(start = 6.dp))
                 }
                 OutlinedButton(
-                    onClick = onBack,
+                    onClick = onContinueAdding,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(18.dp),
                 ) {
                     Icon(Icons.Outlined.Add, contentDescription = null)
                     Text("继续加地点", modifier = Modifier.padding(start = 6.dp))
                 }
+            }
+
+            OutlinedButton(
+                onClick = onDelete,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.55f),
+                ),
+            ) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                Text("删除计划", modifier = Modifier.padding(start = 6.dp))
             }
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -441,10 +545,122 @@ private fun DayItinerary(
     day: PlanDay?,
     items: List<PlanItem>,
     route: DayRoutePlan?,
+    routeLoading: Boolean,
     previewing: Boolean,
-    onMoveItem: (String, MoveDirection) -> Unit,
+    onReorderItems: (List<String>) -> Unit,
     onOpenPlace: (PlanItem) -> Unit,
 ) {
+    var visualItems by remember(day?.id) { mutableStateOf(items) }
+    var activeItemId by remember(day?.id) { mutableStateOf<String?>(null) }
+    var pointerDragging by remember(day?.id) { mutableStateOf(false) }
+    var dragOffsetY by remember(day?.id) { mutableFloatStateOf(0f) }
+    var dragStartIndex by remember(day?.id) { mutableIntStateOf(-1) }
+    var targetIndex by remember(day?.id) { mutableIntStateOf(-1) }
+    var pendingTargetIndex by remember(day?.id) { mutableIntStateOf(-1) }
+    var settleFromY by remember(day?.id) { mutableFloatStateOf(0f) }
+    var settleToY by remember(day?.id) { mutableFloatStateOf(0f) }
+    var settleRequestId by remember(day?.id) { mutableIntStateOf(0) }
+    var settleReady by remember(day?.id) { mutableStateOf(false) }
+    var reorderVersion by remember(day?.id) { mutableIntStateOf(0) }
+    val settleOffsetY = remember(day?.id) { Animatable(0f) }
+    val itemHeights = remember(day?.id) { mutableStateMapOf<String, Int>() }
+    val itemSpacingPx = with(LocalDensity.current) { 12.dp.toPx() }
+    val fallbackItemHeightPx = with(LocalDensity.current) { 92.dp.toPx() }
+    val hapticFeedback = LocalHapticFeedback.current
+
+    LaunchedEffect(items) {
+        if (activeItemId == null) visualItems = items
+    }
+
+    fun measuredHeight(index: Int): Float {
+        val item = visualItems.getOrNull(index) ?: return fallbackItemHeightPx
+        return itemHeights[item.id]?.toFloat() ?: fallbackItemHeightPx
+    }
+
+    fun itemTop(index: Int): Float {
+        var top = 0f
+        repeat(index.coerceAtLeast(0)) { itemIndex ->
+            top += measuredHeight(itemIndex) + itemSpacingPx
+        }
+        return top
+    }
+
+    fun resolveTargetIndex(startIndex: Int, rawOffsetY: Float): Int {
+        if (startIndex !in visualItems.indices) return startIndex
+        val draggedCenter = itemTop(startIndex) + measuredHeight(startIndex) / 2f + rawOffsetY
+        var resolved = startIndex
+        if (rawOffsetY > 0f) {
+            for (index in (startIndex + 1)..visualItems.lastIndex) {
+                val itemCenter = itemTop(index) + measuredHeight(index) / 2f
+                if (draggedCenter >= itemCenter) resolved = index else break
+            }
+        } else if (rawOffsetY < 0f) {
+            for (index in (startIndex - 1) downTo 0) {
+                val itemCenter = itemTop(index) + measuredHeight(index) / 2f
+                if (draggedCenter <= itemCenter) resolved = index else break
+            }
+        }
+        return resolved
+    }
+
+    fun targetDisplacement(startIndex: Int, endIndex: Int): Float {
+        if (startIndex !in visualItems.indices || endIndex !in visualItems.indices) return 0f
+        var displacement = 0f
+        if (endIndex > startIndex) {
+            for (index in (startIndex + 1)..endIndex) {
+                displacement += measuredHeight(index) + itemSpacingPx
+            }
+        } else if (endIndex < startIndex) {
+            for (index in endIndex until startIndex) {
+                displacement -= measuredHeight(index) + itemSpacingPx
+            }
+        }
+        return displacement
+    }
+
+    fun requestSettle(endIndex: Int) {
+        pendingTargetIndex = endIndex.coerceIn(0, visualItems.lastIndex.coerceAtLeast(0))
+        settleFromY = dragOffsetY
+        settleToY = targetDisplacement(dragStartIndex, pendingTargetIndex)
+        pointerDragging = false
+        settleReady = false
+        settleRequestId += 1
+    }
+
+    LaunchedEffect(settleRequestId) {
+        if (settleRequestId == 0) return@LaunchedEffect
+        val itemId = activeItemId ?: return@LaunchedEffect
+        settleOffsetY.snapTo(settleFromY)
+        settleReady = true
+        settleOffsetY.animateTo(
+            targetValue = settleToY,
+            animationSpec = spring(
+                dampingRatio = 0.86f,
+                stiffness = Spring.StiffnessMediumLow,
+            ),
+        )
+
+        val sourceIndex = visualItems.indexOfFirst { it.id == itemId }
+        val destinationIndex = pendingTargetIndex.coerceIn(0, visualItems.lastIndex)
+        val reordered = visualItems.toMutableList()
+        if (sourceIndex in reordered.indices && sourceIndex != destinationIndex) {
+            val movedItem = reordered.removeAt(sourceIndex)
+            reordered.add(destinationIndex, movedItem)
+        }
+        val orderChanged = reordered.map { it.id } != visualItems.map { it.id }
+        visualItems = reordered
+        reorderVersion += 1
+        activeItemId = null
+        pointerDragging = false
+        dragOffsetY = 0f
+        dragStartIndex = -1
+        targetIndex = -1
+        pendingTargetIndex = -1
+        settleReady = false
+        settleOffsetY.snapTo(0f)
+        if (orderChanged) onReorderItems(reordered.map { it.id })
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -465,22 +681,107 @@ private fun DayItinerary(
                 }
             }
         }
-        if (items.isEmpty()) {
+        if (!previewing && visualItems.size > 1) {
+            Text(
+                text = "长按地点并上下拖动，可调整当天的游览顺序",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (visualItems.isEmpty()) {
             EmptyDayCard()
         } else {
-            items.forEachIndexed { index, item ->
-                PlanItemCard(
-                    index = index,
-                    item = item,
-                    nextSegmentText = route?.segments?.getOrNull(index)?.let {
-                        "${formatDistance(it.distanceMeters)} · ${formatDuration(it.durationSeconds)}"
-                    },
-                    canMoveUp = !previewing && index > 0,
-                    canMoveDown = !previewing && index < items.lastIndex,
-                    onMoveUp = { if (!previewing) onMoveItem(item.id, MoveDirection.UP) },
-                    onMoveDown = { if (!previewing) onMoveItem(item.id, MoveDirection.DOWN) },
-                    onOpenPlace = { onOpenPlace(item) },
-                )
+            visualItems.forEachIndexed { index, item ->
+                androidx.compose.runtime.key(item.id) {
+                    val active = activeItemId == item.id
+                    val dragEnabled = !previewing && visualItems.size > 1
+                    val draggedSlotHeight = if (dragStartIndex in visualItems.indices) {
+                        measuredHeight(dragStartIndex) + itemSpacingPx
+                    } else {
+                        0f
+                    }
+                    val siblingTargetOffset = when {
+                        activeItemId == null || index == dragStartIndex -> 0f
+                        targetIndex > dragStartIndex && index in (dragStartIndex + 1)..targetIndex ->
+                            -draggedSlotHeight
+                        targetIndex < dragStartIndex && index in targetIndex until dragStartIndex ->
+                            draggedSlotHeight
+                        else -> 0f
+                    }
+                    val animatedSiblingOffset by androidx.compose.runtime.key(reorderVersion) {
+                        animateFloatAsState(
+                            targetValue = siblingTargetOffset,
+                            animationSpec = spring(
+                                dampingRatio = 0.86f,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                            label = "相邻地点让位",
+                        )
+                    }
+                    val activeOffset = when {
+                        !active -> 0f
+                        pointerDragging -> dragOffsetY
+                        settleReady -> settleOffsetY.value
+                        else -> dragOffsetY
+                    }
+                    val displayIndex = when {
+                        activeItemId == null -> index
+                        active -> targetIndex.coerceIn(0, visualItems.lastIndex)
+                        targetIndex > dragStartIndex && index in (dragStartIndex + 1)..targetIndex ->
+                            index - 1
+                        targetIndex < dragStartIndex && index in targetIndex until dragStartIndex ->
+                            index + 1
+                        else -> index
+                    }
+                    PlanItemCard(
+                        index = displayIndex,
+                        item = item,
+                        nextSegmentText = when {
+                            routeLoading && index < visualItems.lastIndex -> "正在重新计算..."
+                            else -> route?.segments?.getOrNull(index)?.let {
+                                "${formatDistance(it.distanceMeters)} · ${formatDuration(it.durationSeconds)}"
+                            }
+                        },
+                        dragEnabled = dragEnabled,
+                        isDragging = active,
+                        onOpenPlace = { onOpenPlace(item) },
+                        modifier = Modifier
+                            .zIndex(if (active) 1f else 0f)
+                            .onSizeChanged { size -> itemHeights[item.id] = size.height }
+                            .graphicsLayer {
+                                translationY = if (active) activeOffset else animatedSiblingOffset
+                            }
+                            .pointerInput(item.id, dragEnabled, reorderVersion) {
+                                if (!dragEnabled) return@pointerInput
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        if (activeItemId != null) return@detectDragGesturesAfterLongPress
+                                        activeItemId = item.id
+                                        dragStartIndex = index
+                                        targetIndex = index
+                                        pendingTargetIndex = index
+                                        pointerDragging = true
+                                        dragOffsetY = 0f
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        if (activeItemId != item.id || !pointerDragging) {
+                                            return@detectDragGesturesAfterLongPress
+                                        }
+                                        dragOffsetY += dragAmount.y
+                                        targetIndex = resolveTargetIndex(dragStartIndex, dragOffsetY)
+                                    },
+                                    onDragEnd = {
+                                        if (activeItemId == item.id) requestSettle(targetIndex)
+                                    },
+                                    onDragCancel = {
+                                        if (activeItemId == item.id) requestSettle(dragStartIndex)
+                                    },
+                                )
+                            },
+                    )
+                }
             }
         }
     }
@@ -562,57 +863,82 @@ private fun PlanItemCard(
     index: Int,
     item: PlanItem,
     nextSegmentText: String?,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
+    dragEnabled: Boolean,
+    isDragging: Boolean,
     onOpenPlace: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = Modifier.clickable(onClick = onOpenPlace),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+    val containerColor by animateColorAsState(
+        targetValue = if (isDragging) Color(0xFFF4F8FF) else Color.Transparent,
+        animationSpec = spring(
+            dampingRatio = 0.88f,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "拖拽地点背景",
+    )
+    val elevation by animateDpAsState(
+        targetValue = if (isDragging) 8.dp else 0.dp,
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = Spring.StiffnessMedium,
+        ),
+        label = "拖拽地点阴影",
+    )
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(enabled = !isDragging, onClick = onOpenPlace),
+        color = containerColor,
+        shape = RoundedCornerShape(16.dp),
+        shadowElevation = elevation,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = Color(0xFFE8F7FF), shape = CircleShape) {
-                Text(
-                    text = "${index + 1}",
-                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold,
+        Column(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = Color(0xFFE8F7FF), shape = CircleShape) {
+                    Text(
+                        text = "${index + 1}",
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Text(item.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = listOfNotNull(item.typeName, item.districtName, item.address).joinToString(" · "),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "点击查看地点详情",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.DragHandle,
+                    contentDescription = if (dragEnabled) "长按拖动调整顺序" else "当前不能调整顺序",
+                    modifier = Modifier.size(28.dp),
+                    tint = if (dragEnabled) Color(0xFF667085) else Color(0xFFC4CAD4),
                 )
             }
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 12.dp),
-            ) {
-                Text(item.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            if (nextSegmentText != null) {
                 Text(
-                    text = listOfNotNull(item.typeName, item.districtName, item.address).joinToString(" · "),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    "点击查看地点详情",
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelSmall,
+                    text = "下一段：$nextSegmentText",
+                    modifier = Modifier.padding(start = 42.dp),
+                    color = Color(0xFF98A2B3),
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
-            IconButton(onClick = onMoveUp, enabled = canMoveUp) {
-                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "上移")
-            }
-            IconButton(onClick = onMoveDown, enabled = canMoveDown) {
-                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "下移")
-            }
-        }
-        if (nextSegmentText != null) {
-            Text(
-                text = "下一段：$nextSegmentText",
-                modifier = Modifier.padding(start = 42.dp),
-                color = Color(0xFF98A2B3),
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
     }
 }
