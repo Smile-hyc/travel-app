@@ -14,6 +14,8 @@ import com.heoclub.aitravel.data.model.OptimizeDayRouteRequest
 import com.heoclub.aitravel.data.model.OptimizeDayRouteResponse
 import com.heoclub.aitravel.data.model.PaginatedPlaces
 import com.heoclub.aitravel.data.model.PlaceSuggestion
+import com.heoclub.aitravel.data.model.PlaceDetail
+import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.RouteSegment
 import com.heoclub.aitravel.data.model.RouteSegmentRequest
 import retrofit2.http.GET
@@ -35,6 +37,11 @@ interface ApiService {
         @Query("page_size") pageSize: Int = 20,
         @Query("city_limit") cityLimit: Boolean = true,
     ): PaginatedPlaces
+
+    @POST("api/explore/pois/detail")
+    suspend fun getPlaceDetail(
+        @Body place: PlaceSummary,
+    ): PlaceDetail
 
     @GET("api/explore/cities/search")
     suspend fun searchCities(

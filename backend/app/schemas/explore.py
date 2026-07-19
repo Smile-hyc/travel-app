@@ -51,6 +51,41 @@ class PlaceSummary(BaseModel):
     openingHoursWeek: str | None = None
 
 
+class ReviewHighlight(BaseModel):
+    title: str
+    description: str
+
+
+class ReviewSource(BaseModel):
+    id: str
+    platform: str
+    title: str
+    url: str
+    author: str | None = None
+    excerpt: str | None = None
+    publishedAt: str | None = None
+    coverImageUrl: str | None = None
+    likeCount: str | None = None
+    provider: str | None = None
+
+
+class PlaceDetail(BaseModel):
+    summary: PlaceSummary
+    images: list[PlaceImage] = Field(default_factory=list)
+    openingHours: str | None = None
+    phone: str | None = None
+    description: str
+    reviewTitle: str = "地点亮点"
+    reviewSubtitle: str | None = None
+    positiveHighlights: list[ReviewHighlight] = Field(default_factory=list)
+    negativeHighlights: list[ReviewHighlight] = Field(default_factory=list)
+    reviewSources: list[ReviewSource] = Field(default_factory=list)
+    sourceLabels: list[str] = Field(default_factory=list)
+    relatedPlans: list[str] = Field(default_factory=list)
+    hasRealReviews: bool = False
+    reviewUpdatedAt: str | None = None
+
+
 class PlaceSuggestion(BaseModel):
     id: str
     name: str

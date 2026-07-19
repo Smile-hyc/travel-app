@@ -22,3 +22,16 @@ def test_health_endpoint() -> None:
         "status": "ok",
     }
 
+
+def test_review_provider_health_does_not_expose_keys() -> None:
+    response = client.get("/api/health/reviews")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {
+        "configured",
+        "activeProvider",
+        "rnoteConfigured",
+        "tikhubConfigured",
+    }
+    assert "apiKey" not in payload

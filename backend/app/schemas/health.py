@@ -6,3 +6,9 @@ class HealthResponse(BaseModel):
     message: str
     status: str
 
+
+class ReviewProviderHealthResponse(BaseModel):
+    configured: bool
+    activeProvider: str | None = None
+    rnoteConfigured: bool
+    tikhubConfigured: bool

@@ -11,6 +11,18 @@ class Settings(BaseSettings):
     amap_base_url: str = "https://restapi.amap.com"
     amap_connect_timeout_seconds: float = 5.0
     amap_read_timeout_seconds: float = 8.0
+    tikhub_api_key: str = ""
+    tikhub_base_url: str = "https://api.tikhub.io"
+    tikhub_connect_timeout_seconds: float = 5.0
+    tikhub_read_timeout_seconds: float = 12.0
+    tikhub_max_sources: int = 6
+    rnote_api_key: str = ""
+    rnote_base_url: str = "https://rnote.dev"
+    rnote_connect_timeout_seconds: float = 5.0
+    rnote_read_timeout_seconds: float = 15.0
+    rnote_max_sources: int = 5
+    review_cache_ttl_seconds: int = 21600
+    review_empty_cache_ttl_seconds: int = 300
     ark_api_key: str = ""
     ark_model: str = "doubao-seed-2-1-pro-260628"
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
@@ -57,6 +69,22 @@ class Settings(BaseSettings):
             and bool(self.ark_model.strip())
             and self.ark_base_url_configured
         )
+
+    @property
+    def tikhub_configured(self) -> bool:
+        return bool(self.tikhub_api_key.strip() and self.tikhub_base_url.strip())
+
+    @property
+    def rnote_configured(self) -> bool:
+        return bool(self.rnote_api_key.strip() and self.rnote_base_url.strip())
+
+    @property
+    def active_review_provider(self) -> str | None:
+        if self.rnote_configured:
+            return "rnote"
+        if self.tikhub_configured:
+            return "tikhub"
+        return None
 
 
 @lru_cache
