@@ -180,6 +180,7 @@ http://127.0.0.1:8000/docs
 | 基础 | GET | `/` | 欢迎信息 |
 | 健康 | GET | `/api/health` | 后端基础健康检查 |
 | 健康 | GET | `/api/health/amap` | 高德 Web 服务 Key 配置状态 |
+| 健康 | GET | `/api/health/reviews` | 小红书内容服务配置与当前提供方 |
 | 健康 | GET | `/api/health/ai` | Ark AI 配置状态 |
 | 探索 | GET | `/api/explore/cities/search` | 城市搜索 |
 | 探索 | GET | `/api/explore/input-tips` | 地点输入提示 |
@@ -221,6 +222,22 @@ DEV_CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:30
 
 AMAP_WEB_SERVICE_KEY=
 
+# 可选：地点详情页的小红书公开内容来源
+TIKHUB_API_KEY=
+TIKHUB_BASE_URL=https://api.tikhub.io
+TIKHUB_CONNECT_TIMEOUT_SECONDS=5
+TIKHUB_READ_TIMEOUT_SECONDS=12
+TIKHUB_MAX_SOURCES=6
+
+# 推荐：配置后优先使用 Rnote 搜索小红书公开内容
+RNOTE_API_KEY=
+RNOTE_BASE_URL=https://rnote.dev
+RNOTE_CONNECT_TIMEOUT_SECONDS=5
+RNOTE_READ_TIMEOUT_SECONDS=15
+RNOTE_MAX_SOURCES=5
+REVIEW_CACHE_TTL_SECONDS=21600
+REVIEW_EMPTY_CACHE_TTL_SECONDS=300
+
 ARK_API_KEY=
 ARK_MODEL=doubao-seed-2-1-pro-260628
 ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
@@ -232,6 +249,10 @@ ARK_TEMPERATURE=0.35
 说明：
 
 - `AMAP_WEB_SERVICE_KEY` 用于后端调用高德 Web 服务，包括 POI、输入提示、天气和路线。
+- `TIKHUB_API_KEY` 是可选的第三方内容服务 Key，用于地点详情页搜索小红书 App V2 公开内容。未配置、额度不足或请求失败时，页面会隐藏“查看原始内容”，改为展示高德地点事实与“地点亮点”，不会伪造真实评价。
+- `RNOTE_API_KEY` 是推荐的小红书公开内容服务 Key。配置后优先于 TikHub，后端每个地点只进行一次搜索请求，并把成功结果缓存 6 小时，减少重复扣费。
+- Rnote 来源卡片可展示笔记封面、作者、点赞数和原文链接；Key 只保存在 FastAPI 后端，不进入 Android 安装包。
+- 生产环境接入前应确认内容展示、缓存、跳转和用户隐私符合平台条款；服务端只返回来源标题、作者、短摘要和原文链接，不复制完整笔记。
 - `ARK_API_KEY` 用于后端调用火山方舟 / 豆包模型。
 - README 只保留变量名，不应出现真实 Key。
 

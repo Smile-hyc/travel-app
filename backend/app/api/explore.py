@@ -1,7 +1,14 @@
 from fastapi import APIRouter, Query
 
-from app.main_state import get_amap_poi_service, get_amap_weather_service
-from app.schemas.explore import CitySearchResult, ExploreWeather, PaginatedPlaces, PlaceSuggestion
+from app.main_state import get_amap_poi_service, get_amap_weather_service, get_place_detail_service
+from app.schemas.explore import (
+    CitySearchResult,
+    ExploreWeather,
+    PaginatedPlaces,
+    PlaceDetail,
+    PlaceSuggestion,
+    PlaceSummary,
+)
 
 router = APIRouter(prefix="/api/explore", tags=["explore"])
 
@@ -53,6 +60,13 @@ async def search_pois(
         page_size=page_size,
         city_limit=city_limit,
     )
+
+
+@router.post("/pois/detail", response_model=PlaceDetail)
+async def get_place_detail(place: PlaceSummary) -> PlaceDetail:
+    """Enrich a selected AMap POI with optional public user-content sources."""
+    service = get_place_detail_service()
+    return await service.get_detail(place)
 
 
 @router.get("/weather", response_model=ExploreWeather)

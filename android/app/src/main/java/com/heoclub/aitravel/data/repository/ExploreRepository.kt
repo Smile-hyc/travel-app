@@ -9,6 +9,7 @@ import com.heoclub.aitravel.data.model.PlaceCollection
 import com.heoclub.aitravel.data.model.PlaceDetail
 import com.heoclub.aitravel.data.model.PlaceSuggestion
 import com.heoclub.aitravel.data.model.PlaceSummary
+import com.heoclub.aitravel.data.model.ReviewHighlight
 import com.heoclub.aitravel.data.remote.ApiService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,7 @@ interface ExploreRepository {
     fun upsertPlace(place: PlaceSummary)
     fun getPlace(placeId: String): PlaceSummary?
     fun getPlaceDetail(placeId: String): PlaceDetail?
+    suspend fun refreshPlaceDetail(placeId: String): PlaceDetail?
     fun toggleFavorite(placeId: String)
 }
 
@@ -55,6 +57,7 @@ class RemoteExploreRepository(
 
     private val _places = MutableStateFlow<List<PlaceSummary>>(emptyList())
     override val places: StateFlow<List<PlaceSummary>> = _places.asStateFlow()
+    private val details = mutableMapOf<String, PlaceDetail>()
 
     override suspend fun searchPlaces(
         adcode: String,
@@ -131,13 +134,28 @@ class RemoteExploreRepository(
 
     override fun getPlaceDetail(placeId: String): PlaceDetail? {
         val summary = getPlace(placeId) ?: return null
-        return placeholderDetail(summary)
+        return details[placeId]?.copy(summary = summary) ?: placeholderDetail(summary)
+    }
+
+    override suspend fun refreshPlaceDetail(placeId: String): PlaceDetail? {
+        val summary = getPlace(placeId) ?: return null
+        val detail = apiService.getPlaceDetail(summary).let { remote ->
+            remote.copy(summary = remote.summary.copy(isFavorite = summary.isFavorite))
+        }
+        details[placeId] = detail
+        return detail
     }
 
     override fun toggleFavorite(placeId: String) {
         _places.update { current ->
             current.map { place ->
                 if (place.id == placeId) place.copy(isFavorite = !place.isFavorite) else place
+            }
+        }
+        val updatedSummary = getPlace(placeId)
+        if (updatedSummary != null) {
+            details[placeId]?.let { detail ->
+                details[placeId] = detail.copy(summary = updatedSummary)
             }
         }
     }
@@ -218,6 +236,8 @@ class MockExploreRepository : ExploreRepository {
         return placeholderDetail(summary)
     }
 
+    override suspend fun refreshPlaceDetail(placeId: String): PlaceDetail? = getPlaceDetail(placeId)
+
     override fun toggleFavorite(placeId: String) {
         _places.update { current ->
             current.map { place ->
@@ -253,35 +273,38 @@ private fun mockPlace(
 }
 
 private fun placeholderDetail(summary: PlaceSummary): PlaceDetail {
-    val openingHours = summary.openingHoursWeek
-        ?: summary.openingHoursToday
-        ?: "高德暂未提供开放时间，出发前请向景区或商家确认"
+    val openingHours = summary.openingHoursWeek ?: summary.openingHoursToday
     val positives = buildList {
-        add("高德真实地点与坐标")
-        summary.rating?.let { add("高德评分 $it") }
-        if (!summary.openingHoursToday.isNullOrBlank() || !summary.openingHoursWeek.isNullOrBlank()) {
-            add("已取得公开营业时间")
+        summary.rating?.let {
+            add(ReviewHighlight("公开评分", "高德地点信息显示评分为 $it 分，可作为选择时的辅助参考。"))
+        }
+        if (openingHours != null) {
+            add(ReviewHighlight("行程更好安排", "已获取营业时间信息，适合在规划路线时预留到访时段。"))
+        }
+        if (isEmpty()) {
+            add(ReviewHighlight("地点信息明确", "已获取地点分类和定位信息，可直接加入计划或导航。"))
         }
     }
-    val cautions = buildList {
-        if (summary.openingHoursToday.isNullOrBlank() && summary.openingHoursWeek.isNullOrBlank()) {
-            add("开放时间需再次确认")
-        }
-        add("节假日、预约和临时闭馆可能调整")
+    val cautions = if (openingHours == null) {
+        listOf(ReviewHighlight("营业时间待确认", "暂未获取可靠营业时间，建议到访前电话或通过官方渠道确认。"))
+    } else {
+        emptyList()
     }
     return PlaceDetail(
         summary = summary,
         openingHours = openingHours,
-        phone = summary.phone ?: "暂无公开电话",
+        phone = summary.phone,
         description = listOfNotNull(
             summary.typeName,
             summary.districtName,
             summary.address,
             summary.businessArea?.let { "${it}商圈" },
-        ).joinToString(" · ").ifBlank { "${summary.name} 的高德 POI 详情。" },
+        ).joinToString(" · ").ifBlank { "${summary.name}的公开地点信息。" },
+        reviewTitle = "地点亮点",
+        reviewSubtitle = "基于地点公开信息整理，出发前建议再次确认",
         positiveHighlights = positives,
         negativeHighlights = cautions,
-        sourceLabels = listOf(summary.source, "POI 2.0 商业信息"),
+        sourceLabels = listOf(summary.source),
         relatedPlans = emptyList(),
     )
 }

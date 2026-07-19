@@ -275,7 +275,7 @@ private fun CategoryBar(
         items(categories, key = { it.id }) { category ->
             val selected = category.id == selectedCategoryId
             Surface(
-                modifier = Modifier.clickable { onSelectCategory(category.id) },
+                onClick = { onSelectCategory(category.id) },
                 color = if (selected) Color.White else Color.White.copy(alpha = 0.88f),
                 shape = RoundedCornerShape(50),
                 shadowElevation = if (selected) 5.dp else 1.dp,
