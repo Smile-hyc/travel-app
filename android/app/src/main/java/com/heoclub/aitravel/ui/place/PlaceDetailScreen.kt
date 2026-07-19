@@ -12,7 +12,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,6 +38,8 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Phone
 import androidx.compose.material.icons.outlined.Refresh
@@ -62,11 +63,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.heoclub.aitravel.data.model.PlaceDetail
@@ -76,13 +79,13 @@ import com.heoclub.aitravel.data.model.TravelPlan
 import com.heoclub.aitravel.data.repository.AddPlaceResult
 import com.heoclub.aitravel.data.repository.AddPlaceTarget
 import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
-import com.heoclub.aitravel.ui.components.PlaceCoverImage
+import com.heoclub.aitravel.ui.components.PlaceImageCarousel
 
-private val Ink = Color(0xFF10223E)
-private val MutedInk = Color(0xFF637086)
-private val PageBackground = Color(0xFFF7F9FC)
-private val PositiveBackground = Color(0xFFF0F8E8)
-private val CautionBackground = Color(0xFFFFF3EF)
+private val Ink = Color(0xFF171717)
+private val MutedInk = Color(0xFF737373)
+private val PageBackground = Color.White
+private val PositiveBackground = Color(0xFFF1F8E8)
+private val CautionBackground = Color(0xFFFFF1EC)
 private val XiaohongshuRed = Color(0xFFFF2442)
 
 @Composable
@@ -112,7 +115,7 @@ fun PlaceDetailScreen(
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 116.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             item { DetailHeader(detail = detail, onBack = onBack) }
             if (state.refreshFailed) {
@@ -123,13 +126,21 @@ fun PlaceDetailScreen(
                     )
                 }
             }
-            item { OverviewSection(detail, Modifier.padding(horizontal = 20.dp)) }
-            item { ReviewSection(detail, Modifier.padding(horizontal = 20.dp)) }
-            if (detail.reviewSources.isNotEmpty()) {
+            item {
+                OverviewSection(
+                    detail,
+                    Modifier.padding(start = 24.dp, end = 24.dp, top = 30.dp),
+                )
+            }
+            if (detail.relatedPlans.isNotEmpty()) {
+                item { RelatedPlansSection(detail) }
+            }
+            if (detail.hasRealReviews && detail.reviewSources.isNotEmpty()) {
                 item {
-                    SourceSection(
+                    ReviewSection(
                         detail = detail,
                         onOpen = { openUrl(context, it.url) },
+                        modifier = Modifier.padding(top = 34.dp),
                     )
                 }
             }
@@ -141,7 +152,7 @@ fun PlaceDetailScreen(
                     onFeedback = {
                         Toast.makeText(context, "感谢反馈，我们会核对地点信息", Toast.LENGTH_SHORT).show()
                     },
-                    modifier = Modifier.padding(horizontal = 20.dp),
+                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 28.dp),
                 )
             }
         }
@@ -179,62 +190,33 @@ fun PlaceDetailScreen(
 
 @Composable
 private fun DetailHeader(detail: PlaceDetail, onBack: () -> Unit) {
-    val hasCover = detail.summary.displayCoverImageUrl != null
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (hasCover) 300.dp else 190.dp)
-            .background(if (hasCover) Color.White else Color(0xFFEAF1F8)),
+            .background(Color.White)
+            .statusBarsPadding()
+            .padding(bottom = 4.dp),
     ) {
-        if (hasCover) {
-            PlaceCoverImage(
-                imageUrl = detail.summary.displayCoverImageUrl,
-                placeName = detail.summary.name,
-                modifier = Modifier.fillMaxSize(),
-                shape = RoundedCornerShape(0.dp),
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(180.dp)
-                    .background(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.10f),
-                                Color.Black.copy(alpha = 0.48f),
-                            ),
-                        ),
-                    ),
-            )
-        }
-
-        Surface(
+        IconButton(
+            onClick = onBack,
             modifier = Modifier
-                .statusBarsPadding()
-                .padding(start = 12.dp, top = 8.dp),
-            color = Color.White.copy(alpha = 0.94f),
-            shape = CircleShape,
-            shadowElevation = 2.dp,
+                .padding(start = 8.dp, top = 4.dp)
+                .size(48.dp),
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", tint = Ink)
-            }
+            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", tint = Ink)
         }
 
         Column(
             modifier = Modifier
-                .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
                 text = detail.summary.name,
-                style = MaterialTheme.typography.headlineLarge,
+                style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
-                color = if (hasCover) Color.White else Ink,
+                color = Ink,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -243,15 +225,22 @@ private fun DetailHeader(detail: PlaceDetail, onBack: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 detail.summary.typeName?.takeIf { it.isNotBlank() }?.let {
-                    InfoChip(it, Color(0xFFE8F1FF), Color(0xFF2867B2))
+                    InfoChip(it, Color(0xFFFFF2D7), Color(0xFFB46A00))
                 }
                 detail.summary.rating?.takeIf { it.isNotBlank() }?.let {
-                    InfoChip("评分 $it", Color(0xFFFFF1D8), Color(0xFFB66B00))
+                    InfoChip("评分 $it", Color(0xFFF1F1F1), Color(0xFF555555))
                 }
                 detail.summary.districtName?.takeIf { it.isNotBlank() }?.let {
-                    InfoChip(it, Color.White.copy(alpha = 0.88f), MutedInk)
+                    InfoChip(it, Color(0xFFF1F1F1), Color(0xFF555555))
                 }
             }
+            PlaceImageCarousel(
+                images = detail.images,
+                fallbackUrls = detail.summary.displayImageUrls,
+                placeName = detail.summary.name,
+                modifier = Modifier.fillMaxWidth(),
+                itemHeight = 176.dp,
+            )
         }
     }
 }
@@ -259,13 +248,27 @@ private fun DetailHeader(detail: PlaceDetail, onBack: () -> Unit) {
 @Composable
 private fun OverviewSection(detail: PlaceDetail, modifier: Modifier = Modifier) {
     var expanded by remember(detail.summary.id) { mutableStateOf(false) }
-    SectionCard(modifier = modifier) {
-        Text("地点介绍", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("地点介绍", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
+            Surface(
+                color = Color(0xFFF1F1F1),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.padding(start = 8.dp),
+            ) {
+                Text(
+                    "AI生成",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF9A9A9A),
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                )
+            }
+        }
         Spacer(Modifier.height(10.dp))
         Text(
             text = detail.description,
             style = MaterialTheme.typography.bodyLarge,
-            color = MutedInk,
+            color = Color(0xFF3C3C3C),
             maxLines = if (expanded) Int.MAX_VALUE else 3,
             overflow = TextOverflow.Ellipsis,
         )
@@ -274,83 +277,146 @@ private fun OverviewSection(detail: PlaceDetail, modifier: Modifier = Modifier) 
                 onClick = { expanded = !expanded },
                 contentPadding = PaddingValues(0.dp),
             ) {
-                Text(if (expanded) "收起" else "展开")
+                Text(if (expanded) "收起" else "…展开", color = MutedInk)
             }
         }
     }
 }
 
 @Composable
-private fun ReviewSection(detail: PlaceDetail, modifier: Modifier = Modifier) {
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(detail.reviewTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
-                detail.reviewSubtitle?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MutedInk, modifier = Modifier.padding(top = 4.dp))
+private fun RelatedPlansSection(detail: PlaceDetail) {
+    Column(modifier = Modifier.padding(top = 22.dp)) {
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(detail.relatedPlans) { plan ->
+                Surface(
+                    modifier = Modifier.size(width = 250.dp, height = 76.dp),
+                    color = Color.White,
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, Color(0xFFEFEFEF)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text("热门计划", style = MaterialTheme.typography.labelMedium, color = Color(0xFFC8792B))
+                        Text(plan, style = MaterialTheme.typography.titleSmall, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
-            if (detail.hasRealReviews) {
-                InfoChip("公开内容", Color(0xFFFFEBEF), XiaohongshuRed)
-            }
-        }
-
-        if (detail.positiveHighlights.isNotEmpty()) {
-            HighlightCard(detail.positiveHighlights, PositiveBackground)
-        }
-        if (detail.negativeHighlights.isNotEmpty()) {
-            HighlightCard(detail.negativeHighlights, CautionBackground)
         }
     }
 }
 
 @Composable
-private fun HighlightCard(highlights: List<ReviewHighlight>, background: Color) {
+private fun ReviewSection(
+    detail: PlaceDetail,
+    onOpen: (ReviewSource) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var sourcesExpanded by remember(detail.summary.id) { mutableStateOf(true) }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            "真实评价",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = Ink,
+            modifier = Modifier.padding(horizontal = 24.dp),
+        )
+
+        if (detail.positiveHighlights.isNotEmpty()) {
+            HighlightCard(
+                detail.positiveHighlights,
+                PositiveBackground,
+                Modifier.padding(horizontal = 24.dp),
+            )
+        }
+        if (detail.negativeHighlights.isNotEmpty()) {
+            HighlightCard(
+                detail.negativeHighlights,
+                CautionBackground,
+                Modifier.padding(horizontal = 24.dp),
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { sourcesExpanded = !sourcesExpanded }
+                .padding(horizontal = 24.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (sourcesExpanded) "收起来源" else "查看来源",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF9A9A9A),
+            )
+            Surface(
+                color = XiaohongshuRed,
+                shape = CircleShape,
+                modifier = Modifier.padding(start = 5.dp).size(16.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("源", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Icon(
+                if (sourcesExpanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = null,
+                tint = Color(0xFFAAAAAA),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        if (sourcesExpanded) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(detail.reviewSources, key = { it.id }) { source ->
+                    SourceCard(source = source, onClick = { onOpen(source) })
+                }
+            }
+        }
+        detail.reviewSubtitle?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFFAAAAAA),
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HighlightCard(
+    highlights: List<ReviewHighlight>,
+    background: Color,
+    modifier: Modifier = Modifier,
+) {
     Card(
+        modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = background),
         shape = RoundedCornerShape(22.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 17.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             highlights.forEach { highlight ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = highlight.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Ink,
-                    )
-                    Text(
-                        text = highlight.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MutedInk,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SourceSection(detail: PlaceDetail, onOpen: (ReviewSource) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            modifier = Modifier.padding(horizontal = 20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("查看原始内容", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
-            Spacer(Modifier.weight(1f))
-            Text("来源可追溯", style = MaterialTheme.typography.labelMedium, color = MutedInk)
-        }
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(detail.reviewSources, key = { it.id }) { source ->
-                SourceCard(source = source, onClick = { onOpen(source) })
+                Text(
+                    text = buildAnnotatedString {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Ink)) {
+                            append(highlight.title)
+                            append("：")
+                        }
+                        append(highlight.description)
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color(0xFF555555),
+                )
             }
         }
     }
@@ -358,85 +424,41 @@ private fun SourceSection(detail: PlaceDetail, onOpen: (ReviewSource) -> Unit) {
 
 @Composable
 private fun SourceCard(source: ReviewSource, onClick: () -> Unit) {
-    val hasCover = !source.coverImageUrl.isNullOrBlank()
-    Card(
+    Surface(
         modifier = Modifier
-            .size(width = if (hasCover) 304.dp else 264.dp, height = 144.dp)
+            .size(width = 276.dp, height = 92.dp)
+            .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, Color(0xFFE7EBF1)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        color = Color(0xFFF7F7F7),
+        shape = RoundedCornerShape(16.dp),
     ) {
-        Row {
-            if (hasCover) {
-                PlaceCoverImage(
-                    imageUrl = source.coverImageUrl,
-                    placeName = source.title,
-                    modifier = Modifier.size(width = 104.dp, height = 144.dp),
-                    shape = RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp),
-                )
-            }
-            SourceCardContent(
-                source = source,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(13.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SourceCardContent(source: ReviewSource, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = XiaohongshuRed, shape = RoundedCornerShape(6.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    text = source.platform.take(4),
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                    source.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = Ink,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                    contentDescription = "查看原文",
+                    tint = Color(0xFFB7B7B7),
+                    modifier = Modifier.size(18.dp),
                 )
             }
             Spacer(Modifier.weight(1f))
-            Icon(
-                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                contentDescription = "查看原文",
-                tint = MutedInk,
-                modifier = Modifier.size(18.dp),
-            )
-        }
-        Text(
-            source.title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = Ink,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        source.excerpt?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MutedInk,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                source.author?.let { "@$it" } ?: (source.provider ?: "公开内容"),
-                style = MaterialTheme.typography.labelSmall,
-                color = MutedInk,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            source.likeCount?.takeIf { it.isNotBlank() }?.let {
-                Text("赞 $it", style = MaterialTheme.typography.labelSmall, color = XiaohongshuRed)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = XiaohongshuRed, shape = CircleShape, modifier = Modifier.size(15.dp)) {}
+                Text(
+                    "来自${source.platform}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFAAAAAA),
+                    modifier = Modifier.padding(start = 5.dp),
+                )
             }
         }
     }
@@ -454,9 +476,7 @@ private fun InformationSection(
         .distinct()
         .joinToString(" · ")
         .takeIf { it.isNotBlank() }
-    SectionCard(modifier = modifier) {
-        Text("实用信息", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
-        Spacer(Modifier.height(8.dp))
+    Column(modifier = modifier.fillMaxWidth().background(Color.White)) {
         detail.openingHours?.takeIf { it.isNotBlank() }?.let {
             InfoRow(Icons.Outlined.AccessTime, "营业时间", it)
             HorizontalDivider(color = Color(0xFFEDF0F4))
@@ -545,7 +565,7 @@ private fun BottomActions(
             ActionButton(Icons.Outlined.Add, "添加至", onAdd, Modifier.weight(1f))
             ActionButton(Icons.Outlined.Favorite, if (favorite) "已收藏" else "收藏", onFavorite, Modifier.weight(1f), favorite)
             ActionButton(Icons.Outlined.CheckCircle, if (checkedIn) "已打卡" else "打卡", onCheckIn, Modifier.weight(1f), checkedIn)
-            ActionButton(Icons.Outlined.Navigation, "导航", onNavigate, Modifier.weight(1f), emphasized = true)
+            ActionButton(Icons.Outlined.Navigation, "导航", onNavigate, Modifier.weight(1f))
         }
     }
 }
@@ -557,14 +577,12 @@ private fun ActionButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     selected: Boolean = false,
-    emphasized: Boolean = false,
 ) {
     val background = when {
-        emphasized -> MaterialTheme.colorScheme.primary
         selected -> Color(0xFFE6F1FF)
         else -> Color.White
     }
-    val foreground = if (emphasized) Color.White else MaterialTheme.colorScheme.primary
+    val foreground = if (selected) MaterialTheme.colorScheme.primary else Ink
     Surface(
         modifier = modifier
             .height(60.dp)
@@ -572,25 +590,12 @@ private fun ActionButton(
             .clickable(onClick = onClick),
         color = background,
         shape = RoundedCornerShape(18.dp),
-        border = if (emphasized) null else BorderStroke(1.dp, Color(0xFFE3E8EF)),
+        border = BorderStroke(1.dp, Color(0xFFE3E3E3)),
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Icon(icon, contentDescription = null, tint = foreground, modifier = Modifier.size(21.dp))
             Text(label, style = MaterialTheme.typography.labelMedium, color = foreground, modifier = Modifier.padding(top = 3.dp))
         }
-    }
-}
-
-@Composable
-private fun SectionCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(22.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = BorderStroke(1.dp, Color(0xFFEDF0F4)),
-    ) {
-        Column(modifier = Modifier.padding(18.dp), content = content)
     }
 }
 

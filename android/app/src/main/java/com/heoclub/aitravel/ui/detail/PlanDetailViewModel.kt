@@ -24,7 +24,7 @@ import java.io.IOException
 data class PlanDetailUiState(
     val plan: TravelPlan? = null,
     val selectedDayIndex: Int = 1,
-    val routeMode: String = RouteModes.WALKING,
+    val routeMode: String = RouteModes.MIXED,
     val route: DayRoutePlan? = null,
     val isLoadingRoute: Boolean = false,
     val routeError: String? = null,
@@ -137,7 +137,10 @@ class PlanDetailViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isOptimizing = true, routeError = null, optimization = null) }
             runCatching {
-                routeRepository.optimizeDayRoute(places, state.routeMode)
+                routeRepository.optimizeDayRoute(
+                    places,
+                    state.routeMode.takeUnless { it == RouteModes.MIXED } ?: RouteModes.WALKING,
+                )
             }.onSuccess { optimization ->
                 _uiState.update {
                     it.copy(
@@ -195,7 +198,11 @@ class PlanDetailViewModel(
         routeJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoadingRoute = true, routeError = null) }
             runCatching {
-                routeRepository.calculateDayRoute(places, _uiState.value.routeMode)
+                if (_uiState.value.routeMode == RouteModes.MIXED) {
+                    routeRepository.calculateMixedDayRoute(state.selectedDay?.items.orEmpty())
+                } else {
+                    routeRepository.calculateDayRoute(places, _uiState.value.routeMode)
+                }
             }.onSuccess { route ->
                 _uiState.update {
                     it.copy(

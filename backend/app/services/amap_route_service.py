@@ -39,6 +39,8 @@ class AmapRouteService:
             request.destination.longitude,
             request.origin.cityCode or request.origin.adCode or "",
             request.destination.cityCode or request.destination.adCode or "",
+            request.departureDate or "",
+            request.departureTime or "",
         )
         cached = self._segment_cache.get(cache_key)
         if cached is not None:
@@ -49,7 +51,12 @@ class AmapRouteService:
         elif request.mode == "driving":
             segment = await self._driving(request.origin, request.destination)
         elif request.mode == "transit":
-            segment = await self._transit(request.origin, request.destination)
+            segment = await self._transit(
+                request.origin,
+                request.destination,
+                departure_date=request.departureDate,
+                departure_time=request.departureTime,
+            )
         elif request.mode == "cycling":
             segment = await self._cycling(request.origin, request.destination)
         else:
@@ -57,6 +64,49 @@ class AmapRouteService:
 
         self._segment_cache.set(cache_key, segment, ttl_seconds=300)
         return segment
+
+    async def best_segment(
+        self,
+        *,
+        origin: RoutePlace,
+        destination: RoutePlace,
+        preference: str = "MIXED",
+        departure_date: str | None = None,
+        departure_time: str | None = None,
+        allow_cycling: bool = True,
+    ) -> RouteSegment:
+        mode_order = {
+            "WALK": ["walking", "transit", "cycling", "driving"],
+            "TRANSIT": ["transit", "walking", "driving", "cycling"],
+            "DRIVE": ["driving", "transit", "walking", "cycling"],
+            "MIXED": ["walking", "transit", "cycling", "driving"],
+        }.get(preference, ["walking", "transit", "cycling", "driving"])
+        if not allow_cycling:
+            mode_order = [mode for mode in mode_order if mode != "cycling"]
+        failures: list[str] = []
+        for mode in mode_order:
+            try:
+                segment = await self.segment(
+                    RouteSegmentRequest(
+                        origin=origin,
+                        destination=destination,
+                        mode=mode,
+                        departureDate=departure_date,
+                        departureTime=departure_time,
+                    ),
+                )
+            except HTTPException as exc:
+                failures.append(f"{mode}:{exc.detail}")
+                continue
+            # 长距离步行不是“智能混合”的可执行方案，继续尝试公共交通或驾车。
+            if mode == "walking" and segment.distanceMeters > 2500:
+                failures.append("walking:步行距离超过2.5公里")
+                continue
+            return segment
+        raise HTTPException(
+            status_code=502,
+            detail="高德未返回可执行的混合交通路线：" + "；".join(failures[-3:]),
+        )
 
     async def calculate_day(self, request: DayRouteRequest) -> DayRoutePlan:
         _validate_day_places(request.places)
@@ -126,19 +176,32 @@ class AmapRouteService:
             raise HTTPException(status_code=502, detail="高德暂未返回可用骑行路线。")
         return _segment_from_path(origin, destination, "cycling", paths[0])
 
-    async def _transit(self, origin: RoutePlace, destination: RoutePlace) -> RouteSegment:
+    async def _transit(
+        self,
+        origin: RoutePlace,
+        destination: RoutePlace,
+        *,
+        departure_date: str | None = None,
+        departure_time: str | None = None,
+    ) -> RouteSegment:
         city = origin.cityCode or origin.adCode or origin.cityName or destination.cityCode or destination.adCode
         if not city:
             raise HTTPException(status_code=422, detail="公交路线需要城市编码或城市名称。")
+        params = {
+            "origin": _coord_param(origin),
+            "destination": _coord_param(destination),
+            "city": city,
+            "cityd": destination.cityCode or destination.adCode or destination.cityName or city,
+            "extensions": "base",
+            "nightflag": "1",
+        }
+        if departure_date:
+            params["date"] = departure_date
+        if departure_time:
+            params["time"] = departure_time
         payload = await self._client.get(
             "/v3/direction/transit/integrated",
-            {
-                "origin": _coord_param(origin),
-                "destination": _coord_param(destination),
-                "city": city,
-                "cityd": destination.cityCode or destination.adCode or destination.cityName or city,
-                "extensions": "base",
-            },
+            params,
         )
         route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
         transits = route.get("transits") if isinstance(route.get("transits"), list) else []

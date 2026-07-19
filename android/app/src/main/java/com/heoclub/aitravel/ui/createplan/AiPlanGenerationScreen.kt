@@ -429,11 +429,27 @@ private fun PlanningTimeline(events: List<AiPlanProgressEvent>) {
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
-                    Text(
-                        event.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF29445E),
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            event.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF29445E),
+                        )
+                        if (event.evidence.isNotEmpty()) {
+                            Text(
+                                "依据：${event.evidence.joinToString(" · ")}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF607D96),
+                            )
+                        }
+                        event.decision?.takeIf(String::isNotBlank)?.let { decision ->
+                            Text(
+                                "决定：$decision",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF174F86),
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -12,6 +12,7 @@ from app.schemas.ai import (
     AiPlanGenerationResponse,
 )
 from app.schemas.explore import CitySearchResult, PaginatedPlaces, PlaceSummary
+from app.schemas.routes import RouteSegment
 from app.services.travel_plan_generation_service import TravelPlanGenerationService
 from app.services.ai_plan_job_manager import AiPlanJobManager
 
@@ -162,6 +163,7 @@ def test_generate_plan_falls_back_to_real_pois_when_ai_fails() -> None:
 
     assert len(result.days) == 2
     assert all(day.places for day in result.days)
+    assert not any(place.category in {"transport", "lodging"} for day in result.days for place in day.places)
     assert result.model is None
     assert result.warnings and "已使用地点偏好与距离规则生成" in result.warnings[0]
 
@@ -465,3 +467,130 @@ def test_weekly_closure_is_respected_for_trip_date() -> None:
         dayCount=1,
     )
     assert service._is_open_on_trip_day(museum, monday_request, 1) is False
+
+
+def test_actual_route_duration_retimes_next_place_and_records_mode() -> None:
+    class FakeRouteService:
+        async def best_segment(self, **kwargs):
+            return RouteSegment(
+                originId=kwargs["origin"].id,
+                destinationId=kwargs["destination"].id,
+                originName=kwargs["origin"].name,
+                destinationName=kwargs["destination"].name,
+                mode="transit",
+                distanceMeters=8200,
+                durationSeconds=2700,
+            )
+
+    service = TravelPlanGenerationService(object(), object(), FakeRouteService(), reveal_delay_seconds=0)
+    first = AiGeneratedPlace(
+        id="a",
+        sourcePoiId="a",
+        name="景点A",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+        suggestedStart="09:00",
+        suggestedEnd="10:00",
+        note="",
+    )
+    second = AiGeneratedPlace(
+        id="b",
+        sourcePoiId="b",
+        name="景点B",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.95,
+        longitude=116.5,
+        suggestedStart="10:10",
+        suggestedEnd="11:10",
+        note="",
+    )
+    days = [AiGeneratedDay(dayIndex=1, title="DAY 1", summary="", places=[first, second])]
+    routed = asyncio.run(
+        service._apply_actual_routes(
+            AiPlanGenerationRequest(destination="北京", dateRange="07.20", dayCount=1),
+            days,
+            [],
+            None,
+        ),
+    )
+    assert routed[0].places[1].suggestedStart == "10:45"
+    assert routed[0].transfers[0].mode == "transit"
+    assert routed[0].transfers[0].durationMinutes == 45
+    assert routed[0].estimatedDistanceKm == 8.2
+
+
+def test_model_ndjson_stream_emits_auditable_event_before_result() -> None:
+    class StreamingArk:
+        async def chat_stream(self, messages, *, on_delta, **kwargs):
+            chunks = [
+                '{"kind":"event","type":"MODEL_REASON","message":"雨天优先室内馆",',
+                '"dayIndex":1,"evidence":["天气：雨"],"decision":"保留博物馆"}\n',
+                '{"kind":"result","plan":{"title":"测试","days":[]}}\n',
+            ]
+            for chunk in chunks:
+                on_delta(chunk)
+            return "".join(chunks)
+
+    service = TravelPlanGenerationService(StreamingArk(), object(), reveal_delay_seconds=0)
+    candidate = PlaceSummary(
+        id="museum",
+        sourcePoiId="museum",
+        name="博物馆",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+    )
+    events = []
+
+    def progress(*args):
+        if args[4] is not None:
+            events.append(args[4])
+
+    payload = asyncio.run(
+        service._generate_with_ai(
+            AiPlanGenerationRequest(destination="北京", dateRange="07.20", dayCount=1),
+            "北京市",
+            [candidate],
+            [],
+            progress,
+        ),
+    )
+    assert payload["title"] == "测试"
+    assert events[0].type == "MODEL_REASON"
+    assert events[0].evidence == ["天气：雨"]
+    assert events[0].decision == "保留博物馆"
+
+
+def test_sse_endpoint_streams_progress_and_completion() -> None:
+    class FakeStreamingService:
+        async def generate(self, request, progress=None):
+            progress(35, "正在核验天气", 0)
+            await asyncio.sleep(0)
+            progress(70, "正在核验路线", 1)
+            return AiPlanGenerationResponse(
+                requestId="stream-result",
+                title="北京 1 日行程",
+                destination="北京市",
+                dateRange=request.dateRange,
+                dayCount=1,
+                days=[],
+                generatedAt="2026-07-19T00:00:00+00:00",
+            )
+
+    app.dependency_overrides[ai_api.get_travel_plan_generation_service] = lambda: FakeStreamingService()
+    try:
+        response = client.post(
+            "/api/ai/plans/stream",
+            json={"destination": "北京", "dateRange": "07.20", "dayCount": 1},
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: progress" in response.text
+    assert "event: complete" in response.text
+    assert '"requestId":"stream-result"' in response.text

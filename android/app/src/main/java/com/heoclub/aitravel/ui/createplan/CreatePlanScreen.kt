@@ -52,11 +52,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.heoclub.aitravel.data.model.AiHotelStayInput
 import java.time.LocalDate
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import java.time.format.DateTimeFormatter
+
+private data class HotelStayDraft(
+    val name: String = "",
+    val checkInDay: Int = 1,
+    val checkOutDay: Int = 2,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,7 +82,13 @@ fun CreatePlanScreen(
     var dateRange by remember { mutableStateOf(formatDateRange(startDate, endDate)) }
     var freeText by remember { mutableStateOf("") }
     var arrivalStation by remember { mutableStateOf("") }
+    var arrivalDay by remember { mutableStateOf(1) }
+    var arrivalTime by remember { mutableStateOf("") }
+    var departureStation by remember { mutableStateOf("") }
+    var departureDay by remember { mutableStateOf(dayCount) }
+    var departureTime by remember { mutableStateOf("") }
     var hotelName by remember { mutableStateOf("") }
+    val hotelStays = remember { mutableStateListOf<HotelStayDraft>() }
     var pace by remember { mutableStateOf("BALANCED") }
     var transportPreference by remember { mutableStateOf("MIXED") }
     var dailyStart by remember { mutableStateOf("09:00") }
@@ -188,7 +201,7 @@ fun CreatePlanScreen(
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            "填写后会优先采用；留空则按目的地自动选择交通枢纽和住宿参考。",
+            "只采用你明确填写的项目；留空不会自动加入车站、机场或酒店。时间请用 HH:mm。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -197,21 +210,126 @@ fun CreatePlanScreen(
             onValueChange = { arrivalStation = it.take(60) },
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
-            label = { Text("到达火车站") },
-            placeholder = { Text("例如 北京南站") },
+            label = { Text("到达车站 / 机场") },
+            placeholder = { Text("例如 北京南站或首都机场") },
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
         )
+        OutlinedTextField(
+            value = arrivalTime,
+            onValueChange = { arrivalTime = it.filter { char -> char.isDigit() || char == ':' }.take(5) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("到达时间（可选）") },
+            placeholder = { Text("例如 08:35") },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("第 $arrivalDay 天到达", modifier = Modifier.weight(1f))
+            IconButton(onClick = { arrivalDay = (arrivalDay - 1).coerceAtLeast(1) }) {
+                Icon(Icons.Outlined.Remove, contentDescription = "提前到达日")
+            }
+            IconButton(onClick = { arrivalDay = (arrivalDay + 1).coerceAtMost(departureDay) }) {
+                Icon(Icons.Outlined.Add, contentDescription = "延后到达日")
+            }
+        }
+        OutlinedTextField(
+            value = departureStation,
+            onValueChange = { departureStation = it.take(60) },
+            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
+            label = { Text("离开车站 / 机场") },
+            placeholder = { Text("例如 北京西站") },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
+        OutlinedTextField(
+            value = departureTime,
+            onValueChange = { departureTime = it.filter { char -> char.isDigit() || char == ':' }.take(5) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("离开时间（可选，默认最后一天）") },
+            placeholder = { Text("例如 18:20") },
+            singleLine = true,
+            shape = RoundedCornerShape(18.dp),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("第 $departureDay 天离开", modifier = Modifier.weight(1f))
+            IconButton(onClick = { departureDay = (departureDay - 1).coerceAtLeast(arrivalDay) }) {
+                Icon(Icons.Outlined.Remove, contentDescription = "提前离开日")
+            }
+            IconButton(onClick = { departureDay = (departureDay + 1).coerceAtMost(dayCount) }) {
+                Icon(Icons.Outlined.Add, contentDescription = "延后离开日")
+            }
+        }
         OutlinedTextField(
             value = hotelName,
             onValueChange = { hotelName = it.take(80) },
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
-            label = { Text("入住酒店") },
-            placeholder = { Text("例如 王府井附近酒店") },
+            label = { Text("全程同一酒店（可选）") },
+            placeholder = { Text("例如 北京王府井希尔顿酒店") },
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
         )
+        hotelStays.forEachIndexed { index, stay ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("分段酒店 ${index + 1}", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { hotelStays.removeAt(index) }) {
+                            Icon(Icons.Outlined.Remove, contentDescription = "删除这段酒店")
+                        }
+                    }
+                    OutlinedTextField(
+                        value = stay.name,
+                        onValueChange = { hotelStays[index] = stay.copy(name = it.take(80)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("酒店准确名称") },
+                        singleLine = true,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = {
+                            hotelStays[index] = stay.copy(checkInDay = (stay.checkInDay - 1).coerceAtLeast(1))
+                        }) { Icon(Icons.Outlined.Remove, contentDescription = "提前入住") }
+                        Text("第 ${stay.checkInDay} 天入住", modifier = Modifier.weight(1f))
+                        IconButton(onClick = {
+                            hotelStays[index] = stay.copy(
+                                checkInDay = (stay.checkInDay + 1).coerceAtMost(stay.checkOutDay - 1),
+                            )
+                        }) { Icon(Icons.Outlined.Add, contentDescription = "延后入住") }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = {
+                            hotelStays[index] = stay.copy(
+                                checkOutDay = (stay.checkOutDay - 1).coerceAtLeast(stay.checkInDay + 1),
+                            )
+                        }) { Icon(Icons.Outlined.Remove, contentDescription = "提前退房") }
+                        Text("第 ${stay.checkOutDay} 天退房", modifier = Modifier.weight(1f))
+                        IconButton(onClick = {
+                            hotelStays[index] = stay.copy(checkOutDay = (stay.checkOutDay + 1).coerceAtMost(dayCount + 1))
+                        }) { Icon(Icons.Outlined.Add, contentDescription = "延后退房") }
+                    }
+                }
+            }
+        }
+        OutlinedButton(
+            onClick = {
+                val checkIn = (hotelStays.lastOrNull()?.checkOutDay ?: 1).coerceAtMost(dayCount)
+                hotelStays.add(HotelStayDraft(checkInDay = checkIn, checkOutDay = (checkIn + 1).coerceAtMost(dayCount + 1)))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = hotelStays.size < dayCount,
+        ) {
+            Icon(Icons.Outlined.Add, contentDescription = null)
+            Text("按入住日期添加不同酒店")
+        }
         OutlinedTextField(
             value = freeText,
             onValueChange = { freeText = it.take(240) },
@@ -246,7 +364,11 @@ fun CreatePlanScreen(
                 Text("行程天数", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                 IconButton(
                     onClick = {
+                        val oldDayCount = dayCount
                         dayCount = (dayCount - 1).coerceAtLeast(1)
+                        if (departureDay == oldDayCount) departureDay = dayCount
+                        departureDay = departureDay.coerceAtMost(dayCount)
+                        arrivalDay = arrivalDay.coerceAtMost(departureDay)
                         endDate = startDate.plusDays((dayCount - 1).toLong())
                         dateRange = formatDateRange(startDate, endDate)
                     },
@@ -257,7 +379,9 @@ fun CreatePlanScreen(
                 Text("$dayCount 天", modifier = Modifier.padding(horizontal = 8.dp), fontWeight = FontWeight.Bold)
                 IconButton(
                     onClick = {
+                        val oldDayCount = dayCount
                         dayCount = (dayCount + 1).coerceAtMost(10)
+                        if (departureDay == oldDayCount) departureDay = dayCount
                         endDate = startDate.plusDays((dayCount - 1).toLong())
                         dateRange = formatDateRange(startDate, endDate)
                     },
@@ -364,6 +488,10 @@ fun CreatePlanScreen(
                     when {
                         destination.isBlank() -> destinationError = true
                         dateRange.isBlank() -> Toast.makeText(context, "请先填写出行日期", Toast.LENGTH_SHORT).show()
+                        arrivalTime.isNotBlank() && !isValidClockTime(arrivalTime) ->
+                            Toast.makeText(context, "到达时间请使用 HH:mm，例如 08:35", Toast.LENGTH_SHORT).show()
+                        departureTime.isNotBlank() && !isValidClockTime(departureTime) ->
+                            Toast.makeText(context, "离开时间请使用 HH:mm，例如 18:20", Toast.LENGTH_SHORT).show()
                         else -> onStartAiPlanning(
                             AiPlanDraftInput(
                                 destination = destination.trim(),
@@ -372,7 +500,17 @@ fun CreatePlanScreen(
                                 preferences = selectedPreferences.toList(),
                                 freeText = freeText.trim().ifBlank { null },
                                 arrivalStation = arrivalStation.trim().ifBlank { null },
+                                arrivalDay = arrivalDay,
+                                arrivalTime = arrivalTime.trim().ifBlank { null },
+                                departureStation = departureStation.trim().ifBlank { null },
+                                departureDay = departureDay,
+                                departureTime = departureTime.trim().ifBlank { null },
                                 hotelName = hotelName.trim().ifBlank { null },
+                                hotelStays = hotelStays.mapNotNull { stay ->
+                                    stay.name.trim().takeIf(String::isNotBlank)?.let { name ->
+                                        AiHotelStayInput(name, stay.checkInDay, stay.checkOutDay)
+                                    }
+                                },
                                 pace = pace,
                                 transportPreference = transportPreference,
                                 dailyStart = dailyStart,
@@ -414,7 +552,11 @@ fun CreatePlanScreen(
                             } else {
                                 startDate = start
                                 endDate = end
+                                val oldDayCount = dayCount
                                 dayCount = selectedDays.coerceAtLeast(1)
+                                if (departureDay == oldDayCount) departureDay = dayCount
+                                departureDay = departureDay.coerceAtMost(dayCount)
+                                arrivalDay = arrivalDay.coerceAtMost(departureDay)
                                 dateRange = formatDateRange(start, end)
                                 showDatePicker = false
                             }
@@ -444,6 +586,10 @@ private fun defaultDateRange(dayCount: Int): String {
 private fun formatDateRange(start: LocalDate, end: LocalDate): String {
     val formatter = DateTimeFormatter.ofPattern("MM.dd")
     return "${start.format(formatter)} - ${end.format(formatter)}"
+}
+
+private fun isValidClockTime(value: String): Boolean {
+    return Regex("(?:[01]\\d|2[0-3]):[0-5]\\d").matches(value)
 }
 
 @Composable

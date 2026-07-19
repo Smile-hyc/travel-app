@@ -100,12 +100,24 @@ data class AiPlanGenerationRequest(
     val preferences: List<String> = emptyList(),
     val freeText: String? = null,
     val arrivalStation: String? = null,
+    val arrivalDay: Int = 1,
+    val arrivalTime: String? = null,
+    val departureStation: String? = null,
+    val departureDay: Int? = null,
+    val departureTime: String? = null,
     val hotelName: String? = null,
+    val hotelStays: List<AiHotelStayInput> = emptyList(),
     val pace: String = "BALANCED",
     val transportPreference: String = "MIXED",
     val dailyStart: String = "09:00",
     val dailyEnd: String = "20:00",
     val clientRequestId: String? = null,
+)
+
+data class AiHotelStayInput(
+    val name: String,
+    val checkInDay: Int,
+    val checkOutDay: Int,
 )
 
 data class AiGeneratedPlace(
@@ -144,8 +156,20 @@ data class AiGeneratedDay(
     val title: String,
     val summary: String,
     val places: List<AiGeneratedPlace> = emptyList(),
+    val transfers: List<AiGeneratedTransfer> = emptyList(),
+    val weather: String? = null,
     val estimatedDistanceKm: Double = 0.0,
     val intensity: String = "适中",
+)
+
+data class AiGeneratedTransfer(
+    val originPlaceId: String,
+    val destinationPlaceId: String,
+    val mode: String,
+    val distanceMeters: Int,
+    val durationMinutes: Int,
+    val verified: Boolean = true,
+    val warning: String? = null,
 )
 
 data class AiPlanQuality(
@@ -176,6 +200,8 @@ data class AiPlanProgressEvent(
     val message: String,
     val dayIndex: Int? = null,
     val placeId: String? = null,
+    val evidence: List<String> = emptyList(),
+    val decision: String? = null,
     val createdAt: String,
 )
 

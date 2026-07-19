@@ -175,6 +175,10 @@ open class InMemoryTravelPlanRepository(
                             note = place.note,
                             suggestedStart = place.suggestedStart,
                             suggestedEnd = place.suggestedEnd,
+                            transportModeToNext = generatedDay.transfers
+                                .firstOrNull { it.originPlaceId == place.id }
+                                ?.mode
+                                ?: "walking",
                             thumbnailUrl = place.thumbnailUrl,
                             imageUrls = place.imageUrls,
                             phone = place.phone,

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from typing import Callable
+
 import httpx
 from fastapi import HTTPException, status
 
@@ -79,6 +82,80 @@ class ArkClient:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="AI 服务返回了空回复。",
             )
+        return content
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        on_delta: Callable[[str], None],
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        """Consume the provider's real SSE token stream.
+
+        Only the model's visible ``content`` is forwarded. Provider-specific
+        hidden-reasoning fields are deliberately ignored; planning emits its
+        own auditable, structured decision events instead.
+        """
+        if not self._settings.ark_configured:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI 服务尚未配置，请检查 ARK_API_KEY、ARK_MODEL 和 ARK_BASE_URL。",
+            )
+        url = f"{self._settings.ark_base_url.rstrip('/')}/chat/completions"
+        payload = {
+            "model": self._settings.ark_model,
+            "messages": messages,
+            "temperature": self._settings.ark_temperature if temperature is None else temperature,
+            "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._settings.ark_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
+            write=20.0,
+            pool=10.0,
+        )
+        chunks: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code >= 400:
+                        await response.aread()
+                        raise self._to_http_exception(response)
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = data.get("choices") or []
+                        delta = choices[0].get("delta") if choices else None
+                        content = delta.get("content") if isinstance(delta, dict) else None
+                        if not isinstance(content, str) or not content:
+                            continue
+                        chunks.append(content)
+                        on_delta(content)
+        except HTTPException:
+            raise
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=504, detail="AI 流式回复超时，请稍后重试。") from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="无法连接 AI 流式服务。") from exc
+        content = "".join(chunks).strip()
+        if not content:
+            raise HTTPException(status_code=502, detail="AI 流式服务没有返回可用内容。")
         return content
 
     def _to_http_exception(self, response: httpx.Response) -> HTTPException:

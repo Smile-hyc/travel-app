@@ -44,6 +44,7 @@ import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
 import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
 import com.heoclub.aitravel.ui.assistant.AiAssistantViewModel
 import com.heoclub.aitravel.ui.createplan.AiPlanDraftInput
+import com.heoclub.aitravel.data.model.AiHotelStayInput
 import com.heoclub.aitravel.ui.createplan.AiPlanGenerationScreen
 import com.heoclub.aitravel.ui.createplan.AiPlanGenerationViewModel
 import com.heoclub.aitravel.ui.createplan.CreatePlanScreen
@@ -68,7 +69,8 @@ private object Routes {
     const val aiPlanGenerationPattern =
         "ai-plan-generation?destination={destination}&dateRange={dateRange}&dayCount={dayCount}" +
             "&preferences={preferences}&freeText={freeText}&pace={pace}&transport={transport}" +
-            "&dailyStart={dailyStart}&dailyEnd={dailyEnd}&arrivalStation={arrivalStation}&hotelName={hotelName}"
+            "&dailyStart={dailyStart}&dailyEnd={dailyEnd}&arrivalStation={arrivalStation}&arrivalDay={arrivalDay}&arrivalTime={arrivalTime}" +
+            "&departureStation={departureStation}&departureDay={departureDay}&departureTime={departureTime}&hotelName={hotelName}&hotelStays={hotelStays}"
 
     fun planDetail(planId: String): String = "plan-detail/$planId"
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
@@ -84,7 +86,13 @@ private object Routes {
         dailyStart: String,
         dailyEnd: String,
         arrivalStation: String?,
+        arrivalDay: Int,
+        arrivalTime: String?,
+        departureStation: String?,
+        departureDay: Int?,
+        departureTime: String?,
         hotelName: String?,
+        hotelStays: List<AiHotelStayInput>,
     ): String {
         return "ai-plan-generation" +
             "?destination=${Uri.encode(destination)}" +
@@ -97,7 +105,13 @@ private object Routes {
             "&dailyStart=${Uri.encode(dailyStart)}" +
             "&dailyEnd=${Uri.encode(dailyEnd)}" +
             "&arrivalStation=${Uri.encode(arrivalStation.orEmpty())}" +
-            "&hotelName=${Uri.encode(hotelName.orEmpty())}"
+            "&arrivalDay=$arrivalDay" +
+            "&arrivalTime=${Uri.encode(arrivalTime.orEmpty())}" +
+            "&departureStation=${Uri.encode(departureStation.orEmpty())}" +
+            "&departureDay=${departureDay ?: dayCount}" +
+            "&departureTime=${Uri.encode(departureTime.orEmpty())}" +
+            "&hotelName=${Uri.encode(hotelName.orEmpty())}" +
+            "&hotelStays=${Uri.encode(hotelStays.joinToString(";;") { "${it.checkInDay},${it.checkOutDay},${it.name}" })}"
     }
 
     fun assistant(
@@ -289,7 +303,13 @@ fun AiTravelNavHost() {
                                 dailyStart = input.dailyStart,
                                 dailyEnd = input.dailyEnd,
                                 arrivalStation = input.arrivalStation,
+                                arrivalDay = input.arrivalDay,
+                                arrivalTime = input.arrivalTime,
+                                departureStation = input.departureStation,
+                                departureDay = input.departureDay,
+                                departureTime = input.departureTime,
                                 hotelName = input.hotelName,
+                                hotelStays = input.hotelStays,
                             ),
                         )
                     },
@@ -329,7 +349,31 @@ fun AiTravelNavHost() {
                         type = NavType.StringType
                         defaultValue = ""
                     },
+                    navArgument("arrivalDay") {
+                        type = NavType.IntType
+                        defaultValue = 1
+                    },
+                    navArgument("arrivalTime") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("departureStation") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("departureDay") {
+                        type = NavType.IntType
+                        defaultValue = 1
+                    },
+                    navArgument("departureTime") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
                     navArgument("hotelName") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("hotelStays") {
                         type = NavType.StringType
                         defaultValue = ""
                     },
@@ -350,7 +394,24 @@ fun AiTravelNavHost() {
                     dailyStart = backStackEntry.arguments?.getString("dailyStart") ?: "09:00",
                     dailyEnd = backStackEntry.arguments?.getString("dailyEnd") ?: "20:00",
                     arrivalStation = backStackEntry.arguments?.getString("arrivalStation")?.takeIf(String::isNotBlank),
+                    arrivalDay = backStackEntry.arguments?.getInt("arrivalDay") ?: 1,
+                    arrivalTime = backStackEntry.arguments?.getString("arrivalTime")?.takeIf(String::isNotBlank),
+                    departureStation = backStackEntry.arguments?.getString("departureStation")?.takeIf(String::isNotBlank),
+                    departureDay = backStackEntry.arguments?.getInt("departureDay"),
+                    departureTime = backStackEntry.arguments?.getString("departureTime")?.takeIf(String::isNotBlank),
                     hotelName = backStackEntry.arguments?.getString("hotelName")?.takeIf(String::isNotBlank),
+                    hotelStays = backStackEntry.arguments?.getString("hotelStays")
+                        .orEmpty()
+                        .split(";;")
+                        .mapNotNull { encoded ->
+                            val parts = encoded.split(',', limit = 3)
+                            val checkIn = parts.getOrNull(0)?.toIntOrNull()
+                            val checkOut = parts.getOrNull(1)?.toIntOrNull()
+                            val name = parts.getOrNull(2)?.trim().orEmpty()
+                            if (checkIn != null && checkOut != null && name.isNotBlank()) {
+                                AiHotelStayInput(name, checkIn, checkOut)
+                            } else null
+                        },
                 )
                 val generationViewModel: AiPlanGenerationViewModel = viewModel(
                     factory = AiPlanGenerationViewModel.Factory(

@@ -71,15 +71,17 @@ data class OptimizeDayRouteResponse(
 )
 
 object RouteModes {
+    const val MIXED = "mixed"
     const val WALKING = "walking"
     const val DRIVING = "driving"
     const val CYCLING = "cycling"
     const val TRANSIT = "transit"
 
-    val all = listOf(WALKING, DRIVING, CYCLING, TRANSIT)
+    val all = listOf(MIXED, WALKING, DRIVING, CYCLING, TRANSIT)
 
     fun label(mode: String): String {
         return when (mode) {
+            MIXED -> "智能混合"
             WALKING -> "步行"
             DRIVING -> "驾车"
             CYCLING -> "骑行"
