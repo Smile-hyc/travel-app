@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,6 +57,11 @@ import com.heoclub.aitravel.ui.discover.DiscoverScreen
 import com.heoclub.aitravel.ui.explore.ExploreViewModel
 import com.heoclub.aitravel.ui.explore.rememberExploreMapViewHolder
 import com.heoclub.aitravel.ui.home.HomeViewModel
+import com.heoclub.aitravel.ui.journey.JourneyJournalEditorScreen
+import com.heoclub.aitravel.ui.journey.JourneyJournalDetailScreen
+import com.heoclub.aitravel.ui.journey.JourneyJournalScreen
+import com.heoclub.aitravel.ui.journey.JourneyScreen
+import com.heoclub.aitravel.ui.journey.seedJournalEntries
 import com.heoclub.aitravel.ui.plan.PlanHomeScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeViewModel
 import com.heoclub.aitravel.ui.place.PlaceDetailScreen
@@ -64,6 +70,9 @@ import com.heoclub.aitravel.ui.profile.ProfileScreen
 
 private object Routes {
     const val createPlan = "create-plan"
+    const val journeyJournal = "journey-journal"
+    const val journeyJournalEditor = "journey-journal-editor"
+    const val journeyJournalDetailPattern = "journey-journal-detail/{entryId}"
     const val planDetailPattern = "plan-detail/{planId}"
     const val placeDetailPattern = "place-detail/{placeId}"
     const val assistantPattern = "assistant?question={question}&planId={planId}"
@@ -76,6 +85,7 @@ private object Routes {
 
     fun planDetail(planId: String): String = "plan-detail/$planId"
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
+    fun journeyJournalDetail(entryId: String): String = "journey-journal-detail/${Uri.encode(entryId)}"
 
     fun aiPlanGeneration(
         destination: String,
@@ -205,6 +215,7 @@ fun AiTravelNavHost() {
     val exploreMapViewHolder = rememberExploreMapViewHolder()
     var pendingPlaceToAdd by remember { mutableStateOf<PlaceSummary?>(null) }
     var explorePlanContext by remember { mutableStateOf<ExplorePlanContext?>(null) }
+    val journalEntries = remember { mutableStateListOf(*seedJournalEntries.toTypedArray()) }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
@@ -331,11 +342,49 @@ fun AiTravelNavHost() {
                     onAddPlace = { place -> pendingPlaceToAdd = place },
                 )
             }
+            composable(AppDestination.Journey.route) {
+                JourneyScreen(
+                    journalEntries = journalEntries,
+                    onOpenJournal = { navController.navigate(Routes.journeyJournal) },
+                    onOpenJournalEntry = { entryId -> navController.navigate(Routes.journeyJournalDetail(entryId)) },
+                )
+            }
             composable(AppDestination.Profile.route) {
                 val homeViewModel: HomeViewModel = viewModel(
                     factory = HomeViewModel.Factory(application.container.healthRepository),
                 )
                 ProfileScreen(viewModel = homeViewModel)
+            }
+            composable(Routes.journeyJournal) {
+                JourneyJournalScreen(
+                    entries = journalEntries,
+                    onBack = { navController.popBackStack() },
+                    onWriteJourney = { navController.navigate(Routes.journeyJournalEditor) },
+                    onAddEntry = { entry -> journalEntries.add(0, entry) },
+                    onOpenEntry = { entryId -> navController.navigate(Routes.journeyJournalDetail(entryId)) },
+                )
+            }
+            composable(Routes.journeyJournalEditor) {
+                JourneyJournalEditorScreen(
+                    onBack = { navController.popBackStack() },
+                    onSave = { entry ->
+                        journalEntries.add(0, entry)
+                        navController.popBackStack()
+                    },
+                )
+            }
+            composable(
+                route = Routes.journeyJournalDetailPattern,
+                arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
+            ) { backStackEntry ->
+                val entryId = backStackEntry.arguments?.getString("entryId").orEmpty()
+                val entry = journalEntries.firstOrNull { it.id == entryId }
+                if (entry != null) {
+                    JourneyJournalDetailScreen(
+                        entry = entry,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
             }
             composable(Routes.createPlan) {
                 val createPlanViewModel: CreatePlanViewModel = viewModel(
