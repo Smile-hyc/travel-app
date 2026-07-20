@@ -8,6 +8,7 @@ import com.heoclub.aitravel.data.model.AiDayContext
 import com.heoclub.aitravel.data.model.AiHistoryMessage
 import com.heoclub.aitravel.data.model.AiPlaceContext
 import com.heoclub.aitravel.data.model.AiPlanContext
+import com.heoclub.aitravel.data.model.AiCard
 import com.heoclub.aitravel.data.model.AiSuggestedAction
 import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.TravelPlan
@@ -51,6 +52,7 @@ data class AiAssistantUiState(
     val actionSet: AiActionSetUi? = null,
     val actionMessage: String? = null,
     val undoToken: String? = null,
+    val cards: List<AiCard> = emptyList(),
 )
 
 private val defaultQuickReplies = listOf(
@@ -64,6 +66,8 @@ class AiAssistantViewModel(
     private val planId: String?,
     private val travelPlanRepository: TravelPlanRepository,
     private val aiRepository: AiRepository,
+    private val onNavigateToCreatePlan: () -> Unit = {},
+    private val onNavigateToPlaceDetail: (String) -> Unit = {},
 ) : ViewModel() {
     private var conversationId: String? = null
     private var lastFailedInput: String? = null
@@ -131,6 +135,8 @@ class AiAssistantViewModel(
                     null
                 }
 
+                val responseCards = if (staleWarning == null) response.cards else emptyList()
+
                 _uiState.update { state ->
                     state.copy(
                         currentPlan = latestPlan,
@@ -143,6 +149,7 @@ class AiAssistantViewModel(
                         errorMessage = null,
                         actionSet = if (staleWarning == null) actionSet else null,
                         actionMessage = staleWarning,
+                        cards = responseCards,
                     )
                 }
             }.onFailure { throwable ->
@@ -184,6 +191,7 @@ class AiAssistantViewModel(
         _uiState.update {
             it.copy(
                 actionSet = null,
+                cards = it.cards.filter { c -> c.type != "ITINERARY_OPTIMIZATION" },
                 actionMessage = "已取消本轮 AI 建议。",
             )
         }
@@ -221,6 +229,7 @@ class AiAssistantViewModel(
                     currentPlan = latestPlan,
                     isApplyingActions = false,
                     actionSet = if (result.success) null else current.actionSet,
+                    cards = if (result.success) current.cards.filter { it.type != "ITINERARY_OPTIMIZATION" } else current.cards,
                     undoToken = result.undoToken,
                     actionMessage = result.message,
                 )
@@ -237,6 +246,27 @@ class AiAssistantViewModel(
                 currentPlan = travelPlanRepository.getPlan(plan.id),
                 undoToken = if (result.success) null else it.undoToken,
                 actionMessage = result.message,
+            )
+        }
+    }
+
+    fun onLinkCardClicked() {
+        onNavigateToCreatePlan()
+    }
+
+    fun onItineraryPlaceClicked(placeId: String) {
+        onNavigateToPlaceDetail(placeId)
+    }
+
+    fun confirmItineraryCard() {
+        applySuggestedActions()
+    }
+
+    fun dismissItineraryCard() {
+        _uiState.update { state ->
+            state.copy(
+                cards = state.cards.filter { it.type != "ITINERARY_OPTIMIZATION" },
+                actionSet = null,
             )
         }
     }
@@ -359,6 +389,8 @@ class AiAssistantViewModel(
         private val planId: String?,
         private val travelPlanRepository: TravelPlanRepository,
         private val aiRepository: AiRepository,
+        private val onNavigateToCreatePlan: () -> Unit = {},
+        private val onNavigateToPlaceDetail: (String) -> Unit = {},
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -368,6 +400,8 @@ class AiAssistantViewModel(
                     planId = planId,
                     travelPlanRepository = travelPlanRepository,
                     aiRepository = aiRepository,
+                    onNavigateToCreatePlan = onNavigateToCreatePlan,
+                    onNavigateToPlaceDetail = onNavigateToPlaceDetail,
                 ) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -38,12 +39,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import com.heoclub.aitravel.data.model.AiCard
+import com.heoclub.aitravel.data.model.TravelPlan
 import androidx.compose.ui.unit.dp
 
 @Composable
 fun AiAssistantScreen(
     viewModel: AiAssistantViewModel,
     onClose: () -> Unit,
+    onNavigateToCreatePlan: () -> Unit = {},
+    onNavigateToPlaceDetail: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -123,6 +128,27 @@ fun AiAssistantScreen(
                         canUndo = state.undoToken != null,
                         onUndo = viewModel::undoLastAiAction,
                     )
+                }
+            }
+            state.cards.forEach { card ->
+                item(key = "card-${card.type}-${card.id}") {
+                    when (card.type) {
+                        "LINK" -> LinkCardView(
+                            card = card,
+                            onClick = {
+                                onNavigateToCreatePlan()
+                            },
+                        )
+                        "ITINERARY_OPTIMIZATION" -> ItineraryOptimizationCardView(
+                            card = card,
+                            plan = currentPlan,
+                            onPlaceClick = { placeId ->
+                                onNavigateToPlaceDetail(placeId)
+                            },
+                            onConfirm = { viewModel.confirmItineraryCard() },
+                            onCancel = { viewModel.dismissItineraryCard() },
+                        )
+                    }
                 }
             }
         }
@@ -373,6 +399,202 @@ private fun QuickActionRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
+            }
+        }
+    }
+}
+
+// ── Card Composables ──
+
+@Composable
+private fun LinkCardView(
+    card: AiCard,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.White,
+        shape = RoundedCornerShape(24.dp),
+        shadowElevation = 3.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.SmartToy,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Text(
+                text = card.title ?: "创建旅行计划",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF13213A),
+            )
+            card.subtitle?.let { subtitle ->
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF66758A),
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = onClick,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(50),
+            ) {
+                Text("去创建旅行计划", modifier = Modifier.padding(vertical = 4.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ItineraryOptimizationCardView(
+    card: AiCard,
+    plan: TravelPlan?,
+    onPlaceClick: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val allItems = plan?.let {
+        it.days.flatMap { day -> day.items } + it.unplannedItems
+    } ?: emptyList()
+    val itemById = allItems.associateBy { item -> item.id }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.White,
+        shape = RoundedCornerShape(24.dp),
+        shadowElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.SmartToy,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+                Text(
+                    text = card.title ?: "行程优化建议",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF13213A),
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onCancel) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = "关闭",
+                        tint = Color(0xFF66758A),
+                    )
+                }
+            }
+            Text(
+                text = "以下是优化后的每日行程安排，点击地点可查看详情。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF66758A),
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            card.days?.forEach { day ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    color = Color(0xFFF3F8FF),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = day.title.ifBlank { "DAY ${day.day_index}" },
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF13213A),
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        day.place_refs.forEach { placeRef ->
+                            val item = itemById[placeRef.itemId]
+                            Surface(
+                                onClick = { onPlaceClick(placeRef.itemId) },
+                                color = Color.White,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.padding(vertical = 3.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.Top,
+                                ) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                        shape = CircleShape,
+                                    ) {
+                                        Text(
+                                            text = "${item?.visitOrder ?: "?"}",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = item?.name ?: "地点 ${placeRef.itemId}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF13213A),
+                                        )
+                                        Text(
+                                            text = listOfNotNull(
+                                                item?.suggestedStart,
+                                                item?.suggestedEnd,
+                                            ).joinToString(" - ").ifBlank {
+                                                item?.address ?: ""
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF66758A),
+                                        )
+                                        placeRef.note.takeIf { it.isNotBlank() }?.let { note ->
+                                            Text(
+                                                text = note,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFF9A6A00),
+                                                modifier = Modifier.padding(top = 2.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text("取消")
+                }
+                Button(
+                    onClick = onConfirm,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text("确认优化")
+                }
             }
         }
     }

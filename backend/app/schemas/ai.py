@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -97,6 +98,53 @@ class AiSuggestedAction(BaseModel):
     affectedDayIndexes: list[int] = Field(default_factory=list)
 
 
+# ---------- Card models ----------
+
+
+class AiCardType(str, Enum):
+    LINK = "LINK"
+    ITINERARY_OPTIMIZATION = "ITINERARY_OPTIMIZATION"
+
+
+class AiLinkActionType(str, Enum):
+    NAVIGATE_TO_CREATE_PLAN = "NAVIGATE_TO_CREATE_PLAN"
+
+
+class AiCardPlaceRef(BaseModel):
+    """卡片中引用的地点 — 前端用 itemId 从 plan 中解析完整信息"""
+
+    itemId: str
+    note: str = ""
+
+
+class AiCardDay(BaseModel):
+    day_index: int
+    title: str = ""
+    place_refs: list[AiCardPlaceRef] = Field(default_factory=list)
+
+
+class AiLinkCardPayload(BaseModel):
+    action_type: AiLinkActionType = AiLinkActionType.NAVIGATE_TO_CREATE_PLAN
+
+
+class AiLinkCard(BaseModel):
+    id: str
+    type: Literal["LINK"] = "LINK"
+    title: str
+    subtitle: str | None = None
+    payload: AiLinkCardPayload = Field(default_factory=AiLinkCardPayload)
+
+
+class AiItineraryCard(BaseModel):
+    id: str
+    type: Literal["ITINERARY_OPTIMIZATION"] = "ITINERARY_OPTIMIZATION"
+    title: str
+    days: list[AiCardDay] = Field(default_factory=list)
+
+
+AiCard = AiLinkCard | AiItineraryCard
+
+
 class AiChatResponse(BaseModel):
     conversationId: str
     messageId: str
@@ -107,6 +155,7 @@ class AiChatResponse(BaseModel):
     planRevision: int | None = None
     suggestedActions: list[AiSuggestedAction] = Field(default_factory=list)
     actionWarnings: list[str] = Field(default_factory=list)
+    cards: list[AiCard] = Field(default_factory=list)
     createdAt: str
     model: str | None = None
 
