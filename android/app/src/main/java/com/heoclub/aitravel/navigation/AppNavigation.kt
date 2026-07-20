@@ -45,6 +45,7 @@ import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
 import com.heoclub.aitravel.ui.assistant.AiAssistantViewModel
 import com.heoclub.aitravel.ui.createplan.AiPlanDraftInput
 import com.heoclub.aitravel.data.model.AiHotelStayInput
+import com.heoclub.aitravel.data.model.AiMapPointInput
 import com.heoclub.aitravel.ui.createplan.AiPlanGenerationScreen
 import com.heoclub.aitravel.ui.createplan.AiPlanGenerationViewModel
 import com.heoclub.aitravel.ui.createplan.CreatePlanScreen
@@ -70,7 +71,8 @@ private object Routes {
         "ai-plan-generation?destination={destination}&dateRange={dateRange}&dayCount={dayCount}" +
             "&preferences={preferences}&freeText={freeText}&pace={pace}&transport={transport}" +
             "&dailyStart={dailyStart}&dailyEnd={dailyEnd}&arrivalStation={arrivalStation}&arrivalDay={arrivalDay}&arrivalTime={arrivalTime}" +
-            "&departureStation={departureStation}&departureDay={departureDay}&departureTime={departureTime}&hotelName={hotelName}&hotelStays={hotelStays}"
+            "&departureStation={departureStation}&departureDay={departureDay}&departureTime={departureTime}&hotelName={hotelName}" +
+            "&hotelStays={hotelStays}&mapPoints={mapPoints}&optimizationMode={optimizationMode}"
 
     fun planDetail(planId: String): String = "plan-detail/$planId"
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
@@ -86,13 +88,17 @@ private object Routes {
         dailyStart: String,
         dailyEnd: String,
         arrivalStation: String?,
+        arrivalPoint: AiMapPointInput?,
         arrivalDay: Int,
         arrivalTime: String?,
         departureStation: String?,
+        departurePoint: AiMapPointInput?,
         departureDay: Int?,
         departureTime: String?,
         hotelName: String?,
+        hotelPoint: AiMapPointInput?,
         hotelStays: List<AiHotelStayInput>,
+        optimizationMode: String,
     ): String {
         return "ai-plan-generation" +
             "?destination=${Uri.encode(destination)}" +
@@ -111,7 +117,9 @@ private object Routes {
             "&departureDay=${departureDay ?: dayCount}" +
             "&departureTime=${Uri.encode(departureTime.orEmpty())}" +
             "&hotelName=${Uri.encode(hotelName.orEmpty())}" +
-            "&hotelStays=${Uri.encode(hotelStays.joinToString(";;") { "${it.checkInDay},${it.checkOutDay},${it.name}" })}"
+            "&hotelStays=${Uri.encode(hotelStays.joinToString(";;") { stay -> encodeHotelStay(stay) })}" +
+            "&mapPoints=${Uri.encode(encodeMapPoints(arrivalPoint, departurePoint, hotelPoint))}" +
+            "&optimizationMode=${Uri.encode(optimizationMode)}"
     }
 
     fun assistant(
@@ -124,6 +132,56 @@ private object Routes {
         }.joinToString("&")
         return if (query.isBlank()) "assistant" else "assistant?$query"
     }
+}
+
+private fun encodeHotelStay(stay: AiHotelStayInput): String {
+    val point = stay.mapPoint
+    return listOf(
+        stay.checkInDay,
+        stay.checkOutDay,
+        point?.latitude ?: "",
+        point?.longitude ?: "",
+        stay.name.replace(',', '，').replace(";;", "；；"),
+        point?.address.orEmpty().replace(',', '，').replace(";;", "；；"),
+    ).joinToString(",")
+}
+
+private fun encodeMapPoints(
+    arrival: AiMapPointInput?,
+    departure: AiMapPointInput?,
+    hotel: AiMapPointInput?,
+): String {
+    return listOf("arrival" to arrival, "departure" to departure, "hotel" to hotel)
+        .mapNotNull { (key, point) ->
+            point?.let {
+                listOf(
+                    key,
+                    it.latitude,
+                    it.longitude,
+                    it.name.replace(',', '，').replace(";;", "；；"),
+                    it.address.orEmpty().replace(',', '，').replace(";;", "；；"),
+                ).joinToString(",")
+            }
+        }
+        .joinToString(";;")
+}
+
+private fun decodeMapPoints(value: String): Map<String, AiMapPointInput> {
+    return value.split(";;").mapNotNull { encoded ->
+        val parts = encoded.split(',', limit = 5)
+        val key = parts.getOrNull(0)?.takeIf { it in setOf("arrival", "departure", "hotel") }
+        val latitude = parts.getOrNull(1)?.toDoubleOrNull()
+        val longitude = parts.getOrNull(2)?.toDoubleOrNull()
+        val name = parts.getOrNull(3)?.trim().orEmpty()
+        if (key != null && latitude != null && longitude != null && name.isNotBlank()) {
+            key to AiMapPointInput(
+                name = name,
+                address = parts.getOrNull(4)?.trim()?.takeIf(String::isNotBlank),
+                latitude = latitude,
+                longitude = longitude,
+            )
+        } else null
+    }.toMap()
 }
 
 private data class ExplorePlanContext(
@@ -303,13 +361,17 @@ fun AiTravelNavHost() {
                                 dailyStart = input.dailyStart,
                                 dailyEnd = input.dailyEnd,
                                 arrivalStation = input.arrivalStation,
+                                arrivalPoint = input.arrivalPoint,
                                 arrivalDay = input.arrivalDay,
                                 arrivalTime = input.arrivalTime,
                                 departureStation = input.departureStation,
+                                departurePoint = input.departurePoint,
                                 departureDay = input.departureDay,
                                 departureTime = input.departureTime,
                                 hotelName = input.hotelName,
+                                hotelPoint = input.hotelPoint,
                                 hotelStays = input.hotelStays,
+                                optimizationMode = input.optimizationMode,
                             ),
                         )
                     },
@@ -377,8 +439,17 @@ fun AiTravelNavHost() {
                         type = NavType.StringType
                         defaultValue = ""
                     },
+                    navArgument("mapPoints") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("optimizationMode") {
+                        type = NavType.StringType
+                        defaultValue = "REQUIRED"
+                    },
                 ),
             ) { backStackEntry ->
+                val mapPoints = decodeMapPoints(backStackEntry.arguments?.getString("mapPoints").orEmpty())
                 val input = AiPlanDraftInput(
                     destination = backStackEntry.arguments?.getString("destination").orEmpty(),
                     dateRange = backStackEntry.arguments?.getString("dateRange").orEmpty(),
@@ -394,24 +465,38 @@ fun AiTravelNavHost() {
                     dailyStart = backStackEntry.arguments?.getString("dailyStart") ?: "09:00",
                     dailyEnd = backStackEntry.arguments?.getString("dailyEnd") ?: "20:00",
                     arrivalStation = backStackEntry.arguments?.getString("arrivalStation")?.takeIf(String::isNotBlank),
+                    arrivalPoint = mapPoints["arrival"],
                     arrivalDay = backStackEntry.arguments?.getInt("arrivalDay") ?: 1,
                     arrivalTime = backStackEntry.arguments?.getString("arrivalTime")?.takeIf(String::isNotBlank),
                     departureStation = backStackEntry.arguments?.getString("departureStation")?.takeIf(String::isNotBlank),
+                    departurePoint = mapPoints["departure"],
                     departureDay = backStackEntry.arguments?.getInt("departureDay"),
                     departureTime = backStackEntry.arguments?.getString("departureTime")?.takeIf(String::isNotBlank),
                     hotelName = backStackEntry.arguments?.getString("hotelName")?.takeIf(String::isNotBlank),
+                    hotelPoint = mapPoints["hotel"],
                     hotelStays = backStackEntry.arguments?.getString("hotelStays")
                         .orEmpty()
                         .split(";;")
                         .mapNotNull { encoded ->
-                            val parts = encoded.split(',', limit = 3)
+                            val parts = encoded.split(',', limit = 6)
                             val checkIn = parts.getOrNull(0)?.toIntOrNull()
                             val checkOut = parts.getOrNull(1)?.toIntOrNull()
-                            val name = parts.getOrNull(2)?.trim().orEmpty()
+                            val latitude = parts.getOrNull(2)?.toDoubleOrNull()
+                            val longitude = parts.getOrNull(3)?.toDoubleOrNull()
+                            val name = parts.getOrNull(4)?.trim().orEmpty()
+                            val address = parts.getOrNull(5)?.trim()?.takeIf(String::isNotBlank)
                             if (checkIn != null && checkOut != null && name.isNotBlank()) {
-                                AiHotelStayInput(name, checkIn, checkOut)
+                                AiHotelStayInput(
+                                    name,
+                                    checkIn,
+                                    checkOut,
+                                    if (latitude != null && longitude != null) {
+                                        AiMapPointInput(name, address, latitude, longitude)
+                                    } else null,
+                                )
                             } else null
                         },
+                    optimizationMode = backStackEntry.arguments?.getString("optimizationMode") ?: "REQUIRED",
                 )
                 val generationViewModel: AiPlanGenerationViewModel = viewModel(
                     factory = AiPlanGenerationViewModel.Factory(

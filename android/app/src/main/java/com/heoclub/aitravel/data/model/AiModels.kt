@@ -100,13 +100,17 @@ data class AiPlanGenerationRequest(
     val preferences: List<String> = emptyList(),
     val freeText: String? = null,
     val arrivalStation: String? = null,
+    val arrivalPoint: AiMapPointInput? = null,
     val arrivalDay: Int = 1,
     val arrivalTime: String? = null,
     val departureStation: String? = null,
+    val departurePoint: AiMapPointInput? = null,
     val departureDay: Int? = null,
     val departureTime: String? = null,
     val hotelName: String? = null,
+    val hotelPoint: AiMapPointInput? = null,
     val hotelStays: List<AiHotelStayInput> = emptyList(),
+    val optimizationMode: String = "REQUIRED",
     val pace: String = "BALANCED",
     val transportPreference: String = "MIXED",
     val dailyStart: String = "09:00",
@@ -118,6 +122,14 @@ data class AiHotelStayInput(
     val name: String,
     val checkInDay: Int,
     val checkOutDay: Int,
+    val mapPoint: AiMapPointInput? = null,
+)
+
+data class AiMapPointInput(
+    val name: String,
+    val address: String? = null,
+    val latitude: Double,
+    val longitude: Double,
 )
 
 data class AiGeneratedPlace(
@@ -149,6 +161,7 @@ data class AiGeneratedPlace(
     val suggestedStart: String,
     val suggestedEnd: String,
     val note: String,
+    val mealType: String? = null,
 )
 
 data class AiGeneratedDay(
@@ -166,10 +179,12 @@ data class AiGeneratedTransfer(
     val originPlaceId: String,
     val destinationPlaceId: String,
     val mode: String,
+    val modeLabel: String? = null,
     val distanceMeters: Int,
     val durationMinutes: Int,
     val verified: Boolean = true,
     val warning: String? = null,
+    val polyline: List<RouteCoordinate> = emptyList(),
 )
 
 data class AiPlanQuality(
@@ -186,6 +201,7 @@ data class AiPlanGenerationResponse(
     val destination: String,
     val dateRange: String,
     val dayCount: Int,
+    val transportPreference: String = "MIXED",
     val preferences: List<String> = emptyList(),
     val days: List<AiGeneratedDay> = emptyList(),
     val warnings: List<String> = emptyList(),

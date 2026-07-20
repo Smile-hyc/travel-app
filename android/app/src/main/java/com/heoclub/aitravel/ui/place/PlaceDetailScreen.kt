@@ -238,6 +238,7 @@ private fun DetailHeader(detail: PlaceDetail, onBack: () -> Unit) {
                 images = detail.images,
                 fallbackUrls = detail.summary.displayImageUrls,
                 placeName = detail.summary.name,
+                category = detail.summary.category,
                 modifier = Modifier.fillMaxWidth(),
                 itemHeight = 176.dp,
             )

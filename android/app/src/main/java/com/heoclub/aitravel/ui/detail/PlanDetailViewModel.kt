@@ -23,7 +23,7 @@ import java.io.IOException
 
 data class PlanDetailUiState(
     val plan: TravelPlan? = null,
-    val selectedDayIndex: Int = 1,
+    val selectedDayIndex: Int = 0,
     val routeMode: String = RouteModes.MIXED,
     val route: DayRoutePlan? = null,
     val isLoadingRoute: Boolean = false,
@@ -32,8 +32,7 @@ data class PlanDetailUiState(
     val optimization: OptimizeDayRouteResponse? = null,
 ) {
     val selectedDay: PlanDay?
-        get() = plan?.days?.firstOrNull { it.dayIndex == selectedDayIndex }
-            ?: plan?.days?.firstOrNull()
+        get() = if (selectedDayIndex == 0) null else plan?.days?.firstOrNull { it.dayIndex == selectedDayIndex }
 }
 
 class PlanDetailViewModel(
@@ -112,6 +111,27 @@ class PlanDetailViewModel(
         )
     }
 
+    fun updateSegmentTransportMode(itemId: String, mode: String) {
+        val state = _uiState.value
+        if (state.selectedDayIndex == 0 || mode == RouteModes.MIXED || mode !in RouteModes.all) return
+        routeJob?.cancel()
+        _uiState.update {
+            it.copy(
+                routeMode = RouteModes.MIXED,
+                route = null,
+                isLoadingRoute = true,
+                routeError = null,
+                optimization = null,
+            )
+        }
+        travelPlanRepository.updateTransportModeToNext(
+            planId = planId,
+            dayIndex = state.selectedDayIndex,
+            itemId = itemId,
+            mode = mode,
+        )
+    }
+
     fun moveUnplannedItemToDay(itemId: String, dayIndex: Int) {
         val result = travelPlanRepository.moveUnplannedItemToDay(planId, itemId, dayIndex)
         if (result == AddPlaceResult.MISSING_LOCATION) {
@@ -126,6 +146,9 @@ class PlanDetailViewModel(
 
     fun optimizeRoute() {
         val state = _uiState.value
+        if (state.selectedDayIndex == 0) {
+            return
+        }
         val places = state.selectedDay?.items
             ?.sortedBy { it.visitOrder }
             ?.mapNotNull { it.toRoutePlace() }

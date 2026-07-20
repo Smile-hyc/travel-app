@@ -51,6 +51,7 @@ data class PlanItem(
     val dayIndex: Int,
     val visitOrder: Int,
     val note: String? = null,
+    val mealType: String? = null,
     val suggestedStart: String? = null,
     val suggestedEnd: String? = null,
     val transportModeToNext: String = "walking",

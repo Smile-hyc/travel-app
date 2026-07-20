@@ -79,14 +79,29 @@ object RouteModes {
 
     val all = listOf(MIXED, WALKING, DRIVING, CYCLING, TRANSIT)
 
-    fun label(mode: String): String {
+    fun label(mode: String, steps: List<RouteStep> = emptyList()): String {
         return when (mode) {
             MIXED -> "智能混合"
             WALKING -> "步行"
             DRIVING -> "驾车"
             CYCLING -> "骑行"
-            TRANSIT -> "公交"
+            TRANSIT -> transitLabel(steps)
             else -> "步行"
         }
+    }
+
+    private fun transitLabel(steps: List<RouteStep>): String {
+        val instructions = steps.mapNotNull { it.instruction }.joinToString(" ")
+        if (instructions.isBlank()) return "公共交通"
+        val labels = buildList {
+            if (listOf("地铁", "轨道交通", "轻轨").any(instructions::contains)) add("地铁")
+            if (instructions.contains("有轨电车")) add("有轨电车")
+            if (listOf("公交", "公共汽车", "巴士", "BRT", "快速公交").any {
+                    instructions.contains(it, ignoreCase = true)
+                }) add("公交")
+            if (listOf("轮渡", "渡船", "客轮").any(instructions::contains)) add("轮渡")
+            if (listOf("索道", "缆车").any(instructions::contains)) add("索道")
+        }
+        return labels.distinct().joinToString(" + ").ifBlank { "公共交通" }
     }
 }

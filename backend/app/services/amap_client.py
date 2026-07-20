@@ -15,6 +15,7 @@ class AmapClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client: httpx.AsyncClient | None = None
+        self._environment_client: httpx.AsyncClient | None = None
 
     async def startup(self) -> None:
         if self._client is None:
@@ -30,11 +31,38 @@ class AmapClient:
                 timeout=timeout,
                 trust_env=False,
             )
+            # Some desktop proxy/VPN clients expose a fake-IP DNS result. Direct
+            # access then fails before reaching AMap, while the system proxy can
+            # resolve and route it correctly. Keep an environment-aware fallback
+            # rather than forcing every deployment through a proxy.
+            self._environment_client = httpx.AsyncClient(
+                base_url=self._settings.amap_base_url,
+                timeout=timeout,
+                trust_env=True,
+            )
 
     async def shutdown(self) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._environment_client is not None:
+            await self._environment_client.aclose()
+            self._environment_client = None
+
+    async def _request(self, path: str, params: dict[str, Any]) -> httpx.Response:
+        if self._client is None:
+            await self.startup()
+        assert self._client is not None
+        try:
+            return await self._client.get(path, params=params)
+        except httpx.ConnectError as direct_error:
+            if self._environment_client is None:
+                raise
+            logger.info("AMap direct connection failed; retrying with environment proxy routing")
+            try:
+                return await self._environment_client.get(path, params=params)
+            except httpx.HTTPError as proxy_error:
+                raise proxy_error from direct_error
 
     async def get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         if not self._settings.amap_web_service_key_configured:
@@ -42,17 +70,13 @@ class AmapClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="高德 Web 服务 Key 未配置，请在 backend/.env 中设置 AMAP_WEB_SERVICE_KEY。",
             )
-        if self._client is None:
-            await self.startup()
-        assert self._client is not None
-
         request_params = {
             **params,
             "key": self._settings.amap_web_service_key.strip(),
         }
 
         try:
-            response = await self._client.get(path, params=request_params)
+            response = await self._request(path, request_params)
             response.raise_for_status()
             payload = response.json()
         except httpx.TimeoutException as exc:
@@ -78,17 +102,13 @@ class AmapClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="高德 Web 服务 Key 未配置，请在 backend/.env 中设置 AMAP_WEB_SERVICE_KEY。",
             )
-        if self._client is None:
-            await self.startup()
-        assert self._client is not None
-
         request_params = {
             **params,
             "key": self._settings.amap_web_service_key.strip(),
         }
 
         try:
-            response = await self._client.get(path, params=request_params)
+            response = await self._request(path, request_params)
             response.raise_for_status()
             return response.json()
         except httpx.TimeoutException as exc:

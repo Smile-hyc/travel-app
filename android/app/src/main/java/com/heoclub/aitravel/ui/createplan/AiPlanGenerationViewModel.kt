@@ -9,15 +9,19 @@ import com.heoclub.aitravel.data.model.AiGeneratedDay
 import com.heoclub.aitravel.data.model.AiPlanProgressEvent
 import com.heoclub.aitravel.data.model.AiGeneratedPlace
 import com.heoclub.aitravel.data.model.AiHotelStayInput
+import com.heoclub.aitravel.data.model.AiMapPointInput
+import com.heoclub.aitravel.data.model.AiPlanQuality
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.repository.AiRepository
 import com.heoclub.aitravel.data.repository.ExploreRepository
 import com.heoclub.aitravel.data.repository.TravelPlanRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.UUID
 
 data class AiPlanDraftInput(
@@ -27,13 +31,17 @@ data class AiPlanDraftInput(
     val preferences: List<String>,
     val freeText: String? = null,
     val arrivalStation: String? = null,
+    val arrivalPoint: AiMapPointInput? = null,
     val arrivalDay: Int = 1,
     val arrivalTime: String? = null,
     val departureStation: String? = null,
+    val departurePoint: AiMapPointInput? = null,
     val departureDay: Int? = null,
     val departureTime: String? = null,
     val hotelName: String? = null,
+    val hotelPoint: AiMapPointInput? = null,
     val hotelStays: List<AiHotelStayInput> = emptyList(),
+    val optimizationMode: String = "REQUIRED",
     val pace: String = "BALANCED",
     val transportPreference: String = "MIXED",
     val dailyStart: String = "09:00",
@@ -85,6 +93,47 @@ class AiPlanGenerationViewModel(
         activeJobId = null
     }
 
+    fun useCurrentDraftWithoutAi(): Boolean {
+        val loading = _uiState.value as? AiPlanGenerationUiState.Loading ?: return false
+        val days = loading.partialDays
+            .sortedBy { it.dayIndex }
+            .filter { it.places.isNotEmpty() }
+        if (days.isEmpty() || loading.completedDays < input.dayCount) return false
+
+        generationJob?.cancel()
+        generationJob = null
+        activeJobId = null
+        val allPlaces = days.flatMap { it.places }
+        val result = AiPlanGenerationResponse(
+            requestId = UUID.randomUUID().toString(),
+            title = "${input.destination.trim().trimEnd('市')} ${input.dayCount} 日约束行程",
+            destination = input.destination.trim(),
+            dateRange = input.dateRange,
+            dayCount = input.dayCount,
+            transportPreference = input.transportPreference,
+            preferences = input.preferences,
+            days = days,
+            warnings = listOf("已使用当前方案，行程已结合天气、开放时间与实际通勤安排。"),
+            generatedAt = Instant.now().toString(),
+            model = null,
+            quality = AiPlanQuality(
+                realPoiRatio = 1.0,
+                duplicatePlaceCount = allPlaces.size - allPlaces.distinctBy { it.sourcePoiId }.size,
+                totalPlaceCount = allPlaces.size,
+                usedFallback = true,
+                dataSources = listOf("AMAP"),
+            ),
+        )
+        upsertGeneratedPlaces(days)
+        val plan = travelPlanRepository.importGeneratedPlan(result)
+        _uiState.value = AiPlanGenerationUiState.Ready(
+            result = result,
+            visibleDayCount = days.size,
+            savedPlanId = plan.id,
+        )
+        return true
+    }
+
     private fun generate() {
         generationJob?.cancel()
         generationJob = viewModelScope.launch {
@@ -96,13 +145,17 @@ class AiPlanGenerationViewModel(
                 preferences = input.preferences,
                 freeText = input.freeText,
                 arrivalStation = input.arrivalStation,
+                arrivalPoint = input.arrivalPoint,
                 arrivalDay = input.arrivalDay,
                 arrivalTime = input.arrivalTime,
                 departureStation = input.departureStation,
+                departurePoint = input.departurePoint,
                 departureDay = input.departureDay,
                 departureTime = input.departureTime,
                 hotelName = input.hotelName,
+                hotelPoint = input.hotelPoint,
                 hotelStays = input.hotelStays,
+                optimizationMode = input.optimizationMode,
                 pace = input.pace,
                 transportPreference = input.transportPreference,
                 dailyStart = input.dailyStart,
@@ -133,6 +186,8 @@ class AiPlanGenerationViewModel(
                         }
                     }
                 }
+            } catch (_: CancellationException) {
+                return@launch
             } catch (error: Exception) {
                 _uiState.value = AiPlanGenerationUiState.Error(
                     error.message ?: "智能规划流中断，请检查后端连接后重试。",

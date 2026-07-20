@@ -6,6 +6,7 @@ import math
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -50,21 +51,20 @@ class TravelPlanGenerationService:
         poi_service: AmapPoiService,
         route_service: AmapRouteService | None = None,
         weather_service: AmapWeatherService | None = None,
-        reveal_delay_seconds: float = 0.24,
-        ai_optimization_timeout_seconds: float = 18.0,
+        reveal_delay_seconds: float = 0.0,
     ) -> None:
         self._ark_client = ark_client
         self._poi_service = poi_service
         self._route_service = route_service
         self._weather_service = weather_service
         self._reveal_delay_seconds = reveal_delay_seconds
-        self._ai_optimization_timeout_seconds = ai_optimization_timeout_seconds
 
     async def generate(
         self,
         request: AiPlanGenerationRequest,
         progress: ProgressCallback | None = None,
     ) -> AiPlanGenerationResponse:
+        generation_started_at = perf_counter()
         self._validate_time_window(request)
         self._notify(progress, 5, "正在理解目的地与旅行约束")
         destination = request.destination.strip()
@@ -118,8 +118,11 @@ class TravelPlanGenerationService:
         transport_queries = list(
             dict.fromkeys(
                 value.strip()
-                for value in (request.arrivalStation, request.departureStation)
-                if value and value.strip()
+                for value, point in (
+                    (request.arrivalStation, request.arrivalPoint),
+                    (request.departureStation, request.departurePoint),
+                )
+                if value and value.strip() and point is None
             ),
         )
         for query in transport_queries:
@@ -136,8 +139,8 @@ class TravelPlanGenerationService:
         hotel_queries = list(
             dict.fromkeys(
                 [
-                    *([request.hotelName.strip()] if request.hotelName and request.hotelName.strip() else []),
-                    *(stay.name.strip() for stay in request.hotelStays if stay.name.strip()),
+                    *([request.hotelName.strip()] if request.hotelName and request.hotelName.strip() and request.hotelPoint is None else []),
+                    *(stay.name.strip() for stay in request.hotelStays if stay.name.strip() and stay.mapPoint is None),
                 ],
             ),
         )
@@ -156,22 +159,39 @@ class TravelPlanGenerationService:
         candidates = self._dedupe_candidates(
             [place for result in search_results for place in result.items],
         )
+        selected_map_places = [
+            self._map_point_summary(request.arrivalPoint, "transport", city.name, city.adCode),
+            self._map_point_summary(request.departurePoint, "transport", city.name, city.adCode),
+            self._map_point_summary(request.hotelPoint, "lodging", city.name, city.adCode),
+            *[
+                self._map_point_summary(stay.mapPoint, "lodging", city.name, city.adCode)
+                for stay in request.hotelStays
+            ],
+        ]
+        candidates = self._dedupe_candidates([*candidates, *[place for place in selected_map_places if place is not None]])
         if len(candidates) < request.dayCount * 2:
             raise HTTPException(
                 status_code=422,
                 detail=f"{destination}当前可用的真实地点数据不足，请稍后重试或缩短行程天数。",
             )
 
-        arrival_anchor = self._select_station(candidates, request.arrivalStation or "") if request.arrivalStation else None
-        departure_anchor = (
-            self._select_station(candidates, request.departureStation or "")
-            if request.departureStation
-            else None
+        arrival_anchor = self._map_point_summary(request.arrivalPoint, "transport", city.name, city.adCode) or (
+            self._select_station(candidates, request.arrivalStation or "") if request.arrivalStation else None
         )
-        hotel_by_name = {
-            query: self._select_hotel(candidates, query, arrival_anchor)
-            for query in hotel_queries
-        }
+        departure_anchor = (
+            self._map_point_summary(request.departurePoint, "transport", city.name, city.adCode)
+            or (self._select_station(candidates, request.departureStation or "") if request.departureStation else None)
+        )
+        hotel_by_name = {query: self._select_hotel(candidates, query, arrival_anchor) for query in hotel_queries}
+        if request.hotelName and request.hotelPoint is not None:
+            hotel_by_name[request.hotelName.strip()] = self._map_point_summary(
+                request.hotelPoint, "lodging", city.name, city.adCode,
+            )
+        for stay in request.hotelStays:
+            if stay.mapPoint is not None:
+                hotel_by_name[stay.name.strip()] = self._map_point_summary(
+                    stay.mapPoint, "lodging", city.name, city.adCode,
+                )
         anchor_text = "、".join(
             dict.fromkeys(
                 place.name
@@ -199,40 +219,138 @@ class TravelPlanGenerationService:
             city_name=city.name,
             weather_forecast=weather_forecast,
         )
-        fallback = await self._apply_actual_routes(request, fallback, weather_forecast, progress)
-        await self._publish_draft(progress, fallback)
-        warnings: list[str] = []
-        model_name: str | None = self._ark_client.model_name
-        used_fallback = False
-        try:
+        ai_task: asyncio.Task[dict[str, Any]] | None = None
+        buffered_ai_updates: list[tuple[int, str, AiPlanProgressEvent | None, int | None]] = []
+        visible_fallback: list[AiGeneratedDay] | None = None
+
+        def forward_ai_progress(
+            ai_progress: int,
+            ai_stage: str,
+            _completed_days: int,
+            _partial_days: list[AiGeneratedDay] | None = None,
+            event: AiPlanProgressEvent | None = None,
+            active_day_index: int | None = None,
+        ) -> None:
+            if visible_fallback is None:
+                buffered_ai_updates.append((ai_progress, ai_stage, event, active_day_index))
+                return
             self._notify(
                 progress,
-                74,
-                "路线草案已绘制，AI 正在优化跨天顺序与游玩节奏",
+                ai_progress,
+                ai_stage,
+                len(visible_fallback),
+                partial_days=visible_fallback,
+                event=event,
+                active_day_index=active_day_index,
+            )
+
+        # AI only needs the candidate facts and heuristic draft, so start it while
+        # the independent AMap route verification is running instead of waiting
+        # for every route leg to finish first.
+        if request.optimizationMode != "FAST":
+            ai_task = asyncio.create_task(
+                self._generate_with_ai(request, city.name, candidates, fallback, forward_ai_progress),
+                name="ai-plan-deep-optimization",
+            )
+
+        route_started_at = perf_counter()
+        try:
+            fallback = await self._apply_actual_routes(request, fallback, weather_forecast, progress)
+        except BaseException:
+            if ai_task is not None and not ai_task.done():
+                ai_task.cancel()
+                await asyncio.gather(ai_task, return_exceptions=True)
+            raise
+        route_elapsed_ms = round((perf_counter() - route_started_at) * 1000)
+        visible_fallback = fallback
+        await self._publish_draft(progress, fallback)
+        self._notify(
+            progress,
+            73,
+            f"可执行草案已完成；高德逐段路线校验用时 {route_elapsed_ms / 1000:.1f} 秒",
+            len(fallback),
+            partial_days=fallback,
+            event=self._event(
+                "ANALYSIS",
+                f"路线与时间草案校验完成，用时 {route_elapsed_ms / 1000:.1f} 秒。",
+                evidence=["逐日路线校验与 AI 深度优化已并行执行"],
+                decision="草案立即保持可浏览，AI 返回后只替换并再次校验发生变化的结果。",
+            ),
+            active_day_index=fallback[-1].dayIndex if fallback else None,
+        )
+        for buffered_progress, buffered_stage, buffered_event, buffered_day_index in buffered_ai_updates:
+            self._notify(
+                progress,
+                buffered_progress,
+                buffered_stage,
                 len(fallback),
                 partial_days=fallback,
-                event=self._event(
-                    "ANALYSIS",
-                    "已用真实地点形成可用草案，继续优化主题、时间与停留说明。",
-                ),
-                active_day_index=fallback[-1].dayIndex if fallback else None,
+                event=buffered_event,
+                active_day_index=buffered_day_index,
             )
-            ai_payload = await self._optimize_with_heartbeat(
-                request,
-                city.name,
-                candidates,
-                fallback,
-                progress,
-            )
-            self._notify(progress, 86, "AI 编排完成，正在校验地点与时间", len(fallback))
-            days = self._merge_ai_result(request, ai_payload, candidates, fallback)
-            days = await self._apply_actual_routes(request, days, weather_forecast, progress)
-        except (HTTPException, ValueError, json.JSONDecodeError, TypeError, asyncio.TimeoutError) as exc:
+        warnings: list[str] = []
+        model_name: str | None = None if request.optimizationMode == "FAST" else self._ark_client.model_name
+        used_fallback = False
+        data_sources = ["AMAP"]
+        if request.optimizationMode == "FAST":
             days = fallback
-            model_name = None
-            used_fallback = True
-            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-            warnings.append(f"AI 编排暂时不可用，已使用地点偏好与距离规则生成：{detail}")
+            self._notify(
+                progress,
+                88,
+                "已按快速模式完成约束规划，跳过大模型优化",
+                len(days),
+                partial_days=days,
+                event=self._event(
+                    "PLAN_REFINED",
+                    "用户选择快速生成：保留天气、营业时间和真实路线校验结果，不调用大模型。",
+                    decision="直接保存可执行草案。",
+                ),
+                active_day_index=days[-1].dayIndex if days else None,
+            )
+        else:
+            try:
+                self._notify(
+                    progress,
+                    74,
+                    "可执行草案已完成，正在等待 AI 深度优化；模型耗时无法按百分比准确估算",
+                    len(fallback),
+                    partial_days=fallback,
+                    event=self._event(
+                        "ANALYSIS",
+                        "天气、开放时间和逐段路线草案已经可用；现在等待模型优化跨天主题与说明。",
+                        decision="保持草案可见并持续推送模型事件，不伪造百分比进度。",
+                    ),
+                    active_day_index=fallback[-1].dayIndex if fallback else None,
+                )
+                ai_payload = await self._optimize_with_heartbeat(
+                    request,
+                    city.name,
+                    candidates,
+                    fallback,
+                    progress,
+                    task=ai_task,
+                )
+                self._notify(progress, 86, "AI 编排完成，正在重新校验地点、营业时间与路线", len(fallback))
+                days = self._merge_ai_result(request, ai_payload, candidates, fallback)
+                days = await self._apply_actual_routes(request, days, weather_forecast, progress)
+                data_sources.append("ARK")
+            except (HTTPException, ValueError, json.JSONDecodeError, TypeError, asyncio.TimeoutError) as exc:
+                if request.optimizationMode == "REQUIRED":
+                    detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                    status_code = (
+                        exc.status_code
+                        if isinstance(exc, HTTPException)
+                        else 504 if isinstance(exc, asyncio.TimeoutError) else 502
+                    )
+                    raise HTTPException(
+                        status_code=status_code,
+                        detail=f"已生成可执行草案，但你选择了“必须 AI 深度优化”，模型尚未完成：{detail}",
+                    ) from exc
+                days = fallback
+                model_name = None
+                used_fallback = True
+                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                warnings.append(f"AI 编排暂时不可用，已使用地点偏好与距离规则生成：{detail}")
 
         self._notify(
             progress,
@@ -242,7 +360,7 @@ class TravelPlanGenerationService:
             partial_days=days,
             event=self._event(
                 "PLAN_REFINED",
-                "地点、时间和每日主题已完成校验，正在保存最终版本。",
+                f"地点、时间和每日主题已完成校验；当前总耗时 {(perf_counter() - generation_started_at):.1f} 秒，正在保存最终版本。",
             ),
             active_day_index=days[-1].dayIndex if days else None,
         )
@@ -255,6 +373,7 @@ class TravelPlanGenerationService:
             destination=city.name,
             dateRange=request.dateRange.strip(),
             dayCount=request.dayCount,
+            transportPreference=request.transportPreference,
             preferences=self._clean_preferences(request.preferences),
             days=days,
             warnings=warnings,
@@ -265,7 +384,7 @@ class TravelPlanGenerationService:
                 duplicatePlaceCount=duplicate_count,
                 totalPlaceCount=len(all_places),
                 usedFallback=used_fallback,
-                dataSources=["AMAP"] if used_fallback else ["AMAP", "ARK"],
+                dataSources=data_sources,
             ),
         )
 
@@ -513,40 +632,25 @@ class TravelPlanGenerationService:
         candidates: list[PlaceSummary],
         fallback: list[AiGeneratedDay],
         progress: ProgressCallback | None,
+        task: asyncio.Task[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        task = asyncio.create_task(self._generate_with_ai(request, city_name, candidates, fallback, progress))
+        task = task or asyncio.create_task(self._generate_with_ai(request, city_name, candidates, fallback, progress))
         loop = asyncio.get_running_loop()
         started_at = loop.time()
-        timeout = max(0.05, self._ai_optimization_timeout_seconds)
-        heartbeat = 0
         try:
             while True:
-                elapsed = loop.time() - started_at
-                remaining = timeout - elapsed
-                if remaining <= 0:
-                    raise asyncio.TimeoutError
-                done, _ = await asyncio.wait({task}, timeout=min(2.0, remaining))
+                done, _ = await asyncio.wait({task}, timeout=5.0)
                 if task in done:
                     return task.result()
-                heartbeat += 1
-                progress_value = min(84, 74 + heartbeat * 2)
+                elapsed_seconds = max(1, round(loop.time() - started_at))
                 self._notify(
                     progress,
-                    progress_value,
-                    f"正在校验营业时间与跨天顺序（约剩 {max(1, round(remaining))} 秒）",
+                    74,
+                    f"正在等待 AI 深度优化，已等待 {elapsed_seconds} 秒；模型耗时不可按百分比估算",
                     len(fallback),
                     partial_days=fallback,
-                    event=self._event(
-                        "ANALYSIS",
-                        "正在检查景点开放时段、午晚餐时间和每天的区域跨度；草案已可用，不会无限等待。",
-                    ),
                     active_day_index=fallback[-1].dayIndex if fallback else None,
                 )
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(
-                status_code=504,
-                detail=f"AI 优化超过 {int(timeout)} 秒，已自动采用通过时间约束的路线草案。",
-            ) from exc
         finally:
             if not task.done():
                 task.cancel()
@@ -567,6 +671,15 @@ class TravelPlanGenerationService:
                 -self._quality_score(place),
             ),
         )
+        fallback_ids = {
+            place.sourcePoiId
+            for day in fallback
+            for place in day.places
+        }
+        fallback_candidates = [place for place in ordered_candidates if place.sourcePoiId in fallback_ids]
+        alternatives = [place for place in ordered_candidates if place.sourcePoiId not in fallback_ids]
+        candidate_limit = min(len(ordered_candidates), max(18, request.dayCount * 5))
+        prompt_candidates = (fallback_candidates + alternatives)[:candidate_limit]
         compact_candidates = [
             {
                 "sourcePoiId": place.sourcePoiId,
@@ -581,7 +694,7 @@ class TravelPlanGenerationService:
                 "openingHoursToday": place.openingHoursToday,
                 "openingHoursWeek": place.openingHoursWeek,
             }
-            for place in ordered_candidates[: min(len(ordered_candidates), max(24, request.dayCount * 7))]
+            for place in prompt_candidates
         ]
         prompt = {
             "destination": city_name,
@@ -597,31 +710,62 @@ class TravelPlanGenerationService:
             "departureTime": request.departureTime,
             "hotelName": (request.hotelName or "").strip(),
             "hotelStays": [stay.model_dump() for stay in request.hotelStays],
+            "optimizationMode": request.optimizationMode,
             "pace": request.pace,
             "transportPreference": request.transportPreference,
             "dailyTimeWindow": f"{request.dailyStart}-{request.dailyEnd}",
+            "ruleDraft": [
+                {
+                    "dayIndex": day.dayIndex,
+                    "places": [
+                        {
+                            "sourcePoiId": place.sourcePoiId,
+                            "start": place.suggestedStart,
+                            "end": place.suggestedEnd,
+                            "mealType": place.mealType,
+                        }
+                        for place in day.places
+                    ],
+                }
+                for day in fallback
+            ],
             "candidatePlaces": compact_candidates,
         }
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "你是结构化旅行行程规划器。只能使用候选地点中的 sourcePoiId，不能虚构地点。"
-                    "综合用户偏好、地点类别、行政区、经纬度、评分和开放时间，尽量让同一天的地点相近。"
-                    "只有用户明确给出车站、机场或酒店时才能加入；按其到达、离开和入住日期作为硬锚点。"
-                    "餐饮放在11:30-13:30或17:30-19:30，并位于前后景点的通勤链上。"
-                    "景点的游览区间必须完全落在已提供的开放时间内；缺少开放时间时仅安排在09:30-16:30。"
+                    "你是面向中国境内旅行的结构化行程优化器。只能使用 candidatePlaces 中真实存在的 sourcePoiId，"
+                    "不得虚构地点、开放时间、预约、票价、交通管制、天气或小红书评价。优化目标按优先级依次是："
+                    "硬约束可执行、少折返和少绕行、符合天气、用户偏好、地点特色与行程丰富度。"
+                    "车站、机场和酒店只有用户明确填写时才可加入交通/住宿锚点；若其本身以 scenic 类候选出现，"
+                    "才可按景点处理。到达站必须是到达日第一锚点，离开站必须是离开日最后锚点。"
+                    "hotelStays 的每段酒店分别作为对应住宿日前一日终点和次日起点，不得默认所有天同住一家。"
+                    "必须考虑每两个相邻地点的实际通勤成本；交通方式可以混合使用，并优先服从 transportPreference。"
+                    "景区明确限定接驳车、索道、步行或实施交通管控时必须服从；公交非运营时间无结果时，"
+                    "不能当成零分钟或可步行，必须换成可执行方式或调整时间。"
+                    "景点游览区间必须完整落在当日开放区间内，并预留入园、安检和换乘时间；闭馆日不可安排。"
+                    "缺少开放时间时只能保守安排在09:30-16:30，并在 note 标明需要复核。"
+                    "依据逐日天气调整室内外权重：雨雪、高温、大风或空气状况不佳时减少长时间户外和骑行，"
+                    "但不得把天气预报范围外的日期当作已验证天气。"
+                    "可在07:30-11:00安排特色早餐、11:30-14:00安排午餐、17:30-21:00安排特色晚餐，"
+                    "并用 mealType 标记 BREAKFAST/LUNCH/DINNER。餐馆必须在前后游览点的顺路通勤链上；"
+                    "不允许为了吃饭明显折返，若没有足够近且有特色的候选餐馆，宁可不推荐。"
+                    "全天型景区优先园内餐饮、景区允许携带的便携餐或入口附近餐馆，并在 note 中提示核实景区规则。"
+                    "小红书等公开内容若出现在输入证据中，只能作为灵感和时效性线索，必须与地点、日期和官方/高德数据交叉核验；"
+                    "没有输入证据时不得生成所谓真实评价或小众消息。"
                     f"旅行节奏为 {request.pace}，每天目标地点数为 {PACE_PLACE_COUNTS[request.pace]}，"
                     f"每日活动必须处于 {request.dailyStart}-{request.dailyEnd}，交通偏好为 {request.transportPreference}。"
-                    "同一地点不可重复。输出 NDJSON（每一物理行都是独立 JSON，不要 Markdown）。"
-                    "规划过程中先连续输出若干可审计事件："
+                    "同一地点不可重复；相邻地点很远时应减少当天地点数或重新分组，不能压缩参观和通勤时间硬塞。"
+                    "ruleDraft 是规则引擎生成的基线，优先做最小必要调整，不要无理由从零重排；最终仍由服务端复核路线。"
+                    "输出 NDJSON，每一物理行必须是独立 JSON，不能输出 Markdown。先输出至多1条总体事件和每日至多1条可审计的简短决策事件："
                     "{\"kind\":\"event\",\"type\":\"MODEL_REASON\",\"message\":\"不超过120字\","
                     "\"dayIndex\":1,\"evidence\":[\"输入或候选数据事实\"],\"decision\":\"采取的可见决策\"}。"
-                    "这些是简短决策摘要，不要声称或输出隐藏思维链。最后仅输出一行结果："
+                    "事件必须引用可见输入事实，只给结论和依据摘要，不要声称或输出隐藏思维链。最后仅输出一行结果："
                     "{\"kind\":\"result\",\"plan\":{\"title\":\"\",\"days\":[{\"dayIndex\":1,\"title\":\"\","
                     "\"summary\":\"\",\"places\":[{\"sourcePoiId\":\"\",\"start\":\"09:00\","
-                    "\"end\":\"10:30\",\"note\":\"不超过35字的真实可核验游玩建议\"}]}]}}。"
-                    "无法确认票价、营业时间或预约规则时不要编造。"
+                    "\"end\":\"10:30\",\"mealType\":null,\"note\":\"不超过35字的真实可核验游玩建议\"}]}]}}。"
+                    "如果约束不可同时满足，减少地点并在 summary 说明，不得伪造可执行性。"
                 ),
             },
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
@@ -655,7 +799,7 @@ class TravelPlanGenerationService:
             evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
             self._notify(
                 progress,
-                min(85, 75 + len(emitted_messages)),
+                74,
                 message,
                 len(fallback),
                 partial_days=fallback,
@@ -676,21 +820,48 @@ class TravelPlanGenerationService:
                 line, line_buffer = line_buffer.split("\n", 1)
                 consume_line(line)
 
+        def on_timing(phase: str, elapsed_ms: int) -> None:
+            if phase == "connected":
+                message = f"已连接 AI 服务（{elapsed_ms / 1000:.1f} 秒），等待模型首批内容"
+                evidence = ["前后端连接和请求上传已完成"]
+            elif phase == "first_token":
+                message = f"AI 开始流式返回（首批内容等待 {elapsed_ms / 1000:.1f} 秒）"
+                evidence = ["该时间主要包含模型排队与首轮推理"]
+            else:
+                message = f"AI 流式输出完成，总用时 {elapsed_ms / 1000:.1f} 秒"
+                evidence = ["模型输出已完整接收，下一步执行硬约束复核"]
+            self._notify(
+                progress,
+                74,
+                message,
+                len(fallback),
+                partial_days=fallback,
+                event=self._event(
+                    "ANALYSIS",
+                    message,
+                    evidence=evidence,
+                    decision="继续显示当前可执行草案，不阻塞用户浏览。",
+                ),
+                active_day_index=fallback[-1].dayIndex if fallback else None,
+            )
+
         if hasattr(self._ark_client, "chat_stream"):
             raw = await self._ark_client.chat_stream(
                 messages,
                 on_delta=on_delta,
-                max_tokens=min(5000, max(2200, request.dayCount * 650)),
+                max_tokens=min(4200, max(1400, request.dayCount * 420)),
                 temperature=0.25,
-                timeout_seconds=self._ai_optimization_timeout_seconds + 2.0,
+                disable_read_timeout=True,
+                on_timing=on_timing,
+                thinking_type="disabled",
             )
             consume_line(line_buffer)
         else:
             raw = await self._ark_client.chat(
                 messages,
-                max_tokens=min(5000, max(2200, request.dayCount * 650)),
+                max_tokens=min(4200, max(1400, request.dayCount * 420)),
                 temperature=0.25,
-                timeout_seconds=self._ai_optimization_timeout_seconds + 2.0,
+                disable_read_timeout=True,
             )
         if final_payload is not None:
             return final_payload
@@ -734,7 +905,7 @@ class TravelPlanGenerationService:
             raw_places = raw_day.get("places") if isinstance(raw_day, dict) else []
             raw_places = raw_places if isinstance(raw_places, list) else []
             generated_places: list[AiGeneratedPlace] = []
-            for position, raw_place in enumerate(raw_places[:5]):
+            for position, raw_place in enumerate(raw_places[:8]):
                 if not isinstance(raw_place, dict):
                     continue
                 source_id = str(raw_place.get("sourcePoiId") or "").strip()
@@ -746,7 +917,7 @@ class TravelPlanGenerationService:
 
             fallback_day = fallback_by_day[day_index]
             for place in fallback_day.places:
-                if len(generated_places) >= min(5, len(candidates)):
+                if len(generated_places) >= min(8, len(candidates)):
                     break
                 if place.sourcePoiId not in used:
                     used.add(place.sourcePoiId)
@@ -801,7 +972,12 @@ class TravelPlanGenerationService:
             )
             for place in places
         ]
-        return self._schedule_places(request, summaries, day_index)
+        return self._schedule_places(
+            request,
+            summaries,
+            day_index,
+            meal_roles={place.sourcePoiId: place.mealType for place in places if place.mealType},
+        )
 
     def _build_heuristic_days(
         self,
@@ -857,35 +1033,83 @@ class TravelPlanGenerationService:
                 selected.append(next_place)
                 used.add(next_place.sourcePoiId)
 
-            meal_anchor = selected[min(len(selected) - 1, len(selected) // 2)]
-            available_food = [place for place in food if place.sourcePoiId not in used]
-            meal = min(
-                available_food,
-                key=lambda place: self._distance(meal_anchor, place) - self._quality_score(place) * 0.06,
-                default=None,
-            ) if not full_day else None
-            if meal is not None:
-                used.add(meal.sourcePoiId)
-
-            sequence: list[PlaceSummary] = []
+            meal_roles: dict[str, str] = {}
+            meals: dict[str, PlaceSummary | None] = {"BREAKFAST": None, "LUNCH": None, "DINNER": None}
             start_hotel = self._hotel_for_day_start(day_index, hotel_stays, hotel_by_name)
             end_hotel = self._hotel_for_day_end(day_index, hotel_stays, hotel_by_name)
+            day_start_anchor = (
+                end_hotel
+                if day_index == request.arrivalDay and arrival_anchor is not None and end_hotel is not None
+                else arrival_anchor
+                if day_index == request.arrivalDay and arrival_anchor is not None
+                else start_hotel or selected[0]
+            )
+            day_end_anchor = (
+                departure_anchor
+                if day_index == departure_day and departure_anchor is not None
+                else end_hotel or selected[-1]
+            )
+            breakfast_allowed = (
+                self._time_to_minutes(request.dailyStart) <= 9 * 60 + 30
+                and not (
+                    day_index == request.arrivalDay
+                    and request.arrivalTime
+                    and self._time_to_minutes(request.arrivalTime) > 8 * 60 + 30
+                )
+            )
+            dinner_allowed = self._time_to_minutes(request.dailyEnd) >= 19 * 60 and not (
+                day_index == departure_day
+                and request.departureTime
+                and self._time_to_minutes(request.departureTime) < 19 * 60
+            )
+            requested_roles = [
+                *( ["BREAKFAST"] if breakfast_allowed else [] ),
+                *( [] if full_day else ["LUNCH"] ),
+                *( ["DINNER"] if dinner_allowed else [] ),
+            ]
+            for role in requested_roles:
+                if role == "BREAKFAST":
+                    previous, following = day_start_anchor, selected[0]
+                elif role == "LUNCH":
+                    previous = selected[0]
+                    following = selected[1] if len(selected) > 1 else day_end_anchor
+                else:
+                    previous, following = selected[-1], day_end_anchor
+                meal = self._pick_meal(
+                    food,
+                    used,
+                    previous,
+                    following,
+                    role,
+                    city_name or request.destination,
+                    request.transportPreference,
+                )
+                if meal is not None:
+                    meals[role] = meal
+                    meal_roles[meal.sourcePoiId] = role
+                    used.add(meal.sourcePoiId)
+
+            sequence: list[PlaceSummary] = []
             if day_index == request.arrivalDay and arrival_anchor is not None:
                 sequence.append(arrival_anchor)
                 if end_hotel is not None:
                     sequence.append(end_hotel)
             elif start_hotel is not None:
                 sequence.append(start_hotel)
+            if meals["BREAKFAST"] is not None:
+                sequence.append(meals["BREAKFAST"])
             if selected:
                 sequence.append(selected[0])
-                if meal is not None:
-                    sequence.append(meal)
+                if meals["LUNCH"] is not None:
+                    sequence.append(meals["LUNCH"])
                 sequence.extend(selected[1:])
+            if meals["DINNER"] is not None:
+                sequence.append(meals["DINNER"])
             if end_hotel is not None and (not sequence or sequence[-1].id != end_hotel.id):
                 sequence.append(end_hotel)
             if day_index == departure_day and departure_anchor is not None:
                 sequence.append(departure_anchor)
-            generated_places = self._schedule_places(request, sequence, day_index)
+            generated_places = self._schedule_places(request, sequence, day_index, meal_roles=meal_roles)
             if not generated_places:
                 continue
             area = next(
@@ -931,6 +1155,23 @@ class TravelPlanGenerationService:
         total_legs = sum(max(0, len(day.places) - 1) for day in days)
         completed_legs = 0
         for day in days:
+            route_places, removed_meals = self._filter_meal_detours(request, day.places)
+            if removed_meals:
+                self._notify(
+                    progress,
+                    75,
+                    f"已移除 {len(removed_meals)} 个绕行过远的餐馆",
+                    len(routed_days),
+                    partial_days=[*routed_days, day.model_copy(update={"places": route_places}, deep=True)],
+                    event=self._event(
+                        "MEAL_PLACED",
+                        f"{', '.join(removed_meals)} 不在相邻地点的顺路通勤范围内，已移除。",
+                        day_index=day.dayIndex,
+                        evidence=["餐馆绕行距离超过当前交通偏好的阈值"],
+                        decision="宁可不推荐餐馆，也不让用户为用餐明显折返。",
+                    ),
+                    active_day_index=day.dayIndex,
+                )
             weather = weather_forecast[day.dayIndex - 1] if day.dayIndex <= len(weather_forecast) else None
             weather_text = f"{weather.day_weather}{weather.night_weather}" if weather else ""
             allow_cycling = not any(word in weather_text for word in ("雨", "雪", "雷", "冰雹", "大风", "沙尘"))
@@ -938,7 +1179,7 @@ class TravelPlanGenerationService:
             retained: list[AiGeneratedPlace] = []
             transfers: list[AiGeneratedTransfer] = []
 
-            for original in day.places:
+            for original in route_places:
                 if not retained:
                     retained.append(original.model_copy(deep=True))
                     continue
@@ -959,7 +1200,9 @@ class TravelPlanGenerationService:
                     distance_meters = max(0, segment.distanceMeters)
                     duration_minutes = max(1, math.ceil(segment.durationSeconds / 60))
                     mode = segment.mode
+                    mode_label = self._route_mode_label(segment.mode, segment.steps)
                     warning = segment.warning
+                    polyline = segment.polyline
                 except HTTPException as exc:
                     verified = False
                     direct_km = self._distance_coordinates(
@@ -971,7 +1214,12 @@ class TravelPlanGenerationService:
                     distance_meters = max(1, round(direct_km * 1350))
                     duration_minutes = max(15, round(12 + direct_km * 6))
                     mode = "walking" if direct_km <= 1.5 else "driving"
+                    mode_label = self._route_mode_label(mode, [])
                     warning = f"实时路线不可用，采用保守预留：{exc.detail}"
+                    polyline = [
+                        {"latitude": previous.latitude, "longitude": previous.longitude},
+                        {"latitude": original.latitude, "longitude": original.longitude},
+                    ]
 
                 earliest = self._time_to_minutes(previous.suggestedEnd) + duration_minutes
                 adjusted = self._fit_place_after_route(request, original, day.dayIndex, earliest)
@@ -1000,10 +1248,12 @@ class TravelPlanGenerationService:
                         originPlaceId=previous.id,
                         destinationPlaceId=adjusted.id,
                         mode=mode,
+                        modeLabel=mode_label,
                         distanceMeters=distance_meters,
                         durationMinutes=duration_minutes,
                         verified=verified,
                         warning=warning,
+                        polyline=polyline,
                     ),
                 )
                 completed_legs += 1
@@ -1014,7 +1264,7 @@ class TravelPlanGenerationService:
                     len(routed_days),
                     event=self._event(
                         "ROUTE_CHECK",
-                        f"{previous.name} → {adjusted.name}：{mode}，约 {duration_minutes} 分钟、{distance_meters / 1000:.1f} 公里。",
+                        f"{previous.name} → {adjusted.name}：{mode_label}，约 {duration_minutes} 分钟、{distance_meters / 1000:.1f} 公里。",
                         day_index=day.dayIndex,
                         place_id=adjusted.id,
                         evidence=[f"高德路线方式 {mode}" if verified else "实时路线失败后的保守预留", f"{departure_time} 出发"],
@@ -1038,6 +1288,32 @@ class TravelPlanGenerationService:
                 ),
             )
         return routed_days
+
+    @staticmethod
+    def _route_mode_label(mode: str, steps: list[object]) -> str:
+        if mode != "transit":
+            return {
+                "walking": "步行",
+                "driving": "驾车",
+                "cycling": "骑行",
+            }.get(mode, "交通")
+
+        instructions = " ".join(
+            str(getattr(step, "instruction", "") or "")
+            for step in steps
+        )
+        labels: list[str] = []
+        keyword_groups = (
+            ("地铁", ("地铁", "轨道交通", "轻轨")),
+            ("有轨电车", ("有轨电车",)),
+            ("公交", ("公交", "公共汽车", "巴士", "BRT", "快速公交")),
+            ("轮渡", ("轮渡", "渡船", "客轮")),
+            ("索道", ("索道", "缆车")),
+        )
+        for label, keywords in keyword_groups:
+            if any(keyword.lower() in instructions.lower() for keyword in keywords):
+                labels.append(label)
+        return " + ".join(labels) if labels else "公共交通"
 
     def _fit_place_after_route(
         self,
@@ -1072,8 +1348,12 @@ class TravelPlanGenerationService:
                 day_end = min(day_end, 17 * 60 + 30)
         elif place.category in {"food", "drink"}:
             original_start = self._time_to_minutes(place.suggestedStart)
-            meal_start = 11 * 60 + 30 if original_start < 15 * 60 else 17 * 60 + 30
-            meal_end = 13 * 60 + 30 if meal_start < 15 * 60 else 19 * 60 + 30
+            meal_type = place.mealType or ("BREAKFAST" if original_start < 10 * 60 else "LUNCH" if original_start < 15 * 60 else "DINNER")
+            meal_start, meal_end = {
+                "BREAKFAST": (7 * 60 + 30, 11 * 60),
+                "LUNCH": (11 * 60 + 30, 14 * 60),
+                "DINNER": (17 * 60 + 30, 21 * 60),
+            }[meal_type]
             start = max(earliest, meal_start)
             ranges = self._opening_ranges_for_day(summary, request, day_index)
             if ranges:
@@ -1104,6 +1384,31 @@ class TravelPlanGenerationService:
             cityName=place.cityName,
             adCode=place.adCode,
             cityCode=place.cityCode,
+        )
+
+    def _map_point_summary(
+        self,
+        point: Any | None,
+        category: str,
+        city_name: str,
+        ad_code: str,
+    ) -> PlaceSummary | None:
+        if point is None:
+            return None
+        coordinate_id = f"{point.latitude:.6f}-{point.longitude:.6f}"
+        return PlaceSummary(
+            id=f"map-{category}-{coordinate_id}",
+            source="MAP_SELECTED",
+            sourcePoiId=f"map-{coordinate_id}",
+            name=point.name.strip(),
+            category=category,
+            categoryCode="MAP_SELECTED",
+            typeName="地图选点",
+            address=point.address,
+            cityName=city_name,
+            adCode=ad_code,
+            latitude=point.latitude,
+            longitude=point.longitude,
         )
 
     def _generated_to_summary(self, place: AiGeneratedPlace) -> PlaceSummary:
@@ -1218,11 +1523,116 @@ class TravelPlanGenerationService:
             bonus -= 12.0
         return bonus
 
+    def _pick_meal(
+        self,
+        food: list[PlaceSummary],
+        used: set[str],
+        previous: PlaceSummary,
+        following: PlaceSummary,
+        role: str,
+        city_name: str,
+        transport_preference: str,
+    ) -> PlaceSummary | None:
+        available = [place for place in food if place.sourcePoiId not in used]
+        if not available:
+            return None
+        max_detour = {
+            "WALK": 1.2,
+            "MIXED": 1.8,
+            "TRANSIT": 2.5,
+            "DRIVE": 3.0,
+        }.get(transport_preference, 1.8)
+
+        def route_metrics(place: PlaceSummary) -> tuple[float, float, float]:
+            first_leg = self._distance(previous, place)
+            second_leg = self._distance(place, following)
+            direct = self._distance(previous, following)
+            return first_leg, second_leg, max(0.0, first_leg + second_leg - direct)
+
+        viable = [place for place in available if route_metrics(place)[2] <= max_detour]
+        if not viable:
+            return None
+        return min(
+            viable,
+            key=lambda place: (
+                route_metrics(place)[2] * 1.8
+                + max(route_metrics(place)[0], route_metrics(place)[1]) * 0.12
+                - self._quality_score(place) * 0.06
+                - self._local_food_score(city_name, place) * 0.16
+                - self._meal_role_score(place, role)
+            ),
+        )
+
+    def _meal_role_score(self, place: PlaceSummary, role: str) -> float:
+        text = f"{place.name} {place.typeName or ''}"
+        words = {
+            "BREAKFAST": ("早餐", "早茶", "包子", "生煎", "汤包", "豆浆", "粥", "粉", "面", "肠粉", "烧饼"),
+            "LUNCH": ("小吃", "面", "粉", "简餐", "老字号", "特色"),
+            "DINNER": ("本帮", "地方菜", "老字号", "火锅", "烤鸭", "粤菜", "川菜", "陕菜", "杭帮菜", "烧鹅"),
+        }.get(role, ())
+        return 8.0 if any(word in text for word in words) else 0.0
+
+    def _filter_meal_detours(
+        self,
+        request: AiPlanGenerationRequest,
+        places: list[AiGeneratedPlace],
+    ) -> tuple[list[AiGeneratedPlace], list[str]]:
+        """Reject meals that create a noticeable geographic detour.
+
+        AMap still verifies every retained leg afterwards.  This geometric
+        guard runs first so both heuristic and model-produced meals must stay
+        near the path between their neighboring itinerary anchors.
+        """
+        max_detour = {
+            "WALK": 1.2,
+            "MIXED": 1.8,
+            "TRANSIT": 2.5,
+            "DRIVE": 3.0,
+        }.get(request.transportPreference, 1.8)
+        max_endpoint_distance = {
+            "WALK": 1.5,
+            "MIXED": 2.5,
+            "TRANSIT": 4.0,
+            "DRIVE": 5.0,
+        }.get(request.transportPreference, 2.5)
+        retained: list[AiGeneratedPlace] = []
+        removed: list[str] = []
+        for index, place in enumerate(places):
+            if place.category not in {"food", "drink"}:
+                retained.append(place)
+                continue
+            previous = places[index - 1] if index > 0 else None
+            following = places[index + 1] if index + 1 < len(places) else None
+            reasonable = True
+            if previous is not None and following is not None:
+                first_leg = self._distance_coordinates(
+                    previous.latitude, previous.longitude, place.latitude, place.longitude,
+                )
+                second_leg = self._distance_coordinates(
+                    place.latitude, place.longitude, following.latitude, following.longitude,
+                )
+                direct = self._distance_coordinates(
+                    previous.latitude, previous.longitude, following.latitude, following.longitude,
+                )
+                reasonable = max(0.0, first_leg + second_leg - direct) <= max_detour
+            else:
+                neighbor = previous or following
+                if neighbor is not None:
+                    reasonable = self._distance_coordinates(
+                        neighbor.latitude, neighbor.longitude, place.latitude, place.longitude,
+                    ) <= max_endpoint_distance
+            if reasonable:
+                retained.append(place)
+            else:
+                removed.append(place.name)
+        return retained, removed
+
     def _schedule_places(
         self,
         request: AiPlanGenerationRequest,
         places: list[PlaceSummary],
         day_index: int,
+        meal_roles: dict[str, str] | None = None,
     ) -> list[AiGeneratedPlace]:
         current = self._time_to_minutes(request.dailyStart)
         day_end = self._time_to_minutes(request.dailyEnd)
@@ -1232,7 +1642,7 @@ class TravelPlanGenerationService:
         if day_index == departure_day and request.departureTime:
             day_end = min(day_end, self._time_to_minutes(request.departureTime))
         generated: list[AiGeneratedPlace] = []
-        meal_count = 0
+        meal_roles = meal_roles or {}
         previous: PlaceSummary | None = None
 
         for position, place in enumerate(places):
@@ -1258,7 +1668,14 @@ class TravelPlanGenerationService:
                         continue
                     verified = False
             elif place.category in {"food", "drink"}:
-                desired = 11 * 60 + 30 if meal_count == 0 else 17 * 60 + 30
+                meal_type = meal_roles.get(place.sourcePoiId) or (
+                    "BREAKFAST" if current < 10 * 60 else "LUNCH" if current < 15 * 60 else "DINNER"
+                )
+                desired, latest_end = {
+                    "BREAKFAST": (7 * 60 + 30, 11 * 60),
+                    "LUNCH": (11 * 60 + 30, 14 * 60),
+                    "DINNER": (17 * 60 + 30, 21 * 60),
+                }[meal_type]
                 current = max(current, desired)
                 if has_opening_data:
                     slot = self._find_open_slot(opening_ranges, current, duration)
@@ -1268,7 +1685,8 @@ class TravelPlanGenerationService:
                     verified = True
                 else:
                     verified = False
-                meal_count += 1
+                if current + duration > latest_end:
+                    continue
             elif place.category == "lodging":
                 duration = 45
                 verified = False
@@ -1296,12 +1714,13 @@ class TravelPlanGenerationService:
                 break
             start = self._minutes_to_time(current)
             end = self._minutes_to_time(current + duration)
-            note = self._schedule_note(place, verified)
+            meal_type = meal_roles.get(place.sourcePoiId)
+            note = self._schedule_note(place, verified, meal_type)
             generated.append(
                 self._to_generated_place(
                     place,
                     position,
-                    {"start": start, "end": end, "note": note},
+                    {"start": start, "end": end, "note": note, "mealType": meal_type},
                     request,
                     schedule_verified=verified,
                 ),
@@ -1440,14 +1859,15 @@ class TravelPlanGenerationService:
         hour, minute = value.split(":", 1)
         return f"{int(hour):02d}:{minute}"
 
-    def _schedule_note(self, place: PlaceSummary, verified: bool) -> str:
+    def _schedule_note(self, place: PlaceSummary, verified: bool, meal_type: str | None = None) -> str:
         hours = place.openingHoursToday or place.openingHoursWeek
         if place.category == "transport":
             return "抵达后预留约 40 分钟用于出站、取行李和换乘。"
         if place.category == "lodging":
             return "先寄存行李或办理入住；实际入住时间以酒店政策为准。"
         if place.category in {"food", "drink"}:
-            return f"安排在正常用餐时段。{f'高德营业信息：{hours}' if verified and hours else '营业时间请在详情页确认。'}"
+            role_text = {"BREAKFAST": "特色早餐", "LUNCH": "顺路午餐", "DINNER": "特色晚餐"}.get(meal_type, "用餐")
+            return f"{role_text}，兼顾地方特色和前后地点通勤。{f'高德营业信息：{hours}' if verified and hours else '营业时间请在详情页确认。'}"
         if verified and hours:
             return f"游览时间已落在高德开放时段内：{hours}"
         return "开放时间数据暂缺，已保守安排在 09:30-17:30；出发前请在详情页确认。"
@@ -1463,11 +1883,17 @@ class TravelPlanGenerationService:
         default_start, default_end = self._default_slot(request, position)
         proposed_start = self._clean_time(ai.get("start"), default_start)
         proposed_end = self._clean_time(ai.get("end"), default_end)
+        meal_type = (
+            str(ai.get("mealType")).upper()
+            if str(ai.get("mealType") or "").upper() in {"BREAKFAST", "LUNCH", "DINNER"}
+            else None
+        )
         suggested_start, suggested_end, automatically_verified = self._validated_slot(
             place,
             proposed_start,
             proposed_end,
             request,
+            meal_type,
         )
         return AiGeneratedPlace(
             id=place.id,
@@ -1506,6 +1932,7 @@ class TravelPlanGenerationService:
                 "根据地点实际开放信息安排停留，出发前建议再次确认。",
                 80,
             ),
+            mealType=meal_type,
         )
 
     def _validated_slot(
@@ -1514,6 +1941,7 @@ class TravelPlanGenerationService:
         start: str,
         end: str,
         request: AiPlanGenerationRequest,
+        meal_type: str | None = None,
     ) -> tuple[str, str, bool]:
         start_minutes = self._time_to_minutes(start)
         end_minutes = self._time_to_minutes(end)
@@ -1533,7 +1961,12 @@ class TravelPlanGenerationService:
                 conservative_end = 17 * 60 + 15
             return self._minutes_to_time(conservative_start), self._minutes_to_time(conservative_end), False
         if place.category in {"food", "drink"}:
-            meal_start = 11 * 60 + 30 if start_minutes < 15 * 60 else 17 * 60 + 30
+            meal_start = {
+                "BREAKFAST": 7 * 60 + 30,
+                "LUNCH": 11 * 60 + 30,
+                "DINNER": 17 * 60 + 30,
+            }.get(meal_type, 11 * 60 + 30 if start_minutes < 15 * 60 else 17 * 60 + 30)
+            meal_start = max(meal_start, start_minutes)
             meal_end = min(meal_start + duration, self._time_to_minutes(request.dailyEnd))
             return self._minutes_to_time(meal_start), self._minutes_to_time(meal_end), False
         return start, end, False

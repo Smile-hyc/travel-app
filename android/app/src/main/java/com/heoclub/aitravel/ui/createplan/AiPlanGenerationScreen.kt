@@ -1,5 +1,6 @@
 package com.heoclub.aitravel.ui.createplan
 
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,14 +30,17 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -44,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,7 +68,24 @@ import com.heoclub.aitravel.ui.components.PlaceCoverImage
 import com.heoclub.aitravel.ui.explore.ExploreMap
 import com.heoclub.aitravel.ui.explore.MapCameraCommand
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.rememberScrollState
+
+internal const val CURRENT_PLAN_FALLBACK_DELAY_SECONDS = 30
+
+internal fun canUseCurrentPlan(
+    waitingForAi: Boolean,
+    waitingSeconds: Int,
+    partialDayCount: Int,
+    completedDays: Int,
+    totalDays: Int,
+): Boolean {
+    return waitingForAi &&
+        waitingSeconds >= CURRENT_PLAN_FALLBACK_DELAY_SECONDS &&
+        partialDayCount > 0 &&
+        totalDays > 0 &&
+        completedDays >= totalDays
+}
 
 @Composable
 fun AiPlanGenerationScreen(
@@ -76,8 +98,8 @@ fun AiPlanGenerationScreen(
     val uiState by viewModel.uiState.collectAsState()
     val loading = uiState as? AiPlanGenerationUiState.Loading
     val ready = uiState as? AiPlanGenerationUiState.Ready
-    var selectedDayIndex by remember { mutableIntStateOf(1) }
-    var followActiveDay by remember { mutableStateOf(true) }
+    var selectedDayIndex by rememberSaveable { mutableIntStateOf(0) }
+    var followActiveDay by rememberSaveable { mutableStateOf(true) }
     LaunchedEffect(loading?.activeDayIndex) {
         if (followActiveDay) {
             loading?.activeDayIndex?.let { selectedDayIndex = it }
@@ -85,20 +107,30 @@ fun AiPlanGenerationScreen(
     }
     LaunchedEffect(ready?.savedPlanId) {
         if (ready != null) {
-            selectedDayIndex = 1
+            selectedDayIndex = 0
             followActiveDay = false
         }
     }
     val activeLoadingDay = loading?.partialDays
         ?.firstOrNull { it.dayIndex == selectedDayIndex }
         ?: loading?.partialDays?.lastOrNull { it.places.isNotEmpty() }
-    val activeReadyDay = ready?.result?.days
-        ?.firstOrNull { it.dayIndex == selectedDayIndex }
+    val activeReadyDay = ready?.result?.days?.firstOrNull { it.dayIndex == selectedDayIndex }
     val activeMapDay = activeLoadingDay ?: activeReadyDay
-    val visiblePlaces = activeMapDay?.places
-        .orEmpty()
+    val visibleGeneratedPlaces = when {
+        loading != null && selectedDayIndex == 0 -> loading.partialDays.flatMap { it.places }
+        ready != null && selectedDayIndex == 0 -> ready.result.days.flatMap { it.places }
+        else -> activeMapDay?.places.orEmpty()
+    }
+    val visiblePlaces = visibleGeneratedPlaces
         .map(AiGeneratedPlace::toPlaceSummary)
-    val selectedPlaceId = visiblePlaces.lastOrNull()?.id
+    val visibleRoutePolylines = when {
+        loading != null && selectedDayIndex == 0 -> loading.partialDays.flatMap { day -> day.transfers.map { it.polyline } }
+        ready != null && selectedDayIndex == 0 -> ready.result.days.flatMap { day -> day.transfers.map { it.polyline } }
+        activeLoadingDay != null -> activeLoadingDay.transfers.map { it.polyline }
+        activeReadyDay != null -> activeReadyDay.transfers.map { it.polyline }
+        else -> emptyList()
+    }.filter { it.size >= 2 }
+    val selectedPlaceId = if (selectedDayIndex == 0) null else visiblePlaces.lastOrNull()?.id
     val mapCommands = remember { MutableSharedFlow<MapCameraCommand>(extraBufferCapacity = 1) }
 
     Column(
@@ -115,7 +147,10 @@ fun AiPlanGenerationScreen(
                     selectedPlaceId = selectedPlaceId,
                     mapCommands = mapCommands,
                     onMarkerClick = {},
-                    routePlaces = visiblePlaces,
+                    routePlaces = if (selectedDayIndex == 0) emptyList() else visiblePlaces,
+                    routePolylines = visibleRoutePolylines,
+                    showAllPlaces = selectedDayIndex == 0,
+                    autoFitPlaces = selectedDayIndex == 0,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -143,7 +178,11 @@ fun AiPlanGenerationScreen(
                     shadowElevation = 3.dp,
                 ) {
                     Text(
-                        "第 ${activeMapDay?.dayIndex ?: 1} 天 · ${visiblePlaces.size} 个点 · 路线草案",
+                        if (selectedDayIndex == 0) {
+                            "全程总览 · ${visiblePlaces.size} 个点"
+                        } else {
+                            "第 ${activeMapDay?.dayIndex ?: 1} 天 · ${visiblePlaces.size} 个点 · 路线预览"
+                        },
                         modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -173,6 +212,7 @@ fun AiPlanGenerationScreen(
                         followActiveDay = false
                     },
                     onOpenPlace = onOpenPlace,
+                    onUseCurrentDraft = { viewModel.useCurrentDraftWithoutAi() },
                     onCancel = {
                         viewModel.cancel()
                         onBack()
@@ -236,7 +276,7 @@ private fun PlanningMapBackdrop(modifier: Modifier = Modifier) {
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Text("AI 正在绘制你的旅行路线", fontWeight = FontWeight.SemiBold)
+                Text("正在绘制你的行程路线", fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -254,83 +294,210 @@ private fun LoadingPlanContent(
     selectedDayIndex: Int,
     onSelectDay: (Int) -> Unit,
     onOpenPlace: (String) -> Unit,
+    onUseCurrentDraft: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    val activeDay = partialDays.firstOrNull { it.dayIndex == selectedDayIndex }
-        ?: partialDays.lastOrNull { it.places.isNotEmpty() }
+    val selectedDay = partialDays.firstOrNull { it.dayIndex == selectedDayIndex }
+    val fallbackDay = partialDays.lastOrNull { it.places.isNotEmpty() }
+    val visibleDays = if (selectedDayIndex == 0) {
+        partialDays.filter { it.places.isNotEmpty() }.sortedBy { it.dayIndex }
+    } else {
+        listOfNotNull(selectedDay ?: fallbackDay)
+    }
+    val waitingForAi = (progress == 74 && completedDays >= totalDays) ||
+        stage.contains("等待 AI") || stage.contains("AI 深度优化")
+    var aiWaitingSeconds by rememberSaveable { mutableIntStateOf(0) }
+    var aiWaitingStartedAtMillis by rememberSaveable { mutableStateOf(0L) }
+    var showUseDraftDialog by rememberSaveable { mutableStateOf(false) }
+    val canUseCurrentPlan = canUseCurrentPlan(
+        waitingForAi = waitingForAi,
+        waitingSeconds = aiWaitingSeconds,
+        partialDayCount = partialDays.size,
+        completedDays = completedDays,
+        totalDays = totalDays,
+    )
+    LaunchedEffect(waitingForAi) {
+        if (!waitingForAi) {
+            aiWaitingSeconds = 0
+            aiWaitingStartedAtMillis = 0L
+            return@LaunchedEffect
+        }
+        if (aiWaitingStartedAtMillis == 0L) {
+            aiWaitingStartedAtMillis = SystemClock.elapsedRealtime()
+        }
+        while (true) {
+            val elapsedMillis = (SystemClock.elapsedRealtime() - aiWaitingStartedAtMillis).coerceAtLeast(0L)
+            aiWaitingSeconds = (elapsedMillis / 1_000L).toInt()
+            delay(1_000L - (elapsedMillis % 1_000L))
+        }
+    }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp)) {
-        Text("实时规划中", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("正在规划行程", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
-            stage,
+            planningStageText(progress, completedDays, totalDays, waitingForAi, aiWaitingSeconds),
             modifier = Modifier
                 .padding(top = 8.dp)
                 .semantics { liveRegion = LiveRegionMode.Polite },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.height(14.dp))
-        Box(modifier = Modifier.fillMaxWidth().height(5.dp).background(Color(0xFFE5EDF6), CircleShape)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(progress.coerceIn(0, 100) / 100f)
-                    .height(5.dp)
-                    .background(MaterialTheme.colorScheme.primary, CircleShape),
-            )
+        if (waitingForAi) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(5.dp))
+        } else {
+            Box(modifier = Modifier.fillMaxWidth().height(5.dp).background(Color(0xFFE5EDF6), CircleShape)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(progress.coerceIn(0, 100) / 100f)
+                        .height(5.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape),
+                )
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                if (completedDays > 0) "已编排 $completedDays/$totalDays 天" else "服务端实时进度",
+                if (completedDays > 0) "已完成 $completedDays/$totalDays 天基础安排" else "正在准备行程内容",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text("$progress%", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(
+                if (waitingForAi) "持续优化中" else "$progress%",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
         LazyColumn(
             modifier = Modifier.padding(top = 18.dp).weight(1f),
             contentPadding = PaddingValues(bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (events.isNotEmpty()) {
+                item {
+                    PlanningTimeline(
+                        events = events.takeLast(4),
+                        places = partialDays.flatMap { it.places },
+                    )
+                }
+            }
             if (partialDays.isNotEmpty()) {
                 item {
                     DaySelector(
                         days = partialDays,
-                        selectedDayIndex = activeDay?.dayIndex ?: selectedDayIndex,
+                        selectedDayIndex = selectedDayIndex,
                         activeDayIndex = activeDayIndex,
                         onSelectDay = onSelectDay,
+                        includeOverview = true,
                     )
                 }
             }
-            if (events.isNotEmpty()) {
-                item { PlanningTimeline(events.takeLast(4)) }
-            }
-            if (activeDay != null) {
+            if (waitingForAi) {
                 item {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(activeDay.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                "当前方案已可查看，地图、地点与通勤信息会在优化期间保持可用。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                    }
+                }
+            }
+            if (visibleDays.isNotEmpty()) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            "已落点 ${activeDay.places.size} 个 · 预估连线 ${activeDay.estimatedDistanceKm} km",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
+                            if (selectedDayIndex == 0) "当前方案 · 全程总览" else "当前方案预览",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "地点、时间与通勤均可浏览，智能优化将在后台继续",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
-                items(activeDay.places.takeLast(3), key = { it.id }) { place ->
-                    GeneratedPlaceCard(place, onOpenPlace = onOpenPlace)
+                items(visibleDays, key = { "loading-day-${it.dayIndex}" }) { day ->
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(day.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "已落点 ${day.places.size} 个 · 路线约 ${day.estimatedDistanceKm} km",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        day.places.forEachIndexed { index, place ->
+                            GeneratedPlaceCard(place, onOpenPlace = onOpenPlace)
+                            day.transfers.firstOrNull { it.originPlaceId == place.id }
+                                ?.takeIf { index < day.places.lastIndex }
+                                ?.let { transfer ->
+                                    Text(
+                                        text = "到 ${day.places[index + 1].name}：" +
+                                            "${formatGeneratedDistance(transfer.distanceMeters)} · " +
+                                            "${transfer.durationMinutes} 分钟 · ${generatedModeLabel(transfer.mode, transfer.modeLabel)}",
+                                        modifier = Modifier.padding(start = 12.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                        }
+                    }
                 }
             } else {
                 items(3) { index -> PlanSkeletonRow(index) }
             }
         }
-        OutlinedButton(
-            onClick = onCancel,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(18.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Icon(Icons.Outlined.Close, contentDescription = null)
-            Text("取消生成", modifier = Modifier.padding(start = 8.dp))
+            OutlinedButton(
+                onClick = onCancel,
+                modifier = Modifier.weight(if (canUseCurrentPlan) 0.42f else 1f).height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Outlined.Close, contentDescription = null)
+                Text("取消规划", modifier = Modifier.padding(start = 8.dp))
+            }
+            if (canUseCurrentPlan) {
+                Button(
+                    onClick = { showUseDraftDialog = true },
+                    modifier = Modifier.weight(0.58f).height(52.dp),
+                    shape = RoundedCornerShape(18.dp),
+                ) {
+                    Text("使用当前方案")
+                }
+            }
         }
+    }
+    if (showUseDraftDialog) {
+        AlertDialog(
+            onDismissRequest = { showUseDraftDialog = false },
+            title = { Text("使用当前方案？") },
+            text = {
+                Text("将结束本次智能优化，并保存已结合天气、开放时间与实际路线安排的当前方案。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showUseDraftDialog = false
+                        onUseCurrentDraft()
+                    },
+                ) { Text("确认使用") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUseDraftDialog = false }) { Text("继续优化") }
+            },
+        )
     }
 }
 
@@ -340,13 +507,21 @@ private fun DaySelector(
     selectedDayIndex: Int,
     activeDayIndex: Int?,
     onSelectDay: (Int) -> Unit,
+    includeOverview: Boolean = false,
 ) {
     val sortedDays = days.sortedBy { it.dayIndex }
-    if (sortedDays.size <= 3) {
+    if (sortedDays.size + (if (includeOverview) 1 else 0) <= 3) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (includeOverview) {
+                OverviewChip(
+                    selected = selectedDayIndex == 0,
+                    onClick = { onSelectDay(0) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
             sortedDays.forEach { day ->
                 DayChip(
                     day = day,
@@ -362,6 +537,9 @@ private fun DaySelector(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (includeOverview) {
+                OverviewChip(selected = selectedDayIndex == 0, onClick = { onSelectDay(0) })
+            }
             sortedDays.forEach { day ->
                 DayChip(
                     day = day,
@@ -370,6 +548,24 @@ private fun DaySelector(
                     onClick = { onSelectDay(day.dayIndex) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun OverviewChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.height(48.dp).clickable(onClick = onClick),
+        color = if (selected) MaterialTheme.colorScheme.primary else Color(0xFFF1F5F9),
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text("总览", fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -393,7 +589,7 @@ private fun DayChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            Text("Day ${day.dayIndex}", fontWeight = FontWeight.Bold)
+            Text("第 ${day.dayIndex} 天", fontWeight = FontWeight.Bold)
             Text(" · ${day.places.size}点", style = MaterialTheme.typography.labelSmall)
             if (active) {
                 Text(" •", style = MaterialTheme.typography.labelSmall)
@@ -403,7 +599,10 @@ private fun DayChip(
 }
 
 @Composable
-private fun PlanningTimeline(events: List<AiPlanProgressEvent>) {
+private fun PlanningTimeline(
+    events: List<AiPlanProgressEvent>,
+    places: List<AiGeneratedPlace>,
+) {
     Surface(
         color = Color(0xFFEEF6FF),
         shape = RoundedCornerShape(18.dp),
@@ -415,40 +614,43 @@ private fun PlanningTimeline(events: List<AiPlanProgressEvent>) {
         ) {
             Text("规划动态", fontWeight = FontWeight.Bold, color = Color(0xFF174F86))
             events.forEach { event ->
+                val eventPlace = event.placeId?.let { placeId -> places.firstOrNull { it.id == placeId } }
                 Row(
                     verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    Icon(
-                        imageVector = when (event.type) {
-                            "PLACE_ADDED" -> Icons.Outlined.LocationOn
-                            "DAY_COMPLETED", "PLAN_REFINED" -> Icons.Outlined.CheckCircle
-                            else -> Icons.Outlined.AutoAwesome
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
+                    if (eventPlace != null) {
+                        PlaceCoverImage(
+                            imageUrl = eventPlace.thumbnailUrl?.takeIf(String::isNotBlank)
+                                ?: eventPlace.imageUrls.firstOrNull { it.isNotBlank() },
+                            placeName = eventPlace.name,
+                            category = eventPlace.category,
+                            modifier = Modifier.size(44.dp),
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = when (event.type) {
+                                "DAY_COMPLETED", "PLAN_REFINED" -> Icons.Outlined.CheckCircle
+                                else -> Icons.Outlined.AutoAwesome
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
-                            event.message,
+                            planningFeatureText(event, eventPlace),
                             style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
                             color = Color(0xFF29445E),
                         )
-                        if (event.evidence.isNotEmpty()) {
-                            Text(
-                                "依据：${event.evidence.joinToString(" · ")}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF607D96),
-                            )
-                        }
-                        event.decision?.takeIf(String::isNotBlank)?.let { decision ->
-                            Text(
-                                "决定：$decision",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF174F86),
-                            )
-                        }
+                        Text(
+                            planningFeatureOutcome(event, eventPlace),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF607D96),
+                        )
                     }
                 }
             }
@@ -493,7 +695,7 @@ private fun ReadyPlanContent(
             )
             Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
                 Text(
-                    if (complete) "行程已生成并保存" else "正在编辑第 ${state.visibleDayCount} 天",
+                    if (complete) "行程已生成并保存" else "正在完善第 ${state.visibleDayCount} 天",
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
@@ -514,6 +716,7 @@ private fun ReadyPlanContent(
                     selectedDayIndex = selectedDayIndex,
                     activeDayIndex = null,
                     onSelectDay = onSelectDay,
+                    includeOverview = true,
                 )
             }
             if (state.result.warnings.isNotEmpty()) {
@@ -531,11 +734,10 @@ private fun ReadyPlanContent(
             item {
                 Surface(color = Color(0xFFEAF8F3), shape = RoundedCornerShape(16.dp)) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("行程质量检查", fontWeight = FontWeight.Bold, color = Color(0xFF126B50))
+                        Text("行程检查完成", fontWeight = FontWeight.Bold, color = Color(0xFF126B50))
                         Text(
-                            "${state.result.quality.totalPlaceCount} 个真实 POI · " +
-                                "重复 ${state.result.quality.duplicatePlaceCount} 个 · " +
-                                state.result.quality.dataSources.joinToString(" + "),
+                            "${state.result.quality.totalPlaceCount} 个真实地点 · " +
+                                "已检查重复地点、开放时间与通勤衔接",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF2F6657),
                         )
@@ -543,7 +745,7 @@ private fun ReadyPlanContent(
                 }
             }
             items(
-                state.result.days.filter { it.dayIndex == selectedDayIndex },
+                state.result.days.filter { selectedDayIndex == 0 || it.dayIndex == selectedDayIndex },
                 key = { it.dayIndex },
             ) { day ->
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -554,8 +756,21 @@ private fun ReadyPlanContent(
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Text(day.summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    day.places.forEach { place ->
+                    day.places.forEachIndexed { index, place ->
                         GeneratedPlaceCard(place, onOpenPlace = onOpenPlace)
+                        day.transfers.firstOrNull { it.originPlaceId == place.id }
+                            ?.takeIf { index < day.places.lastIndex }
+                            ?.let { transfer ->
+                                Text(
+                                    text = "到 ${day.places[index + 1].name}：" +
+                                        "${formatGeneratedDistance(transfer.distanceMeters)} · " +
+                                        "${transfer.durationMinutes} 分钟 · ${generatedModeLabel(transfer.mode, transfer.modeLabel)}" +
+                                        "（完整行程中可修改）",
+                                    modifier = Modifier.padding(start = 12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                     }
                 }
             }
@@ -568,6 +783,69 @@ private fun ReadyPlanContent(
         ) {
             Text(if (complete) "查看完整行程" else "正在保存行程…")
         }
+    }
+}
+
+private fun planningStageText(
+    progress: Int,
+    completedDays: Int,
+    totalDays: Int,
+    waitingForAi: Boolean,
+    waitingSeconds: Int,
+): String {
+    return when {
+        waitingForAi -> "正在优化行程节奏与每日主题 · ${waitingSeconds} 秒"
+        progress < 20 -> "正在确认目的地与出行日期"
+        progress < 45 -> "正在结合天气和偏好筛选地点"
+        progress < 74 -> "正在安排每日景点、用餐与住宿衔接"
+        progress < 94 -> "正在确认开放时间与实际通勤路线"
+        completedDays >= totalDays -> "正在保存完整行程"
+        else -> "正在完善行程安排"
+    }
+}
+
+private fun planningFeatureText(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
+    return when (event.type) {
+        "WEATHER_CHECK" -> "已结合天气调整室内外游览安排"
+        "ANCHOR_APPLIED" -> "已设置到达、离开与住宿衔接"
+        "DAY_STARTED" -> "正在安排第 ${event.dayIndex ?: 1} 天行程"
+        "PLACE_ADDED" -> place?.let { "已安排 ${it.name} 的到访时间" } ?: "已加入合适的地点"
+        "ROUTE_CHECK" -> place?.let { "已确认前往 ${it.name} 的通勤安排" } ?: "已确认相邻地点的通勤安排"
+        "TIME_WINDOW_CHECK" -> place?.let { "已调整 ${it.name} 的开放时间冲突" } ?: "已处理开放时间冲突"
+        "MEAL_PLACED" -> "已安排顺路且符合用餐时段的餐馆"
+        "DAY_COMPLETED" -> "第 ${event.dayIndex ?: 1} 天行程已可查看"
+        "PLAN_REFINED" -> "行程节奏与每日主题已完成优化"
+        else -> "正在完善行程安排"
+    }
+}
+
+private fun planningFeatureOutcome(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
+    return when (event.type) {
+        "WEATHER_CHECK" -> "天气不适合户外活动时，会优先安排室内地点"
+        "ANCHOR_APPLIED" -> "行程会从你选择的位置开始，并在离开位置结束"
+        "DAY_STARTED" -> "当天地点将按少折返、可执行的顺序排列"
+        "PLACE_ADDED" -> place?.suggestedStart?.let { "建议 $it 到访，可继续查看详情" } ?: "到访时间会结合营业信息安排"
+        "ROUTE_CHECK" -> "交通方式、距离和时间会显示在相邻地点之间"
+        "TIME_WINDOW_CHECK" -> "不会把参观安排在闭馆或停止入场之后"
+        "MEAL_PLACED" -> "用餐位置会兼顾特色、营业时段和顺路程度"
+        "DAY_COMPLETED" -> "可以在地图和下方方案中查看当天内容"
+        "PLAN_REFINED" -> "已兼顾偏好、天气、开放时间与通勤节奏"
+        else -> "当前结果会持续显示，可随时查看"
+    }
+}
+
+private fun formatGeneratedDistance(meters: Int): String {
+    return if (meters >= 1_000) "%.1f 公里".format(meters / 1_000f) else "$meters 米"
+}
+
+private fun generatedModeLabel(mode: String, serverLabel: String? = null): String {
+    serverLabel?.takeIf(String::isNotBlank)?.let { return it }
+    return when (mode) {
+        "walking" -> "步行"
+        "transit" -> "公共交通"
+        "driving" -> "驾车"
+        "cycling" -> "骑行"
+        else -> mode
     }
 }
 
@@ -586,10 +864,23 @@ private fun GeneratedPlaceCard(
             PlaceCoverImage(
                 imageUrl = place.thumbnailUrl,
                 placeName = place.name,
+                category = place.category,
                 modifier = Modifier.size(78.dp),
                 shape = RoundedCornerShape(15.dp),
             )
             Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+                place.mealType?.let { mealType ->
+                    Text(
+                        when (mealType) {
+                            "BREAKFAST" -> "特色早餐"
+                            "LUNCH" -> "顺路午餐"
+                            "DINNER" -> "特色晚餐"
+                            else -> "用餐"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 Text(place.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(
                     modifier = Modifier.padding(top = 5.dp),
@@ -613,7 +904,7 @@ private fun GeneratedPlaceCard(
                 )
                 Text(
                     text = when {
-                        place.scheduleVerified -> "时间已按营业信息校验"
+                        place.scheduleVerified -> "开放时间已确认"
                         !place.openingHoursToday.isNullOrBlank() -> "营业：${place.openingHoursToday}"
                         !place.openingHoursWeek.isNullOrBlank() -> "营业：${place.openingHoursWeek}"
                         else -> "开放时间待确认"
@@ -646,7 +937,7 @@ private fun ErrorPlanContent(message: String, onRetry: () -> Unit, onBack: () ->
         verticalArrangement = Arrangement.Center,
     ) {
         Icon(Icons.Outlined.LocationOn, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.error)
-        Text("智能规划没有完成", modifier = Modifier.padding(top = 14.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text("行程规划未完成", modifier = Modifier.padding(top = 14.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         Text(
             message,
             modifier = Modifier.padding(top = 10.dp),
@@ -654,7 +945,7 @@ private fun ErrorPlanContent(message: String, onRetry: () -> Unit, onBack: () ->
         )
         Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
             Icon(Icons.Outlined.Refresh, contentDescription = null)
-            Text("重新生成", modifier = Modifier.padding(start = 8.dp))
+            Text("重新规划", modifier = Modifier.padding(start = 8.dp))
         }
         OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
             Text("返回修改")

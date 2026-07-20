@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from time import perf_counter
 from typing import Callable
 
 import httpx
@@ -24,6 +25,7 @@ class ArkClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout_seconds: float | None = None,
+        disable_read_timeout: bool = False,
     ) -> str:
         if not self._settings.ark_configured:
             raise HTTPException(
@@ -45,7 +47,11 @@ class ArkClient:
 
         timeout = httpx.Timeout(
             connect=10.0,
-            read=self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
+            read=(
+                None
+                if disable_read_timeout
+                else self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds
+            ),
             write=20.0,
             pool=10.0,
         )
@@ -92,6 +98,9 @@ class ArkClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout_seconds: float | None = None,
+        disable_read_timeout: bool = False,
+        on_timing: Callable[[str, int], None] | None = None,
+        thinking_type: str | None = None,
     ) -> str:
         """Consume the provider's real SSE token stream.
 
@@ -112,6 +121,8 @@ class ArkClient:
             "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
             "stream": True,
         }
+        if thinking_type:
+            payload["thinking"] = {"type": thinking_type}
         headers = {
             "Authorization": f"Bearer {self._settings.ark_api_key}",
             "Content-Type": "application/json",
@@ -119,14 +130,22 @@ class ArkClient:
         }
         timeout = httpx.Timeout(
             connect=10.0,
-            read=self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
+            read=(
+                None
+                if disable_read_timeout
+                else self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds
+            ),
             write=20.0,
             pool=10.0,
         )
         chunks: list[str] = []
+        started_at = perf_counter()
+        first_content_received = False
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if on_timing is not None:
+                        on_timing("connected", round((perf_counter() - started_at) * 1000))
                     if response.status_code >= 400:
                         await response.aread()
                         raise self._to_http_exception(response)
@@ -145,6 +164,10 @@ class ArkClient:
                         content = delta.get("content") if isinstance(delta, dict) else None
                         if not isinstance(content, str) or not content:
                             continue
+                        if not first_content_received:
+                            first_content_received = True
+                            if on_timing is not None:
+                                on_timing("first_token", round((perf_counter() - started_at) * 1000))
                         chunks.append(content)
                         on_delta(content)
         except HTTPException:
@@ -156,6 +179,8 @@ class ArkClient:
         content = "".join(chunks).strip()
         if not content:
             raise HTTPException(status_code=502, detail="AI 流式服务没有返回可用内容。")
+        if on_timing is not None:
+            on_timing("completed", round((perf_counter() - started_at) * 1000))
         return content
 
     def _to_http_exception(self, response: httpx.Response) -> HTTPException:
