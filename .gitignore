@@ -91,6 +91,8 @@ temp/
 .agents/
 .xml
 .png
+/artifacts/
+/tools/
 
 # OS and editor files
 .DS_Store

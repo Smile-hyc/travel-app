@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
@@ -9,10 +10,58 @@ from app.services.amap_client import AmapClient
 from app.services.simple_cache import TtlCache
 
 
+@dataclass(frozen=True)
+class AmapWeatherForecastDay:
+    date: str
+    day_weather: str
+    night_weather: str
+    day_temp: str | None
+    night_temp: str | None
+
+    @property
+    def text(self) -> str:
+        weather = self.day_weather
+        if self.night_weather and self.night_weather != self.day_weather:
+            weather = f"{weather}转{self.night_weather}" if weather else self.night_weather
+        temperature = _format_temperature_range(night_temp=self.night_temp, day_temp=self.day_temp)
+        return f"{weather} {temperature}".strip() if temperature else weather
+
+
 class AmapWeatherService:
     def __init__(self, client: AmapClient) -> None:
         self._client = client
         self._weather_cache: TtlCache[ExploreWeather] = TtlCache(max_items=128)
+        self._forecast_cache: TtlCache[list[AmapWeatherForecastDay]] = TtlCache(max_items=128)
+
+    async def get_city_forecast(self, *, adcode: str) -> list[AmapWeatherForecastDay]:
+        normalized_adcode = _normalize_amap_city_adcode(adcode)
+        cached = self._forecast_cache.get(normalized_adcode)
+        if cached is not None:
+            return cached
+        payload = await self._client.get(
+            "/v3/weather/weatherInfo",
+            {"city": normalized_adcode, "extensions": "all", "output": "JSON"},
+        )
+        forecasts = payload.get("forecasts")
+        forecast = forecasts[0] if isinstance(forecasts, list) and forecasts else None
+        casts = forecast.get("casts") if isinstance(forecast, dict) else None
+        result: list[AmapWeatherForecastDay] = []
+        for raw in casts if isinstance(casts, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            result.append(
+                AmapWeatherForecastDay(
+                    date=_clean_string(raw.get("date")) or "",
+                    day_weather=_clean_string(raw.get("dayweather")) or "",
+                    night_weather=_clean_string(raw.get("nightweather")) or "",
+                    day_temp=_clean_string(raw.get("daytemp")),
+                    night_temp=_clean_string(raw.get("nighttemp")),
+                ),
+            )
+        if not result:
+            raise HTTPException(status_code=502, detail="高德天气服务未返回可用预报。")
+        self._forecast_cache.set(normalized_adcode, result, ttl_seconds=1800)
+        return result
 
     async def get_city_weather(self, *, adcode: str) -> ExploreWeather:
         normalized_adcode = _normalize_amap_city_adcode(adcode)
@@ -22,11 +71,7 @@ class AmapWeatherService:
 
         payload = await self._client.get(
             "/v3/weather/weatherInfo",
-            {
-                "city": normalized_adcode,
-                "extensions": "all",
-                "output": "JSON",
-            },
+            {"city": normalized_adcode, "extensions": "all", "output": "JSON"},
         )
         weather = _parse_weather(payload, requested_adcode=adcode, normalized_adcode=normalized_adcode)
         self._weather_cache.set(normalized_adcode, weather, ttl_seconds=1800)

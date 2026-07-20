@@ -1,6 +1,7 @@
 package com.heoclub.aitravel.data.repository
 
 import android.content.Context
+import android.location.Location
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.heoclub.aitravel.data.model.AiSuggestedAction
@@ -9,6 +10,7 @@ import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.PlanDay
 import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.RoutePlace
+import com.heoclub.aitravel.data.model.RouteModes
 import com.heoclub.aitravel.data.model.TravelPlan
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -58,6 +60,13 @@ interface TravelPlanRepository {
         planId: String,
         dayIndex: Int,
         orderedPlaceIds: List<String>,
+    )
+
+    fun updateTransportModeToNext(
+        planId: String,
+        dayIndex: Int,
+        itemId: String,
+        mode: String,
     )
 
     fun applyAiSuggestedActions(
@@ -173,8 +182,19 @@ open class InMemoryTravelPlanRepository(
                             dayIndex = generatedDay.dayIndex,
                             visitOrder = index + 1,
                             note = place.note,
+                            mealType = place.mealType,
                             suggestedStart = place.suggestedStart,
                             suggestedEnd = place.suggestedEnd,
+                            transportModeToNext = generatedDay.transfers
+                                .firstOrNull { it.originPlaceId == place.id }
+                                ?.mode
+                                ?: defaultTransportMode(
+                                    generated.transportPreference,
+                                    place.latitude,
+                                    place.longitude,
+                                    generatedDay.places.getOrNull(index + 1)?.latitude,
+                                    generatedDay.places.getOrNull(index + 1)?.longitude,
+                                ),
                             thumbnailUrl = place.thumbnailUrl,
                             imageUrls = place.imageUrls,
                             phone = place.phone,
@@ -395,6 +415,35 @@ open class InMemoryTravelPlanRepository(
             }
         }
 
+        if (changed) persistCurrentPlans()
+    }
+
+    override fun updateTransportModeToNext(
+        planId: String,
+        dayIndex: Int,
+        itemId: String,
+        mode: String,
+    ) {
+        if (mode !in RouteModes.all || mode == RouteModes.MIXED) return
+        var changed = false
+        _plans.update { current ->
+            current.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updatedDays = ensureDays(plan).map dayMap@{ day ->
+                    if (day.dayIndex != dayIndex) return@dayMap day
+                    val updatedItems = day.items.map { item ->
+                        if (item.id == itemId && item.transportModeToNext != mode) {
+                            changed = true
+                            item.copy(transportModeToNext = mode)
+                        } else {
+                            item
+                        }
+                    }
+                    day.copy(items = updatedItems)
+                }
+                if (changed) plan.copy(days = updatedDays).nextRevision() else plan
+            }
+        }
         if (changed) persistCurrentPlans()
     }
 
@@ -716,6 +765,32 @@ private fun sanitizePlans(plans: List<TravelPlan>): List<TravelPlan> {
 private fun normalizeOrders(items: List<PlanItem>): List<PlanItem> {
     return items.mapIndexed { index, item ->
         item.copy(visitOrder = index + 1)
+    }
+}
+
+private fun defaultTransportMode(
+    preference: String,
+    originLatitude: Double,
+    originLongitude: Double,
+    destinationLatitude: Double?,
+    destinationLongitude: Double?,
+): String {
+    return when (preference) {
+        "WALK" -> RouteModes.WALKING
+        "TRANSIT" -> RouteModes.TRANSIT
+        "DRIVE" -> RouteModes.DRIVING
+        else -> {
+            if (destinationLatitude == null || destinationLongitude == null) return RouteModes.WALKING
+            val result = FloatArray(1)
+            Location.distanceBetween(
+                originLatitude,
+                originLongitude,
+                destinationLatitude,
+                destinationLongitude,
+                result,
+            )
+            if (result[0] <= 2_500f) RouteModes.WALKING else RouteModes.TRANSIT
+        }
     }
 }
 

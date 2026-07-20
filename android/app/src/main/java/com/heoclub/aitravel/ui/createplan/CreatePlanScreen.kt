@@ -19,11 +19,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.FlightLand
+import androidx.compose.material.icons.outlined.FlightTakeoff
+import androidx.compose.material.icons.outlined.Hotel
+import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePickerDialog
@@ -37,7 +44,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDateRangePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateListOf
@@ -52,11 +61,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.heoclub.aitravel.data.model.AiHotelStayInput
+import com.heoclub.aitravel.data.model.AiMapPointInput
+import com.heoclub.aitravel.data.model.PlaceSuggestion
 import java.time.LocalDate
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import java.time.format.DateTimeFormatter
+
+private data class HotelStayDraft(
+    val name: String = "",
+    val checkInDay: Int = 1,
+    val checkOutDay: Int = 2,
+    val mapPoint: AiMapPointInput? = null,
+)
+
+private sealed interface MapPickerTarget {
+    data object Arrival : MapPickerTarget
+    data object Departure : MapPickerTarget
+    data object Hotel : MapPickerTarget
+    data class HotelStay(val index: Int) : MapPickerTarget
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,20 +95,39 @@ fun CreatePlanScreen(
 ) {
     val context = LocalContext.current
     var destination by remember { mutableStateOf("") }
+    var selectedCityAdCode by remember { mutableStateOf<String?>(null) }
+    var selectedCityLatitude by remember { mutableStateOf<Double?>(null) }
+    var selectedCityLongitude by remember { mutableStateOf<Double?>(null) }
     var dayCount by remember { mutableStateOf(3) }
     var startDate by remember { mutableStateOf(LocalDate.now()) }
     var endDate by remember { mutableStateOf(startDate.plusDays((dayCount - 1).toLong())) }
     var dateRange by remember { mutableStateOf(formatDateRange(startDate, endDate)) }
     var freeText by remember { mutableStateOf("") }
     var arrivalStation by remember { mutableStateOf("") }
+    var arrivalPoint by remember { mutableStateOf<AiMapPointInput?>(null) }
+    var arrivalDay by remember { mutableStateOf(1) }
+    var arrivalTime by remember { mutableStateOf("") }
+    var departureStation by remember { mutableStateOf("") }
+    var departurePoint by remember { mutableStateOf<AiMapPointInput?>(null) }
+    var departureDay by remember { mutableStateOf(dayCount) }
+    var departureTime by remember { mutableStateOf("") }
     var hotelName by remember { mutableStateOf("") }
+    var hotelPoint by remember { mutableStateOf<AiMapPointInput?>(null) }
+    val hotelStays = remember { mutableStateListOf<HotelStayDraft>() }
     var pace by remember { mutableStateOf("BALANCED") }
     var transportPreference by remember { mutableStateOf("MIXED") }
     var dailyStart by remember { mutableStateOf("09:00") }
     var dailyEnd by remember { mutableStateOf("20:00") }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showArrivalTimePicker by remember { mutableStateOf(false) }
+    var showDepartureTimePicker by remember { mutableStateOf(false) }
+    var mapPickerTarget by remember { mutableStateOf<MapPickerTarget?>(null) }
+    var resolvingMapCenter by remember { mutableStateOf(false) }
+    var optimizationMode by remember { mutableStateOf("REQUIRED") }
     var destinationError by remember { mutableStateOf(false) }
     val citySuggestions by viewModel.citySuggestions.collectAsState()
+    val arrivalSuggestions by viewModel.arrivalSuggestions.collectAsState()
+    val departureSuggestions by viewModel.departureSuggestions.collectAsState()
     val selectedPreferences = remember { mutableStateListOf<String>() }
     val preferences = listOf(
         "经典必玩",
@@ -94,6 +139,32 @@ fun CreatePlanScreen(
         "文艺展览",
         "历史古建",
     )
+    val openMapPicker: (MapPickerTarget) -> Unit = { target ->
+        when {
+            selectedCityLatitude != null && selectedCityLongitude != null -> mapPickerTarget = target
+            destination.isBlank() -> {
+                destinationError = true
+                Toast.makeText(context, "请先输入目的城市", Toast.LENGTH_SHORT).show()
+            }
+            resolvingMapCenter -> Toast.makeText(context, "正在定位目的城市…", Toast.LENGTH_SHORT).show()
+            else -> {
+                resolvingMapCenter = true
+                viewModel.resolveDestinationCity(destination) { city ->
+                    resolvingMapCenter = false
+                    if (city == null) {
+                        Toast.makeText(context, "暂时无法定位该城市，请从城市联想中选择", Toast.LENGTH_SHORT).show()
+                    } else {
+                        destination = city.name
+                        selectedCityAdCode = city.adCode
+                        selectedCityLatitude = city.latitude
+                        selectedCityLongitude = city.longitude
+                        destinationError = false
+                        mapPickerTarget = target
+                    }
+                }
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -131,6 +202,9 @@ fun CreatePlanScreen(
             value = destination,
             onValueChange = {
                 destination = it
+                selectedCityAdCode = null
+                selectedCityLatitude = null
+                selectedCityLongitude = null
                 destinationError = false
                 viewModel.searchCities(it)
             },
@@ -163,6 +237,9 @@ fun CreatePlanScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     destination = city.name
+                                    selectedCityAdCode = city.adCode
+                                    selectedCityLatitude = city.latitude
+                                    selectedCityLongitude = city.longitude
                                     destinationError = false
                                     viewModel.clearCitySuggestions()
                                 }
@@ -183,46 +260,6 @@ fun CreatePlanScreen(
                 }
             }
         }
-        Text(
-            "出发与住宿锚点（可选）",
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            "填写后会优先采用；留空则按目的地自动选择交通枢纽和住宿参考。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        OutlinedTextField(
-            value = arrivalStation,
-            onValueChange = { arrivalStation = it.take(60) },
-            modifier = Modifier.fillMaxWidth(),
-            leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
-            label = { Text("到达火车站") },
-            placeholder = { Text("例如 北京南站") },
-            singleLine = true,
-            shape = RoundedCornerShape(18.dp),
-        )
-        OutlinedTextField(
-            value = hotelName,
-            onValueChange = { hotelName = it.take(80) },
-            modifier = Modifier.fillMaxWidth(),
-            leadingIcon = { Icon(Icons.Outlined.LocationOn, contentDescription = null) },
-            label = { Text("入住酒店") },
-            placeholder = { Text("例如 王府井附近酒店") },
-            singleLine = true,
-            shape = RoundedCornerShape(18.dp),
-        )
-        OutlinedTextField(
-            value = freeText,
-            onValueChange = { freeText = it.take(240) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("补充想法（可选）") },
-            placeholder = { Text("例如：住在市中心、不要太赶") },
-            minLines = 2,
-            maxLines = 3,
-            shape = RoundedCornerShape(18.dp),
-        )
-
         StepTitle(number = "2", title = "你想去多久？")
         OutlinedButton(
             onClick = { showDatePicker = true },
@@ -246,7 +283,11 @@ fun CreatePlanScreen(
                 Text("行程天数", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                 IconButton(
                     onClick = {
+                        val oldDayCount = dayCount
                         dayCount = (dayCount - 1).coerceAtLeast(1)
+                        if (departureDay == oldDayCount) departureDay = dayCount
+                        departureDay = departureDay.coerceAtMost(dayCount)
+                        arrivalDay = arrivalDay.coerceAtMost(departureDay)
                         endDate = startDate.plusDays((dayCount - 1).toLong())
                         dateRange = formatDateRange(startDate, endDate)
                     },
@@ -257,7 +298,9 @@ fun CreatePlanScreen(
                 Text("$dayCount 天", modifier = Modifier.padding(horizontal = 8.dp), fontWeight = FontWeight.Bold)
                 IconButton(
                     onClick = {
+                        val oldDayCount = dayCount
                         dayCount = (dayCount + 1).coerceAtMost(10)
+                        if (departureDay == oldDayCount) departureDay = dayCount
                         endDate = startDate.plusDays((dayCount - 1).toLong())
                         dateRange = formatDateRange(startDate, endDate)
                     },
@@ -268,7 +311,156 @@ fun CreatePlanScreen(
             }
         }
 
-        StepTitle(number = "3", title = "旅行偏好")
+        StepTitle(number = "3", title = "交通与住宿（可选）")
+        Text(
+            "设置行程起点、终点和每天住宿位置",
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "未设置的项目不会加入行程。自驾或住在非标准地点时，可以直接在地图上选点。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        PlanningAnchorSection(
+            title = "到达安排",
+            subtitle = "作为行程第一段的起点",
+            icon = { Icon(Icons.Outlined.FlightLand, contentDescription = null) },
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = arrivalStation,
+                    onValueChange = {
+                        arrivalStation = it.take(60)
+                        arrivalPoint = null
+                        viewModel.searchStations(arrivalStation, selectedCityAdCode, arrival = true)
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("车站、机场或停车位置") },
+                    placeholder = { Text("例如 北京南站") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                )
+                MapPickerButton("选择到达位置") { openMapPicker(MapPickerTarget.Arrival) }
+            }
+            StationSuggestionList(arrivalSuggestions) { suggestion ->
+                arrivalStation = suggestion.name
+                arrivalPoint = suggestion.toMapPointInput()
+                viewModel.clearStationSuggestions(arrival = true)
+            }
+            DayAndTimeSelector(
+                label = "到达",
+                day = arrivalDay,
+                time = arrivalTime,
+                onPreviousDay = { arrivalDay = (arrivalDay - 1).coerceAtLeast(1) },
+                onNextDay = { arrivalDay = (arrivalDay + 1).coerceAtMost(departureDay) },
+                onSelectTime = { showArrivalTimePicker = true },
+            )
+        }
+
+        PlanningAnchorSection(
+            title = "离开安排",
+            subtitle = "作为行程最后一段的终点",
+            icon = { Icon(Icons.Outlined.FlightTakeoff, contentDescription = null) },
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = departureStation,
+                    onValueChange = {
+                        departureStation = it.take(60)
+                        departurePoint = null
+                        viewModel.searchStations(departureStation, selectedCityAdCode, arrival = false)
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("车站、机场或停车位置") },
+                    placeholder = { Text("例如 北京西站") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                )
+                MapPickerButton("选择离开位置") { openMapPicker(MapPickerTarget.Departure) }
+            }
+            StationSuggestionList(departureSuggestions) { suggestion ->
+                departureStation = suggestion.name
+                departurePoint = suggestion.toMapPointInput()
+                viewModel.clearStationSuggestions(arrival = false)
+            }
+            DayAndTimeSelector(
+                label = "离开",
+                day = departureDay,
+                time = departureTime,
+                onPreviousDay = { departureDay = (departureDay - 1).coerceAtLeast(arrivalDay) },
+                onNextDay = { departureDay = (departureDay + 1).coerceAtMost(dayCount) },
+                onSelectTime = { showDepartureTimePicker = true },
+            )
+        }
+
+        PlanningAnchorSection(
+            title = "住宿安排",
+            subtitle = "酒店会作为前一晚终点和次日出发点",
+            icon = { Icon(Icons.Outlined.Hotel, contentDescription = null) },
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = hotelName,
+                    onValueChange = {
+                        hotelName = it.take(80)
+                        hotelPoint = null
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("全程同一住宿") },
+                    placeholder = { Text("酒店或民宿名称") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                )
+                MapPickerButton("选择住宿位置") { openMapPicker(MapPickerTarget.Hotel) }
+            }
+            hotelStays.forEachIndexed { index, stay ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("第 ${stay.checkInDay} 天至第 ${stay.checkOutDay} 天", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { hotelStays.removeAt(index) }) {
+                                Icon(Icons.Outlined.Remove, contentDescription = "删除这段住宿")
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = stay.name,
+                                onValueChange = { hotelStays[index] = stay.copy(name = it.take(80), mapPoint = null) },
+                                modifier = Modifier.weight(1f),
+                                label = { Text("酒店或民宿") },
+                                singleLine = true,
+                            )
+                            MapPickerButton("选择第 ${index + 1} 段住宿位置") {
+                                openMapPicker(MapPickerTarget.HotelStay(index))
+                            }
+                        }
+                        StayDateSelector(
+                            stay = stay,
+                            dayCount = dayCount,
+                            onChange = { hotelStays[index] = it },
+                        )
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val checkIn = (hotelStays.lastOrNull()?.checkOutDay ?: 1).coerceAtMost(dayCount)
+                    hotelStays.add(HotelStayDraft(checkInDay = checkIn, checkOutDay = (checkIn + 1).coerceAtMost(dayCount + 1)))
+                },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                enabled = hotelStays.size < dayCount,
+                shape = RoundedCornerShape(15.dp),
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = null)
+                Text("添加不同日期的住宿", modifier = Modifier.padding(start = 6.dp))
+            }
+        }
+
+        StepTitle(number = "4", title = "旅行偏好")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             preferences.chunked(2).forEach { rowItems ->
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -293,7 +485,7 @@ fun CreatePlanScreen(
             }
         }
 
-        StepTitle(number = "4", title = "节奏与交通")
+        StepTitle(number = "5", title = "节奏与交通")
         Text("旅行节奏", fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             listOf("RELAXED" to "轻松", "BALANCED" to "适中", "INTENSIVE" to "充实").forEach { (value, label) ->
@@ -306,9 +498,14 @@ fun CreatePlanScreen(
             }
         }
         Text("优先交通方式", fontWeight = FontWeight.SemiBold)
+        Text(
+            "公共交通会依据当地高德实时路线自动识别地铁、公交、轮渡等实际可用方式。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             listOf(
-                listOf("MIXED" to "智能混合", "TRANSIT" to "公交地铁"),
+                listOf("MIXED" to "智能混合", "TRANSIT" to "公共交通优先"),
                 listOf("WALK" to "步行为主", "DRIVE" to "驾车为主"),
             ).forEach { options ->
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -342,6 +539,32 @@ fun CreatePlanScreen(
             }
         }
 
+        StepTitle(number = "6", title = "规划方式")
+        SelectableOptionCard(
+            title = "智能优化",
+            description = "先生成可浏览的基础行程，再结合偏好、天气、开放时间与实际通勤进一步优化。",
+            selected = optimizationMode == "REQUIRED",
+            onClick = { optimizationMode = "REQUIRED" },
+        )
+        SelectableOptionCard(
+            title = "快速规划",
+            description = "根据天气、开放时间与实际路线快速生成可编辑的行程方案。",
+            selected = optimizationMode == "FAST",
+            onClick = { optimizationMode = "FAST" },
+        )
+
+        Text("补充想法（可选）", fontWeight = FontWeight.SemiBold)
+        OutlinedTextField(
+            value = freeText,
+            onValueChange = { freeText = it.take(240) },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("例如：想看夜景、不要安排太赶、午餐希望有本地特色") },
+            supportingText = { Text("会用于调整地点、节奏、用餐和通勤安排") },
+            minLines = 3,
+            maxLines = 4,
+            shape = RoundedCornerShape(18.dp),
+        )
+
         Spacer(modifier = Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(
@@ -372,7 +595,21 @@ fun CreatePlanScreen(
                                 preferences = selectedPreferences.toList(),
                                 freeText = freeText.trim().ifBlank { null },
                                 arrivalStation = arrivalStation.trim().ifBlank { null },
+                                arrivalPoint = arrivalPoint,
+                                arrivalDay = arrivalDay,
+                                arrivalTime = arrivalTime.trim().ifBlank { null },
+                                departureStation = departureStation.trim().ifBlank { null },
+                                departurePoint = departurePoint,
+                                departureDay = departureDay,
+                                departureTime = departureTime.trim().ifBlank { null },
                                 hotelName = hotelName.trim().ifBlank { null },
+                                hotelPoint = hotelPoint,
+                                hotelStays = hotelStays.mapNotNull { stay ->
+                                    stay.name.trim().takeIf(String::isNotBlank)?.let { name ->
+                                        AiHotelStayInput(name, stay.checkInDay, stay.checkOutDay, stay.mapPoint)
+                                    }
+                                },
+                                optimizationMode = optimizationMode,
                                 pace = pace,
                                 transportPreference = transportPreference,
                                 dailyStart = dailyStart,
@@ -386,7 +623,7 @@ fun CreatePlanScreen(
             ) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
                 Text(
-                    text = "智能规划",
+                    text = if (optimizationMode == "REQUIRED") "开始智能规划" else "开始快速规划",
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
@@ -414,7 +651,11 @@ fun CreatePlanScreen(
                             } else {
                                 startDate = start
                                 endDate = end
+                                val oldDayCount = dayCount
                                 dayCount = selectedDays.coerceAtLeast(1)
+                                if (departureDay == oldDayCount) departureDay = dayCount
+                                departureDay = departureDay.coerceAtMost(dayCount)
+                                arrivalDay = arrivalDay.coerceAtMost(departureDay)
                                 dateRange = formatDateRange(start, end)
                                 showDatePicker = false
                             }
@@ -433,6 +674,165 @@ fun CreatePlanScreen(
             )
         }
     }
+    if (showArrivalTimePicker) {
+        AppTimePickerDialog(
+            title = "选择第 $arrivalDay 天到达时间",
+            initialTime = arrivalTime.ifBlank { "08:30" },
+            onDismiss = { showArrivalTimePicker = false },
+            onConfirm = {
+                arrivalTime = it
+                showArrivalTimePicker = false
+            },
+        )
+    }
+    if (showDepartureTimePicker) {
+        AppTimePickerDialog(
+            title = "选择第 $departureDay 天离开时间",
+            initialTime = departureTime.ifBlank { "18:00" },
+            onDismiss = { showDepartureTimePicker = false },
+            onConfirm = {
+                departureTime = it
+                showDepartureTimePicker = false
+            },
+        )
+    }
+    val mapCenterLatitude = selectedCityLatitude
+    val mapCenterLongitude = selectedCityLongitude
+    mapPickerTarget?.let { target ->
+        if (mapCenterLatitude == null || mapCenterLongitude == null) return@let
+        MapPointPickerDialog(
+            title = when (target) {
+                MapPickerTarget.Arrival -> "选择到达位置"
+                MapPickerTarget.Departure -> "选择离开位置"
+                MapPickerTarget.Hotel -> "选择住宿位置"
+                is MapPickerTarget.HotelStay -> "选择这段住宿位置"
+            },
+            initialLatitude = mapCenterLatitude,
+            initialLongitude = mapCenterLongitude,
+            onDismiss = { mapPickerTarget = null },
+            onConfirm = { point ->
+                when (target) {
+                    MapPickerTarget.Arrival -> {
+                        arrivalStation = point.name
+                        arrivalPoint = point.toInput()
+                    }
+                    MapPickerTarget.Departure -> {
+                        departureStation = point.name
+                        departurePoint = point.toInput()
+                    }
+                    MapPickerTarget.Hotel -> {
+                        hotelName = point.name
+                        hotelPoint = point.toInput()
+                    }
+                    is MapPickerTarget.HotelStay -> {
+                        hotelStays.getOrNull(target.index)?.let { stay ->
+                            hotelStays[target.index] = stay.copy(name = point.name, mapPoint = point.toInput())
+                        }
+                    }
+                }
+                mapPickerTarget = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun PlanningAnchorSection(
+    title: String,
+    subtitle: String,
+    icon: @Composable () -> Unit,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
+        shape = RoundedCornerShape(22.dp),
+        tonalElevation = 1.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.height(44.dp),
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 11.dp), contentAlignment = Alignment.Center) { icon() }
+                }
+                Column {
+                    Text(title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun MapPickerButton(contentDescription: String, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.height(56.dp),
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
+    ) {
+        Icon(Icons.Outlined.Map, contentDescription = contentDescription)
+        Text("地图", modifier = Modifier.padding(start = 4.dp))
+    }
+}
+
+@Composable
+private fun DayAndTimeSelector(
+    label: String,
+    day: Int,
+    time: String,
+    onPreviousDay: () -> Unit,
+    onNextDay: () -> Unit,
+    onSelectTime: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("第 $day 天$label", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+        IconButton(onClick = onPreviousDay) { Icon(Icons.Outlined.Remove, contentDescription = "提前${label}日") }
+        IconButton(onClick = onNextDay) { Icon(Icons.Outlined.Add, contentDescription = "延后${label}日") }
+    }
+    OutlinedButton(
+        onClick = onSelectTime,
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Icon(Icons.Outlined.AccessTime, contentDescription = null)
+        Text(time.ifBlank { "选择第 $day 天${label}时间" }, modifier = Modifier.padding(start = 8.dp).weight(1f))
+        if (time.isNotBlank()) Text("修改")
+    }
+}
+
+@Composable
+private fun StayDateSelector(
+    stay: HotelStayDraft,
+    dayCount: Int,
+    onChange: (HotelStayDraft) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = { onChange(stay.copy(checkInDay = (stay.checkInDay - 1).coerceAtLeast(1))) }) {
+            Icon(Icons.Outlined.Remove, contentDescription = "提前入住")
+        }
+        Text("第 ${stay.checkInDay} 天入住", modifier = Modifier.weight(1f))
+        IconButton(onClick = { onChange(stay.copy(checkInDay = (stay.checkInDay + 1).coerceAtMost(stay.checkOutDay - 1))) }) {
+            Icon(Icons.Outlined.Add, contentDescription = "延后入住")
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = { onChange(stay.copy(checkOutDay = (stay.checkOutDay - 1).coerceAtLeast(stay.checkInDay + 1))) }) {
+            Icon(Icons.Outlined.Remove, contentDescription = "提前退房")
+        }
+        Text("第 ${stay.checkOutDay} 天退房", modifier = Modifier.weight(1f))
+        IconButton(onClick = { onChange(stay.copy(checkOutDay = (stay.checkOutDay + 1).coerceAtMost(dayCount + 1))) }) {
+            Icon(Icons.Outlined.Add, contentDescription = "延后退房")
+        }
+    }
 }
 
 private fun defaultDateRange(dayCount: Int): String {
@@ -444,6 +844,115 @@ private fun defaultDateRange(dayCount: Int): String {
 private fun formatDateRange(start: LocalDate, end: LocalDate): String {
     val formatter = DateTimeFormatter.ofPattern("MM.dd")
     return "${start.format(formatter)} - ${end.format(formatter)}"
+}
+
+private fun PickedMapPoint.toInput(): AiMapPointInput = AiMapPointInput(
+    name = name,
+    address = address,
+    latitude = latitude,
+    longitude = longitude,
+)
+
+private fun PlaceSuggestion.toMapPointInput(): AiMapPointInput? {
+    val lat = latitude ?: return null
+    val lng = longitude ?: return null
+    return AiMapPointInput(
+        name = name,
+        address = address,
+        latitude = lat,
+        longitude = lng,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppTimePickerDialog(
+    title: String,
+    initialTime: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val parts = initialTime.split(':')
+    val state = rememberTimePickerState(
+        initialHour = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 9,
+        initialMinute = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 0,
+        is24Hour = true,
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { TimePicker(state = state) },
+        confirmButton = {
+            TextButton(onClick = { onConfirm("%02d:%02d".format(state.hour, state.minute)) }) {
+                Text("确定")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun StationSuggestionList(
+    suggestions: List<PlaceSuggestion>,
+    onSelect: (PlaceSuggestion) -> Unit,
+) {
+    if (suggestions.isEmpty()) return
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+    ) {
+        Column {
+            suggestions.forEach { suggestion ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(suggestion) }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.LocationOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(modifier = Modifier.padding(start = 10.dp)) {
+                        Text(suggestion.name, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            listOfNotNull(suggestion.district, suggestion.address).joinToString(" · ").ifBlank { "交通枢纽" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectableOptionCard(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        ),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (selected) 2.dp else 0.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (selected) "已选择" else "点击选择",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
 }
 
 @Composable

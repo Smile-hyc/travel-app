@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -44,12 +45,15 @@ import com.amap.api.maps.MapView
 import com.amap.api.maps.model.BitmapDescriptorFactory
 import com.amap.api.maps.model.CustomMapStyleOptions
 import com.amap.api.maps.model.LatLng
+import com.amap.api.maps.model.LatLngBounds
 import com.amap.api.maps.model.MarkerOptions
 import com.amap.api.maps.model.PolylineOptions
 import com.heoclub.aitravel.R
 import com.heoclub.aitravel.data.location.CurrentLocation
 import com.heoclub.aitravel.data.model.ExploreCategories
 import com.heoclub.aitravel.data.model.PlaceSummary
+import com.heoclub.aitravel.data.model.RouteCoordinate
+import com.heoclub.aitravel.ui.components.loadMapMarkerImage
 import kotlinx.coroutines.flow.SharedFlow
 import android.graphics.Color as AndroidColor
 
@@ -60,6 +64,7 @@ class ExploreMapViewHolder(
     private var resumed = false
     private var renderedContent: RenderedMapContent? = null
     private var lastAnimatedPlaceId: String? = null
+    private var lastAutoFitSignature: String? = null
 
     fun obtain(): MapView {
         return mapView ?: MapView(context).apply {
@@ -99,19 +104,24 @@ class ExploreMapViewHolder(
         mapView = null
         renderedContent = null
         lastAnimatedPlaceId = null
+        lastAutoFitSignature = null
     }
 
     fun needsContentUpdate(
         places: List<PlaceSummary>,
         selectedPlaceId: String?,
         routePlaces: List<PlaceSummary>,
+        routePolylines: List<List<RouteCoordinate>>,
         currentLocation: CurrentLocation?,
+        showAllPlaces: Boolean,
     ): Boolean {
         val content = RenderedMapContent(
             places = places.toList(),
             selectedPlaceId = selectedPlaceId,
             routePlaces = routePlaces.toList(),
+            routePolylines = routePolylines.map { it.toList() },
             currentLocation = currentLocation,
+            showAllPlaces = showAllPlaces,
         )
         if (content == renderedContent) return false
         renderedContent = content
@@ -128,11 +138,19 @@ class ExploreMapViewHolder(
         return true
     }
 
+    fun needsAutoFit(signature: String): Boolean {
+        if (signature == lastAutoFitSignature) return false
+        lastAutoFitSignature = signature
+        return true
+    }
+
     private data class RenderedMapContent(
         val places: List<PlaceSummary>,
         val selectedPlaceId: String?,
         val routePlaces: List<PlaceSummary>,
+        val routePolylines: List<List<RouteCoordinate>>,
         val currentLocation: CurrentLocation?,
+        val showAllPlaces: Boolean,
     )
 }
 
@@ -168,7 +186,10 @@ fun ExploreMap(
     onMarkerClick: (String) -> Unit,
     mapViewHolder: ExploreMapViewHolder? = null,
     routePlaces: List<PlaceSummary> = emptyList(),
+    routePolylines: List<List<RouteCoordinate>> = emptyList(),
     currentLocation: CurrentLocation? = null,
+    showAllPlaces: Boolean = false,
+    autoFitPlaces: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -211,7 +232,7 @@ fun ExploreMap(
         )
     }
 
-    LaunchedEffect(places, selectedPlaceId, routePlaces, currentLocation) {
+    LaunchedEffect(places, selectedPlaceId, routePlaces, routePolylines, currentLocation, showAllPlaces, autoFitPlaces) {
         val amap = mapView.map
         amap.setOnMarkerClickListener { marker ->
             (marker.`object` as? String)?.let(onMarkerClick)
@@ -221,7 +242,9 @@ fun ExploreMap(
                 places = places,
                 selectedPlaceId = selectedPlaceId,
                 routePlaces = routePlaces,
+                routePolylines = routePolylines,
                 currentLocation = currentLocation,
+                showAllPlaces = showAllPlaces,
             )
         ) {
             return@LaunchedEffect
@@ -241,7 +264,18 @@ fun ExploreMap(
             val longitude = place.longitude ?: return@mapNotNull null
             LatLng(latitude, longitude)
         }
-        if (routePoints.size >= 2) {
+        val actualRouteLines = routePolylines.filter { it.size >= 2 }
+        if (actualRouteLines.isNotEmpty()) {
+            actualRouteLines.forEach { line ->
+                amap.addPolyline(
+                    PolylineOptions()
+                        .addAll(line.map { LatLng(it.latitude, it.longitude) })
+                        .width(12f)
+                        .color(AndroidColor.rgb(42, 169, 230))
+                        .zIndex(6f),
+                )
+            }
+        } else if (routePoints.size >= 2) {
             amap.addPolyline(
                 PolylineOptions()
                     .addAll(routePoints)
@@ -250,7 +284,8 @@ fun ExploreMap(
                     .zIndex(6f),
             )
         }
-        visibleMapPlaces(places, selectedPlaceId).forEach { place ->
+        val photoMarkers = mutableListOf<Pair<com.amap.api.maps.model.Marker, PlaceSummary>>()
+        visibleMapPlaces(places, selectedPlaceId, showAllPlaces).forEach { place ->
             val latitude = place.latitude ?: return@forEach
             val longitude = place.longitude ?: return@forEach
             val selected = place.id == selectedPlaceId
@@ -262,6 +297,41 @@ fun ExploreMap(
                     .zIndex(if (selected) 30f else 10f),
             )
             marker?.`object` = place.id
+            if (marker != null && place.displayCoverImageUrl != null) {
+                photoMarkers += marker to place
+            }
+        }
+        val markerPhotoSize = (64f * context.resources.displayMetrics.density).toInt()
+        photoMarkers.forEach { (marker, place) ->
+            val photo = loadMapMarkerImage(context, place.displayCoverImageUrl, markerPhotoSize)
+            if (photo != null) {
+                marker.setIcon(
+                    BitmapDescriptorFactory.fromBitmap(
+                        createPlaceMarkerBitmap(context, place, place.id == selectedPlaceId, photo),
+                    ),
+                )
+            }
+        }
+        if (autoFitPlaces) {
+            val visiblePoints = visibleMapPlaces(places, selectedPlaceId, showAllPlaces)
+                .mapNotNull { place ->
+                    val latitude = place.latitude ?: return@mapNotNull null
+                    val longitude = place.longitude ?: return@mapNotNull null
+                    LatLng(latitude, longitude)
+                }
+            val signature = visiblePoints.joinToString("|") { "${it.latitude},${it.longitude}" }
+            if (visiblePoints.isNotEmpty() && activeMapViewHolder.needsAutoFit(signature)) {
+                mapView.post {
+                    if (visiblePoints.size == 1) {
+                        amap.animateCamera(CameraUpdateFactory.newLatLngZoom(visiblePoints.first(), 14.2f))
+                    } else {
+                        val bounds = LatLngBounds.builder().also { builder ->
+                            visiblePoints.forEach(builder::include)
+                        }.build()
+                        amap.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 88))
+                    }
+                }
+            }
         }
     }
 
@@ -316,10 +386,12 @@ fun ExploreMap(
 private fun visibleMapPlaces(
     places: List<PlaceSummary>,
     selectedPlaceId: String?,
+    showAllPlaces: Boolean,
 ): List<PlaceSummary> {
     val mappablePlaces = places.filter { it.latitude != null && it.longitude != null }
     val selectedPlace = mappablePlaces.firstOrNull { it.id == selectedPlaceId }
-    return (listOfNotNull(selectedPlace) + mappablePlaces.filterNot { it.id == selectedPlaceId }.take(8))
+    val limit = if (showAllPlaces) mappablePlaces.size else 8
+    return (listOfNotNull(selectedPlace) + mappablePlaces.filterNot { it.id == selectedPlaceId }.take(limit))
         .distinctBy { it.id }
 }
 
@@ -383,6 +455,7 @@ private fun createPlaceMarkerBitmap(
     context: Context,
     place: PlaceSummary,
     selected: Boolean,
+    photo: Bitmap? = null,
 ): Bitmap {
     val density = context.resources.displayMetrics.density
     fun dp(value: Float): Float = value * density
@@ -416,6 +489,17 @@ private fun createPlaceMarkerBitmap(
     }
     canvas.drawCircle(centerX, iconCenterY, iconSize / 2f, circlePaint)
 
+    if (photo != null) {
+        val inset = dp(3f)
+        val radius = iconSize / 2f - inset
+        val clipPath = Path().apply { addCircle(centerX, iconCenterY, radius, Path.Direction.CW) }
+        val destination = RectF(centerX - radius, iconCenterY - radius, centerX + radius, iconCenterY + radius)
+        canvas.save()
+        canvas.clipPath(clipPath)
+        canvas.drawBitmap(photo, null, destination, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        canvas.restore()
+    }
+
     if (selected) {
         val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -425,16 +509,18 @@ private fun createPlaceMarkerBitmap(
         canvas.drawCircle(centerX, iconCenterY, iconSize / 2f - dp(1.5f), ringPaint)
     }
 
-    val markerIcon = context.getDrawable(categoryMarkerIconRes(place.categoryId))?.mutate()
-    val markerIconSize = iconSize * if (selected) 0.58f else 0.54f
-    markerIcon?.setTint(AndroidColor.rgb(31, 122, 224))
-    markerIcon?.setBounds(
-        (centerX - markerIconSize / 2f).toInt(),
-        (iconCenterY - markerIconSize / 2f).toInt(),
-        (centerX + markerIconSize / 2f).toInt(),
-        (iconCenterY + markerIconSize / 2f).toInt(),
-    )
-    markerIcon?.draw(canvas)
+    if (photo == null) {
+        val markerIcon = context.getDrawable(categoryMarkerIconRes(place.categoryId))?.mutate()
+        val markerIconSize = iconSize * if (selected) 0.58f else 0.54f
+        markerIcon?.setTint(AndroidColor.rgb(31, 122, 224))
+        markerIcon?.setBounds(
+            (centerX - markerIconSize / 2f).toInt(),
+            (iconCenterY - markerIconSize / 2f).toInt(),
+            (centerX + markerIconSize / 2f).toInt(),
+            (iconCenterY + markerIconSize / 2f).toInt(),
+        )
+        markerIcon?.draw(canvas)
+    }
 
     val labelBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.argb(if (selected) 238 else 218, 255, 255, 255)

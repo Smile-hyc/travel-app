@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.routes import RouteCoordinate
+
 
 class AiHealthResponse(BaseModel):
     configured: bool
@@ -111,6 +113,20 @@ class AiChatResponse(BaseModel):
     model: str | None = None
 
 
+class AiHotelStayInput(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    checkInDay: int = Field(ge=1, le=10)
+    checkOutDay: int = Field(ge=1, le=11)
+    mapPoint: "AiMapPointInput | None" = None
+
+
+class AiMapPointInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    address: str | None = Field(default=None, max_length=200)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
 class AiPlanGenerationRequest(BaseModel):
     destination: str = Field(min_length=1, max_length=60)
     dateRange: str = Field(min_length=1, max_length=80)
@@ -118,7 +134,17 @@ class AiPlanGenerationRequest(BaseModel):
     preferences: list[str] = Field(default_factory=list, max_length=12)
     freeText: str | None = Field(default=None, max_length=240)
     arrivalStation: str | None = Field(default=None, max_length=60)
+    arrivalPoint: AiMapPointInput | None = None
+    arrivalDay: int = Field(default=1, ge=1, le=10)
+    arrivalTime: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    departureStation: str | None = Field(default=None, max_length=60)
+    departurePoint: AiMapPointInput | None = None
+    departureDay: int | None = Field(default=None, ge=1, le=10)
+    departureTime: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     hotelName: str | None = Field(default=None, max_length=80)
+    hotelPoint: AiMapPointInput | None = None
+    hotelStays: list[AiHotelStayInput] = Field(default_factory=list, max_length=10)
+    optimizationMode: Literal["REQUIRED", "PREFERRED", "FAST"] = "PREFERRED"
     pace: Literal["RELAXED", "BALANCED", "INTENSIVE"] = "BALANCED"
     transportPreference: Literal["MIXED", "WALK", "TRANSIT", "DRIVE"] = "MIXED"
     dailyStart: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -155,6 +181,19 @@ class AiGeneratedPlace(BaseModel):
     suggestedStart: str
     suggestedEnd: str
     note: str
+    mealType: Literal["BREAKFAST", "LUNCH", "DINNER"] | None = None
+
+
+class AiGeneratedTransfer(BaseModel):
+    originPlaceId: str
+    destinationPlaceId: str
+    mode: Literal["walking", "driving", "cycling", "transit"]
+    modeLabel: str | None = None
+    distanceMeters: int
+    durationMinutes: int
+    verified: bool = True
+    warning: str | None = None
+    polyline: list[RouteCoordinate] = Field(default_factory=list)
 
 
 class AiGeneratedDay(BaseModel):
@@ -162,6 +201,8 @@ class AiGeneratedDay(BaseModel):
     title: str
     summary: str
     places: list[AiGeneratedPlace] = Field(default_factory=list)
+    transfers: list[AiGeneratedTransfer] = Field(default_factory=list)
+    weather: str | None = None
     estimatedDistanceKm: float = 0.0
     intensity: Literal["轻松", "适中", "充实"] = "适中"
 
@@ -180,6 +221,7 @@ class AiPlanGenerationResponse(BaseModel):
     destination: str
     dateRange: str
     dayCount: int
+    transportPreference: Literal["MIXED", "WALK", "TRANSIT", "DRIVE"] = "MIXED"
     preferences: list[str] = Field(default_factory=list)
     days: list[AiGeneratedDay] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -192,6 +234,13 @@ AiPlanJobState = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"
 
 AiPlanProgressEventType = Literal[
     "ANALYSIS",
+    "WEATHER_CHECK",
+    "CANDIDATE_SCREENED",
+    "ANCHOR_APPLIED",
+    "TIME_WINDOW_CHECK",
+    "ROUTE_CHECK",
+    "MEAL_PLACED",
+    "MODEL_REASON",
     "DAY_STARTED",
     "PLACE_ADDED",
     "DAY_COMPLETED",
@@ -205,6 +254,8 @@ class AiPlanProgressEvent(BaseModel):
     message: str = Field(min_length=1, max_length=160)
     dayIndex: int | None = Field(default=None, ge=1)
     placeId: str | None = None
+    evidence: list[str] = Field(default_factory=list, max_length=8)
+    decision: str | None = Field(default=None, max_length=240)
     createdAt: str
 
 

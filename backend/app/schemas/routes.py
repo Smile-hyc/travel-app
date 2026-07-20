@@ -34,6 +34,8 @@ class RouteSegmentRequest(BaseModel):
     origin: RoutePlace
     destination: RoutePlace
     mode: RouteMode = "walking"
+    departureDate: str | None = None
+    departureTime: str | None = None
 
 
 class RouteSegment(BaseModel):

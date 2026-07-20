@@ -552,6 +552,7 @@ private fun PlaceCard(
             PlaceCoverImage(
                 imageUrl = place.displayCoverImageUrl,
                 placeName = place.name,
+                category = place.category,
                 modifier = Modifier.size(if (compact) 58.dp else 74.dp),
                 shape = RoundedCornerShape(16.dp),
             )

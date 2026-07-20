@@ -8,16 +8,20 @@ import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
 import com.heoclub.aitravel.data.model.AiGeneratedDay
 import com.heoclub.aitravel.data.model.AiPlanProgressEvent
 import com.heoclub.aitravel.data.model.AiGeneratedPlace
+import com.heoclub.aitravel.data.model.AiHotelStayInput
+import com.heoclub.aitravel.data.model.AiMapPointInput
+import com.heoclub.aitravel.data.model.AiPlanQuality
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.repository.AiRepository
 import com.heoclub.aitravel.data.repository.ExploreRepository
 import com.heoclub.aitravel.data.repository.TravelPlanRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.UUID
 
 data class AiPlanDraftInput(
@@ -27,7 +31,17 @@ data class AiPlanDraftInput(
     val preferences: List<String>,
     val freeText: String? = null,
     val arrivalStation: String? = null,
+    val arrivalPoint: AiMapPointInput? = null,
+    val arrivalDay: Int = 1,
+    val arrivalTime: String? = null,
+    val departureStation: String? = null,
+    val departurePoint: AiMapPointInput? = null,
+    val departureDay: Int? = null,
+    val departureTime: String? = null,
     val hotelName: String? = null,
+    val hotelPoint: AiMapPointInput? = null,
+    val hotelStays: List<AiHotelStayInput> = emptyList(),
+    val optimizationMode: String = "REQUIRED",
     val pace: String = "BALANCED",
     val transportPreference: String = "MIXED",
     val dailyStart: String = "09:00",
@@ -76,64 +90,89 @@ class AiPlanGenerationViewModel(
 
     fun cancel() {
         generationJob?.cancel()
-        val jobId = activeJobId ?: return
         activeJobId = null
-        viewModelScope.launch {
-            aiRepository.cancelPlanJob(jobId)
-        }
+    }
+
+    fun useCurrentDraftWithoutAi(): Boolean {
+        val loading = _uiState.value as? AiPlanGenerationUiState.Loading ?: return false
+        val days = loading.partialDays
+            .sortedBy { it.dayIndex }
+            .filter { it.places.isNotEmpty() }
+        if (days.isEmpty() || loading.completedDays < input.dayCount) return false
+
+        generationJob?.cancel()
+        generationJob = null
+        activeJobId = null
+        val allPlaces = days.flatMap { it.places }
+        val result = AiPlanGenerationResponse(
+            requestId = UUID.randomUUID().toString(),
+            title = "${input.destination.trim().trimEnd('市')} ${input.dayCount} 日约束行程",
+            destination = input.destination.trim(),
+            dateRange = input.dateRange,
+            dayCount = input.dayCount,
+            transportPreference = input.transportPreference,
+            preferences = input.preferences,
+            days = days,
+            warnings = listOf("已使用当前方案，行程已结合天气、开放时间与实际通勤安排。"),
+            generatedAt = Instant.now().toString(),
+            model = null,
+            quality = AiPlanQuality(
+                realPoiRatio = 1.0,
+                duplicatePlaceCount = allPlaces.size - allPlaces.distinctBy { it.sourcePoiId }.size,
+                totalPlaceCount = allPlaces.size,
+                usedFallback = true,
+                dataSources = listOf("AMAP"),
+            ),
+        )
+        upsertGeneratedPlaces(days)
+        val plan = travelPlanRepository.importGeneratedPlan(result)
+        _uiState.value = AiPlanGenerationUiState.Ready(
+            result = result,
+            visibleDayCount = days.size,
+            savedPlanId = plan.id,
+        )
+        return true
     }
 
     private fun generate() {
         generationJob?.cancel()
         generationJob = viewModelScope.launch {
             _uiState.value = AiPlanGenerationUiState.Loading(totalDays = input.dayCount)
-            var snapshot = aiRepository.createPlanJob(
-                AiPlanGenerationRequest(
-                    destination = input.destination,
-                    dateRange = input.dateRange,
-                    dayCount = input.dayCount,
-                    preferences = input.preferences,
-                    freeText = input.freeText,
-                    arrivalStation = input.arrivalStation,
-                    hotelName = input.hotelName,
-                    pace = input.pace,
-                    transportPreference = input.transportPreference,
-                    dailyStart = input.dailyStart,
-                    dailyEnd = input.dailyEnd,
-                    clientRequestId = UUID.randomUUID().toString(),
-                ),
-            ).getOrElse { error ->
-                _uiState.value = AiPlanGenerationUiState.Error(
-                    error.message ?: "智能行程生成失败，请稍后重试。",
-                )
-                return@launch
-            }
-            activeJobId = snapshot.jobId
-
+            val request = AiPlanGenerationRequest(
+                destination = input.destination,
+                dateRange = input.dateRange,
+                dayCount = input.dayCount,
+                preferences = input.preferences,
+                freeText = input.freeText,
+                arrivalStation = input.arrivalStation,
+                arrivalPoint = input.arrivalPoint,
+                arrivalDay = input.arrivalDay,
+                arrivalTime = input.arrivalTime,
+                departureStation = input.departureStation,
+                departurePoint = input.departurePoint,
+                departureDay = input.departureDay,
+                departureTime = input.departureTime,
+                hotelName = input.hotelName,
+                hotelPoint = input.hotelPoint,
+                hotelStays = input.hotelStays,
+                optimizationMode = input.optimizationMode,
+                pace = input.pace,
+                transportPreference = input.transportPreference,
+                dailyStart = input.dailyStart,
+                dailyEnd = input.dailyEnd,
+                clientRequestId = UUID.randomUUID().toString(),
+            )
             var result: AiPlanGenerationResponse? = null
-            while (result == null) {
-                when (snapshot.status) {
-                    "COMPLETED" -> {
-                        result = snapshot.result
-                        if (result == null) {
-                            _uiState.value = AiPlanGenerationUiState.Error("任务已完成，但没有返回可用行程。")
-                            return@launch
-                        }
-                    }
-
-                    "FAILED" -> {
-                        _uiState.value = AiPlanGenerationUiState.Error(
+            try {
+                aiRepository.streamPlan(request).collect { snapshot ->
+                    activeJobId = snapshot.jobId
+                    when (snapshot.status) {
+                        "COMPLETED" -> result = snapshot.result
+                        "FAILED" -> _uiState.value = AiPlanGenerationUiState.Error(
                             snapshot.error ?: "智能规划任务失败，请调整条件后重试。",
                         )
-                        return@launch
-                    }
-
-                    "CANCELLED" -> {
-                        _uiState.value = AiPlanGenerationUiState.Error("智能规划已取消。")
-                        return@launch
-                    }
-
-                    else -> {
+                        "CANCELLED" -> _uiState.value = AiPlanGenerationUiState.Error("智能规划已取消。")
+                        else -> {
                         upsertGeneratedPlaces(snapshot.partialDays)
                         _uiState.value = AiPlanGenerationUiState.Loading(
                             progress = snapshot.progress,
@@ -144,30 +183,38 @@ class AiPlanGenerationViewModel(
                             partialDays = snapshot.partialDays,
                             events = snapshot.events,
                         )
-                        delay(650)
-                        snapshot = aiRepository.getPlanJob(snapshot.jobId).getOrElse { error ->
-                            _uiState.value = AiPlanGenerationUiState.Error(
-                                error.message ?: "读取生成进度失败，请稍后重试。",
-                            )
-                            return@launch
                         }
                     }
                 }
+            } catch (_: CancellationException) {
+                return@launch
+            } catch (error: Exception) {
+                _uiState.value = AiPlanGenerationUiState.Error(
+                    error.message ?: "智能规划流中断，请检查后端连接后重试。",
+                )
+                return@launch
             }
             activeJobId = null
-            upsertGeneratedPlaces(result.days)
+            val completedResult = result
+            if (completedResult == null) {
+                if (_uiState.value !is AiPlanGenerationUiState.Error) {
+                    _uiState.value = AiPlanGenerationUiState.Error("规划流已结束，但没有返回可用行程。")
+                }
+                return@launch
+            }
+            upsertGeneratedPlaces(completedResult.days)
 
-            if (result.days.isEmpty()) {
+            if (completedResult.days.isEmpty()) {
                 _uiState.value = AiPlanGenerationUiState.Error(
                     "没有生成可用的每日行程，请调整目的地或天数后重试。",
                 )
                 return@launch
             }
 
-            val plan = travelPlanRepository.importGeneratedPlan(result)
+            val plan = travelPlanRepository.importGeneratedPlan(completedResult)
             _uiState.value = AiPlanGenerationUiState.Ready(
-                result = result,
-                visibleDayCount = result.days.size,
+                result = completedResult,
+                visibleDayCount = completedResult.days.size,
                 savedPlanId = plan.id,
             )
         }

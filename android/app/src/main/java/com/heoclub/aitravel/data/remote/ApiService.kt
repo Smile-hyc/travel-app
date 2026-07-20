@@ -18,11 +18,13 @@ import com.heoclub.aitravel.data.model.PlaceDetail
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.RouteSegment
 import com.heoclub.aitravel.data.model.RouteSegmentRequest
+import okhttp3.ResponseBody
 import retrofit2.http.GET
 import retrofit2.http.Body
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
+import retrofit2.http.Streaming
 
 interface ApiService {
     @GET("api/health")
@@ -86,6 +88,12 @@ interface ApiService {
     suspend fun generateTravelPlan(
         @Body request: AiPlanGenerationRequest,
     ): AiPlanGenerationResponse
+
+    @Streaming
+    @POST("api/ai/plans/stream")
+    suspend fun streamTravelPlan(
+        @Body request: AiPlanGenerationRequest,
+    ): ResponseBody
 
     @POST("api/ai/plans/jobs")
     suspend fun createTravelPlanJob(
