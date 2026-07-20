@@ -352,7 +352,7 @@ private fun AmapUnsupportedRuntimeNotice(modifier: Modifier = Modifier) {
                     textAlign = TextAlign.Center,
                 )
                 Text(
-                    text = "这个设备主 ABI 是 ${Build.SUPPORTED_ABIS.firstOrNull().orEmpty()}，高德地图原生库需要 arm64-v8a 或 armeabi-v7a。请使用 Android 真机，或创建 ARM64 系统镜像的模拟器。",
+                    text = "当前运行环境是模拟器或不兼容的原生渲染环境。高德地图在部分 Android Emulator 上会因为 OpenGL Context 创建失败而崩溃，请使用 Android 真机调试真实地图。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -363,9 +363,20 @@ private fun AmapUnsupportedRuntimeNotice(modifier: Modifier = Modifier) {
 }
 
 private fun isAmapNativeRuntimeSupported(context: Context): Boolean {
+    if (isAndroidEmulator()) return false
     val nativeLibraryDir = context.applicationInfo.nativeLibraryDir.orEmpty()
     if (nativeLibraryDir.contains("arm64") || nativeLibraryDir.contains("armeabi")) return true
     return Build.SUPPORTED_ABIS.any { abi -> abi == "arm64-v8a" || abi == "armeabi-v7a" }
+}
+
+private fun isAndroidEmulator(): Boolean {
+    return Build.FINGERPRINT.startsWith("generic") ||
+        Build.FINGERPRINT.contains("emulator", ignoreCase = true) ||
+        Build.MODEL.contains("sdk", ignoreCase = true) ||
+        Build.MODEL.contains("emulator", ignoreCase = true) ||
+        Build.HARDWARE.contains("ranchu", ignoreCase = true) ||
+        Build.HARDWARE.contains("goldfish", ignoreCase = true) ||
+        Build.PRODUCT.contains("sdk", ignoreCase = true)
 }
 
 private fun createPlaceMarkerBitmap(

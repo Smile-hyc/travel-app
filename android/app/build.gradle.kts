@@ -4,18 +4,33 @@ plugins {
 }
 
 import java.util.Properties
+import java.io.File
 
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
+fun Properties.loadIfExists(file: File) {
     if (file.exists()) {
         file.inputStream().use(::load)
     }
 }
-val debugApiBaseUrl = localProperties.getProperty("API_BASE_URL", "http://127.0.0.1:8000/")
 
-val debugApiBaseUrl = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
-    .orElse("http://10.0.2.2:8000/")
-    .get()
+val localProperties = Properties().apply {
+    loadIfExists(rootProject.file("local.properties"))
+}
+val backendEnvProperties = Properties().apply {
+    loadIfExists(rootProject.file("../backend/.env"))
+}
+
+fun localConfigValue(key: String, fallback: String = ""): String {
+    return localProperties.getProperty(key)
+        ?: backendEnvProperties.getProperty(key)
+        ?: providers.gradleProperty(key).orNull
+        ?: fallback
+}
+
+val debugApiBaseUrl = localConfigValue("API_BASE_URL", "http://127.0.0.1:8000/")
+val amapAndroidKey = localConfigValue(
+    key = "AMAP_ANDROID_KEY",
+    fallback = backendEnvProperties.getProperty("AMAP_WEB_SERVICE_KEY", ""),
+)
 
 android {
     namespace = "com.heoclub.aitravel"
@@ -29,8 +44,7 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["AMAP_ANDROID_KEY"] =
-            localProperties.getProperty("AMAP_ANDROID_KEY", "")
+        manifestPlaceholders["AMAP_ANDROID_KEY"] = amapAndroidKey
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
