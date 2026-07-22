@@ -153,6 +153,10 @@ private fun encodeHotelStay(stay: AiHotelStayInput): String {
         point?.longitude ?: "",
         stay.name.replace(',', '，').replace(";;", "；；"),
         point?.address.orEmpty().replace(',', '，').replace(";;", "；；"),
+        point?.adCode.orEmpty(),
+        point?.provinceName.orEmpty().replace(',', '，'),
+        point?.cityName.orEmpty().replace(',', '，'),
+        point?.districtName.orEmpty().replace(',', '，'),
     ).joinToString(",")
 }
 
@@ -170,6 +174,10 @@ private fun encodeMapPoints(
                     it.longitude,
                     it.name.replace(',', '，').replace(";;", "；；"),
                     it.address.orEmpty().replace(',', '，').replace(";;", "；；"),
+                    it.adCode.orEmpty(),
+                    it.provinceName.orEmpty().replace(',', '，'),
+                    it.cityName.orEmpty().replace(',', '，'),
+                    it.districtName.orEmpty().replace(',', '，'),
                 ).joinToString(",")
             }
         }
@@ -178,7 +186,7 @@ private fun encodeMapPoints(
 
 private fun decodeMapPoints(value: String): Map<String, AiMapPointInput> {
     return value.split(";;").mapNotNull { encoded ->
-        val parts = encoded.split(',', limit = 5)
+        val parts = encoded.split(',', limit = 9)
         val key = parts.getOrNull(0)?.takeIf { it in setOf("arrival", "departure", "hotel") }
         val latitude = parts.getOrNull(1)?.toDoubleOrNull()
         val longitude = parts.getOrNull(2)?.toDoubleOrNull()
@@ -189,6 +197,10 @@ private fun decodeMapPoints(value: String): Map<String, AiMapPointInput> {
                 address = parts.getOrNull(4)?.trim()?.takeIf(String::isNotBlank),
                 latitude = latitude,
                 longitude = longitude,
+                adCode = parts.getOrNull(5)?.trim()?.takeIf(String::isNotBlank),
+                provinceName = parts.getOrNull(6)?.trim()?.takeIf(String::isNotBlank),
+                cityName = parts.getOrNull(7)?.trim()?.takeIf(String::isNotBlank),
+                districtName = parts.getOrNull(8)?.trim()?.takeIf(String::isNotBlank),
             )
         } else null
     }.toMap()
@@ -527,7 +539,7 @@ fun AiTravelNavHost() {
                         .orEmpty()
                         .split(";;")
                         .mapNotNull { encoded ->
-                            val parts = encoded.split(',', limit = 6)
+                            val parts = encoded.split(',', limit = 10)
                             val checkIn = parts.getOrNull(0)?.toIntOrNull()
                             val checkOut = parts.getOrNull(1)?.toIntOrNull()
                             val latitude = parts.getOrNull(2)?.toDoubleOrNull()
@@ -540,7 +552,16 @@ fun AiTravelNavHost() {
                                     checkIn,
                                     checkOut,
                                     if (latitude != null && longitude != null) {
-                                        AiMapPointInput(name, address, latitude, longitude)
+                                        AiMapPointInput(
+                                            name = name,
+                                            address = address,
+                                            latitude = latitude,
+                                            longitude = longitude,
+                                            adCode = parts.getOrNull(6)?.trim()?.takeIf(String::isNotBlank),
+                                            provinceName = parts.getOrNull(7)?.trim()?.takeIf(String::isNotBlank),
+                                            cityName = parts.getOrNull(8)?.trim()?.takeIf(String::isNotBlank),
+                                            districtName = parts.getOrNull(9)?.trim()?.takeIf(String::isNotBlank),
+                                        )
                                     } else null,
                                 )
                             } else null

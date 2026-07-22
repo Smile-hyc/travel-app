@@ -1,0 +1,221 @@
+import asyncio
+
+from app.services.amap_poi_service import AmapPoiService
+
+
+class FakeAmapClient:
+    def __init__(self, districts):
+        self._districts = districts
+
+    async def get(self, path, params):
+        assert path == "/v3/config/district"
+        assert params["subdistrict"] == 1
+        return {"districts": self._districts}
+
+
+def test_province_search_returns_prefecture_cities() -> None:
+    service = AmapPoiService(
+        FakeAmapClient(
+            [
+                {
+                    "name": "四川省",
+                    "level": "province",
+                    "adcode": "510000",
+                    "center": "104.075931,30.651652",
+                    "districts": [
+                        {
+                            "name": "成都市",
+                            "level": "city",
+                            "adcode": "510100",
+                            "center": "104.066541,30.572269",
+                        },
+                        {
+                            "name": "乐山市",
+                            "level": "city",
+                            "adcode": "511100",
+                            "center": "103.765568,29.552106",
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+
+    cities = asyncio.run(service.search_cities(keyword="四川省", limit=12))
+
+    assert [city.name for city in cities] == ["成都市", "乐山市"]
+    assert all(city.provinceName == "四川省" for city in cities)
+
+
+def test_direct_municipality_remains_one_destination() -> None:
+    service = AmapPoiService(
+        FakeAmapClient(
+            [
+                {
+                    "name": "北京市",
+                    "level": "province",
+                    "adcode": "110000",
+                    "center": "116.407387,39.904179",
+                    "districts": [
+                        {
+                            "name": "东城区",
+                            "level": "district",
+                            "adcode": "110101",
+                            "center": "116.416357,39.928353",
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+
+    cities = asyncio.run(service.search_cities(keyword="北京", limit=12))
+
+    assert len(cities) == 1
+    assert cities[0].name == "北京市"
+    assert cities[0].adCode == "110000"
+
+
+def test_city_search_derives_its_real_province_from_adcode() -> None:
+    service = AmapPoiService(
+        FakeAmapClient(
+            [
+                {
+                    "name": "成都市",
+                    "level": "city",
+                    "adcode": "510100",
+                    "center": "104.066541,30.572269",
+                }
+            ]
+        )
+    )
+
+    cities = asyncio.run(service.search_cities(keyword="成都", limit=12))
+
+    assert cities[0].provinceName == "四川省"
+
+
+def test_input_tips_excludes_results_outside_selected_city() -> None:
+    class TipsClient:
+        async def get(self, path, params):
+            assert path == "/v5/place/text"
+            return {
+                "count": "4",
+                "pois": [
+                    {"id": "metro", "name": "成都东客站地铁站", "adcode": "510107", "location": "104.14,30.63", "type": "交通设施服务;地铁站", "typecode": "150500"},
+                    {"id": "airport", "name": "成都双流国际机场", "adcode": "510116", "location": "103.95,30.57", "type": "交通设施服务;机场相关", "typecode": "150100"},
+                    {"id": "cd", "name": "成都东站", "adcode": "510107", "location": "104.14,30.63", "type": "交通设施服务;火车站", "typecode": "150200"},
+                    {"id": "nj", "name": "南京南站", "adcode": "320114", "location": "118.80,31.97", "type": "交通设施服务;火车站", "typecode": "150200"},
+                ],
+            }
+
+    service = AmapPoiService(TipsClient())
+    tips = asyncio.run(
+        service.input_tips(
+            keyword="高铁站",
+            adcode="510100",
+            category="transport",
+            city_limit=True,
+            latitude=None,
+            longitude=None,
+        )
+    )
+
+    assert [tip.name for tip in tips] == ["成都东站", "成都双流国际机场"]
+
+
+def test_default_transport_hubs_merge_railway_high_speed_and_airport_searches() -> None:
+    class NanjingTransportClient:
+        async def get(self, path, params):
+            assert path == "/v5/place/text"
+            keyword = params["keywords"]
+            pois = {
+                "火车站": [
+                    {"id": "nj", "name": "南京站", "adcode": "320106", "location": "118.797,32.087", "type": "交通设施服务;火车站", "typecode": "150200"},
+                ],
+                "高铁站": [
+                    {"id": "njs", "name": "南京南站", "adcode": "320114", "location": "118.804,31.968", "type": "交通设施服务;火车站", "typecode": "150200"},
+                ],
+                "机场": [
+                    {"id": "lukou", "name": "南京禄口国际机场", "adcode": "320115", "location": "118.862,31.742", "type": "交通设施服务;机场相关", "typecode": "150100"},
+                ],
+            }[keyword]
+            return {"count": str(len(pois)), "pois": pois}
+
+    tips = asyncio.run(
+        AmapPoiService(NanjingTransportClient()).input_tips(
+            keyword="火车站|机场",
+            adcode="320100",
+            category="transport",
+            city_limit=True,
+            latitude=None,
+            longitude=None,
+        )
+    )
+
+    assert {tip.name for tip in tips} == {"南京站", "南京南站", "南京禄口国际机场"}
+
+
+def test_reverse_geocode_prefers_nearest_poi_within_50_meters() -> None:
+    class ReverseClient:
+        async def get(self, path, params):
+            assert path == "/v3/geocode/regeo"
+            assert params["radius"] == 50
+            assert params["extensions"] == "all"
+            return {
+                "regeocode": {
+                    "formatted_address": "四川省成都市成华区邛崃山路333号",
+                    "addressComponent": {
+                        "province": "四川省",
+                        "city": "成都市",
+                        "district": "成华区",
+                        "adcode": "510108",
+                    },
+                    "pois": [
+                        {"id": "far", "name": "远处商场", "distance": "86.2"},
+                        {"id": "near", "name": "成都东站", "distance": "12.4"},
+                    ],
+                }
+            }
+
+    point = asyncio.run(
+        AmapPoiService(ReverseClient()).reverse_geocode(
+            latitude=30.6289,
+            longitude=104.1407,
+            radius=50,
+        )
+    )
+
+    assert point.name == "成都东站"
+    assert point.formattedAddress == "四川省成都市成华区邛崃山路333号"
+    assert point.adCode == "510108"
+    assert point.cityName == "成都市"
+    assert point.matchedPoiWithin50m is True
+    assert point.distanceMeters == 12
+
+
+def test_reverse_geocode_uses_detailed_address_when_no_poi_is_nearby() -> None:
+    class ReverseClient:
+        async def get(self, path, params):
+            return {
+                "regeocode": {
+                    "formatted_address": "四川省成都市武侯区天府一街",
+                    "addressComponent": {
+                        "province": "四川省",
+                        "city": "成都市",
+                        "district": "武侯区",
+                        "adcode": "510107",
+                    },
+                    "pois": [{"id": "far", "name": "远处地点", "distance": "120"}],
+                }
+            }
+
+    point = asyncio.run(
+        AmapPoiService(ReverseClient()).reverse_geocode(
+            latitude=30.55,
+            longitude=104.06,
+        )
+    )
+
+    assert point.name == "四川省成都市武侯区天府一街"
+    assert point.matchedPoiWithin50m is False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -9,24 +10,39 @@ import httpx
 
 from app.core.config import Settings
 from app.schemas.explore import PlaceSummary, ReviewSource
+from app.services.content_cleaning import MIN_RELEVANCE_SCORE, compute_place_relevance
+
+
+class ReviewProviderError(RuntimeError):
+    def __init__(self, kind: str, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.status_code = status_code
 
 
 class TikhubReviewClient:
     """Optional Xiaohongshu public-content adapter.
 
     The provider response has changed shape between API revisions, so parsing is
-    intentionally defensive. A provider failure is treated as an empty result:
-    place facts must remain usable even when user-content search is unavailable.
+    intentionally defensive. Provider failures raise a typed error so they are
+    never persisted as a misleading "this place has no notes" result.
     """
 
     SEARCH_PATH = "/api/v1/xiaohongshu/app_v2/search_notes"
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
+        self._last_error: ReviewProviderError | None = None
 
     @property
     def configured(self) -> bool:
-        return self._settings.tikhub_configured
+        return self._settings.authorized_ugc_configured
+
+    @property
+    def last_error(self) -> ReviewProviderError | None:
+        return self._last_error
 
     async def search_place(self, place: PlaceSummary) -> list[ReviewSource]:
         if not self.configured:
@@ -46,36 +62,92 @@ class TikhubReviewClient:
         params = {
             "keyword": query,
             "page": 1,
-            "sort_type": "general",
+            "sort_type": "popularity_descending",
             "note_type": "不限",
             "time_filter": "不限",
             "source": "explore_feed",
             "ai_mode": 0,
         }
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(
-                    f"{self._settings.tikhub_base_url.rstrip('/')}{self.SEARCH_PATH}",
-                    params=params,
-                    headers=headers,
-                )
+            client = await self._get_client(timeout)
+            response = await client.get(
+                self.SEARCH_PATH,
+                params=params,
+                headers=headers,
+            )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError, TypeError):
-            return []
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            kind = {
+                401: "AUTH_ERROR",
+                403: "AUTH_ERROR",
+                402: "QUOTA_EXHAUSTED",
+                429: "RATE_LIMITED",
+            }.get(status, "UPSTREAM_ERROR")
+            error = ReviewProviderError(kind, f"UGC provider returned HTTP {status}.", status_code=status)
+            self._last_error = error
+            raise error from exc
+        except httpx.RequestError as exc:
+            error = ReviewProviderError("NETWORK_ERROR", "UGC provider request failed.")
+            self._last_error = error
+            raise error from exc
+        except (ValueError, TypeError) as exc:
+            error = ReviewProviderError("INVALID_RESPONSE", "UGC provider returned invalid JSON.")
+            self._last_error = error
+            raise error from exc
+
+        self._last_error = None
 
         candidates = _find_note_candidates(payload)
         results: list[ReviewSource] = []
         seen: set[str] = set()
         for candidate in candidates:
-            source = _parse_note(candidate, provider="TikHub")
+            source = _parse_note(candidate)
             if source is None or source.id in seen or not _is_relevant(source, place):
                 continue
             seen.add(source.id)
-            results.append(source)
+            results.append(
+                source.model_copy(
+                    update={
+                        "relevanceScore": compute_place_relevance(
+                            place,
+                            source.title,
+                            source.excerpt,
+                        ),
+                    },
+                ),
+            )
             if len(results) >= max(1, min(self._settings.tikhub_max_sources, 12)):
                 break
         return results
+
+    async def search_places(self, places: list[PlaceSummary]) -> dict[str, list[ReviewSource]]:
+        """Search a bounded POI batch through one reusable HTTP connection pool."""
+        semaphore = asyncio.Semaphore(4)
+
+        async def search(place: PlaceSummary) -> tuple[str, list[ReviewSource]]:
+            async with semaphore:
+                return place.sourcePoiId, await self.search_place(place)
+
+        pairs = await asyncio.gather(*(search(place) for place in places))
+        return dict(pairs)
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def _get_client(self, timeout: httpx.Timeout) -> httpx.AsyncClient:
+        if self._client is None:
+            async with self._client_lock:
+                if self._client is None:
+                    self._client = httpx.AsyncClient(
+                        base_url=self._settings.tikhub_base_url.rstrip("/"),
+                        timeout=timeout,
+                        trust_env=True,
+                    )
+        return self._client
 
 
 def _find_note_candidates(value: Any) -> list[dict[str, Any]]:
@@ -112,7 +184,6 @@ def _parse_note(raw: dict[str, Any], *, provider: str | None = None) -> ReviewSo
     user = note.get("user") if isinstance(note.get("user"), dict) else {}
     author = _first_text(user, "nickname", "nick_name", "name")
     excerpt = _first_text(note, "desc", "description", "content")
-    cover_image_url = _find_cover_image_url(note, raw)
     interact_info = note.get("interact_info") if isinstance(note.get("interact_info"), dict) else {}
     like_count = _first_text(interact_info, "liked_count", "like_count", "likes")
     raw_url = _first_text(raw, "url", "note_url", "share_url") or _first_text(
@@ -135,9 +206,13 @@ def _parse_note(raw: dict[str, Any], *, provider: str | None = None) -> ReviewSo
         author=author[:40] if author else None,
         excerpt=excerpt[:180] if excerpt else None,
         publishedAt=published,
-        coverImageUrl=cover_image_url,
+        # UGC media is intentionally neither downloaded nor propagated into the
+        # product data model. Place imagery comes from AMap/official sources.
+        coverImageUrl=None,
         likeCount=like_count[:20] if like_count else None,
-        provider=provider,
+        # Provider identity is an internal implementation detail. The UI only
+        # receives the authorized platform source and traceable original URL.
+        provider=None,
     )
 
 
@@ -177,16 +252,7 @@ def _image_url_from_value(value: Any) -> str | None:
 
 
 def _is_relevant(source: ReviewSource, place: PlaceSummary) -> bool:
-    haystack = _normalize_text(" ".join(filter(None, (source.title, source.excerpt))))
-    names = {_normalize_text(place.name), _normalize_text(_base_place_name(place.name))}
-    names.discard("")
-    if any(name in haystack for name in names):
-        return True
-    # For short POI names, require both the short name and a location token to
-    # reduce false positives from similarly named stores in other cities.
-    short_name = _normalize_text(_base_place_name(place.name))
-    locations = [_normalize_text(value) for value in (place.cityName, place.districtName) if value]
-    return bool(short_name and short_name in haystack and any(token in haystack for token in locations))
+    return compute_place_relevance(place, source.title, source.excerpt) >= MIN_RELEVANCE_SCORE
 
 
 def _base_place_name(name: str) -> str:
