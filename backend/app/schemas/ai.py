@@ -183,6 +183,10 @@ class AiMapPointInput(BaseModel):
     address: str | None = Field(default=None, max_length=200)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+    adCode: str | None = Field(default=None, max_length=12)
+    provinceName: str | None = Field(default=None, max_length=40)
+    cityName: str | None = Field(default=None, max_length=40)
+    districtName: str | None = Field(default=None, max_length=60)
 
 
 class AiPlanGenerationRequest(BaseModel):
@@ -286,6 +290,7 @@ class AiPlanGenerationResponse(BaseModel):
     generatedAt: str
     model: str | None = None
     quality: AiPlanQuality = Field(default_factory=AiPlanQuality)
+    enrichmentBatchId: str | None = None
 
 
 AiPlanJobState = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
@@ -303,6 +308,7 @@ AiPlanProgressEventType = Literal[
     "PLACE_ADDED",
     "DAY_COMPLETED",
     "PLAN_REFINED",
+    "AI_REVIEW",
 ]
 
 

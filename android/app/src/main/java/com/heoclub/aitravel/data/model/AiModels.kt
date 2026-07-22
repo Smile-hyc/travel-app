@@ -190,6 +190,10 @@ data class AiMapPointInput(
     val address: String? = null,
     val latitude: Double,
     val longitude: Double,
+    val adCode: String? = null,
+    val provinceName: String? = null,
+    val cityName: String? = null,
+    val districtName: String? = null,
 )
 
 data class AiGeneratedPlace(
@@ -268,6 +272,7 @@ data class AiPlanGenerationResponse(
     val generatedAt: String,
     val model: String? = null,
     val quality: AiPlanQuality = AiPlanQuality(),
+    val enrichmentBatchId: String? = null,
 )
 
 data class AiPlanProgressEvent(

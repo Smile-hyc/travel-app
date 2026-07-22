@@ -329,7 +329,7 @@ private fun LoadingPlanContent(
             if (events.isNotEmpty()) {
                 item {
                     PlanningTimeline(
-                        events = events.takeLast(4),
+                        events = deduplicatedPlanningEvents(events).takeLast(4),
                         places = partialDays.flatMap { it.places },
                     )
                 }
@@ -555,7 +555,7 @@ private fun PlanningTimeline(
                     } else {
                         Icon(
                             imageVector = when (event.type) {
-                                "DAY_COMPLETED", "PLAN_REFINED" -> Icons.Outlined.CheckCircle
+                                "DAY_COMPLETED", "PLAN_REFINED", "AI_REVIEW" -> Icons.Outlined.CheckCircle
                                 else -> Icons.Outlined.AutoAwesome
                             },
                             contentDescription = null,
@@ -727,18 +727,21 @@ private fun planningStageText(
     }
 }
 
-private fun planningFeatureText(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
+internal fun planningFeatureText(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
     return when (event.type) {
         "WEATHER_CHECK" -> "已结合天气调整室内外游览安排"
+        "CANDIDATE_SCREENED" -> "已筛选目的城市内的真实地点"
         "ANCHOR_APPLIED" -> "已设置到达、离开与住宿衔接"
+        "TIME_WINDOW_CHECK" -> place?.let { "已核对 ${it.name} 的开放时段" } ?: "已核对景点开放时段"
         "DAY_STARTED" -> "正在安排第 ${event.dayIndex ?: 1} 天行程"
         "PLACE_ADDED" -> place?.let { "已安排 ${it.name} 的到访时间" } ?: "已加入合适的地点"
         "ROUTE_CHECK" -> place?.let { "已确认前往 ${it.name} 的通勤安排" } ?: "已确认相邻地点的通勤安排"
-        "TIME_WINDOW_CHECK" -> place?.let { "已调整 ${it.name} 的开放时间冲突" } ?: "已处理开放时间冲突"
         "MEAL_PLACED" -> "已安排顺路且符合用餐时段的餐馆"
         "DAY_COMPLETED" -> "第 ${event.dayIndex ?: 1} 天行程已可查看"
         "PLAN_REFINED" -> "行程节奏与每日主题已完成优化"
-        else -> "正在完善行程安排"
+        "AI_REVIEW" -> "AI 建议已完成规则验收"
+        "MODEL_REASON", "ANALYSIS" -> event.message.ifBlank { "正在核对行程依据" }
+        else -> event.message.ifBlank { "正在完善行程安排" }
     }
 }
 
@@ -753,8 +756,23 @@ private fun planningFeatureOutcome(event: AiPlanProgressEvent, place: AiGenerate
         "MEAL_PLACED" -> "用餐位置会兼顾特色、营业时段和顺路程度"
         "DAY_COMPLETED" -> "可以在地图和下方方案中查看当天内容"
         "PLAN_REFINED" -> "已兼顾偏好、天气、开放时间与通勤节奏"
-        else -> "当前结果会持续显示，可随时查看"
+        "AI_REVIEW", "MODEL_REASON", "ANALYSIS" -> event.decision?.takeIf(String::isNotBlank)
+            ?: event.evidence.firstOrNull()?.takeIf(String::isNotBlank)
+            ?: "当前草案保持可见，只有通过约束检查的建议才会采用"
+        else -> event.decision?.takeIf(String::isNotBlank) ?: "当前结果会持续显示，可随时查看"
     }
+}
+
+internal fun deduplicatedPlanningEvents(events: List<AiPlanProgressEvent>): List<AiPlanProgressEvent> {
+    return events.asReversed()
+        .distinctBy { event ->
+            listOf(
+                event.dayIndex?.toString().orEmpty(),
+                event.placeId.orEmpty(),
+                event.message.trim().ifBlank { event.type },
+            ).joinToString("|")
+        }
+        .asReversed()
 }
 
 private fun formatGeneratedDistance(meters: Int): String {

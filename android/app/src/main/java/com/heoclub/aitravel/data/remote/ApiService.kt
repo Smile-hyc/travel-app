@@ -15,9 +15,12 @@ import com.heoclub.aitravel.data.model.OptimizeDayRouteResponse
 import com.heoclub.aitravel.data.model.PaginatedPlaces
 import com.heoclub.aitravel.data.model.PlaceSuggestion
 import com.heoclub.aitravel.data.model.PlaceDetail
+import com.heoclub.aitravel.data.model.PlaceEnrichmentBatchRequest
+import com.heoclub.aitravel.data.model.PlaceEnrichmentBatchResponse
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.RouteSegment
 import com.heoclub.aitravel.data.model.RouteSegmentRequest
+import com.heoclub.aitravel.data.model.ReverseGeocodePoint
 import okhttp3.ResponseBody
 import retrofit2.http.GET
 import retrofit2.http.Body
@@ -45,10 +48,21 @@ interface ApiService {
         @Body place: PlaceSummary,
     ): PlaceDetail
 
+    @POST("api/explore/reviews/batch")
+    suspend fun preparePlaceEnrichmentBatch(
+        @Body request: PlaceEnrichmentBatchRequest,
+    ): PlaceEnrichmentBatchResponse
+
+    @Streaming
+    @GET("api/explore/reviews/batches/{batchId}/events")
+    suspend fun streamPlaceEnrichmentBatch(
+        @Path("batchId") batchId: String,
+    ): ResponseBody
+
     @GET("api/explore/cities/search")
     suspend fun searchCities(
         @Query("keyword") keyword: String,
-        @Query("limit") limit: Int = 12,
+        @Query("limit") limit: Int = 30,
     ): List<CitySearchResult>
 
     @GET("api/explore/input-tips")
@@ -58,6 +72,13 @@ interface ApiService {
         @Query("city_limit") cityLimit: Boolean = true,
         @Query("category") category: String? = null,
     ): List<PlaceSuggestion>
+
+    @GET("api/explore/reverse-geocode")
+    suspend fun reverseGeocode(
+        @Query("latitude") latitude: Double,
+        @Query("longitude") longitude: Double,
+        @Query("radius") radius: Int = 50,
+    ): ReverseGeocodePoint
 
     @GET("api/explore/weather")
     suspend fun getExploreWeather(

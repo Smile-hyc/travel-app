@@ -13,6 +13,7 @@ from app.schemas.ai import (
     AiMapPointInput,
     AiPlanGenerationRequest,
     AiPlanGenerationResponse,
+    AiPlanProgressEvent,
 )
 from app.schemas.explore import CitySearchResult, PaginatedPlaces, PlaceSummary
 from app.schemas.routes import RouteCoordinate, RouteSegment, RouteStep
@@ -438,7 +439,7 @@ def test_constraint_planner_uses_station_hotel_meal_and_open_hours() -> None:
         assert place.scheduleVerified is True
 
 
-def test_ai_optimization_waits_for_model_without_service_deadline() -> None:
+def test_ai_optimization_waits_for_model_and_rejects_incomplete_result() -> None:
     class SlowArkClient:
         model_name = "slow-model"
 
@@ -480,8 +481,8 @@ def test_ai_optimization_waits_for_model_without_service_deadline() -> None:
             timeout=1.0,
         )
     )
-    assert result.quality.usedFallback is False
-    assert result.model == "slow-model"
+    assert result.quality.usedFallback is True
+    assert result.model is None
 
 
 def test_weekly_closure_is_respected_for_trip_date() -> None:
@@ -719,6 +720,186 @@ def test_heuristic_plan_can_place_distinctive_breakfast_lunch_and_dinner() -> No
     assert {"BREAKFAST", "LUNCH", "DINNER"}.issubset(meal_types)
 
 
+def test_evening_place_is_scheduled_only_after_dinner_when_suitable() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    scenic = [
+        PlaceSummary(
+            id="morning",
+            sourcePoiId="morning",
+            name="城市博物馆",
+            category="scenic",
+            categoryCode="scenic",
+            latitude=39.900,
+            longitude=116.400,
+            openingHoursWeek="周一至周日 08:00-18:00",
+        ),
+        PlaceSummary(
+            id="afternoon",
+            sourcePoiId="afternoon",
+            name="历史街区展馆",
+            category="scenic",
+            categoryCode="scenic",
+            latitude=39.902,
+            longitude=116.402,
+            openingHoursWeek="周一至周日 09:00-18:00",
+        ),
+        PlaceSummary(
+            id="night",
+            sourcePoiId="night",
+            name="城市夜景广场",
+            category="scenic",
+            categoryCode="scenic",
+            latitude=39.904,
+            longitude=116.404,
+        ),
+    ]
+    foods = [
+        PlaceSummary(
+            id=f"meal-{index}",
+            sourcePoiId=f"meal-{index}",
+            name=name,
+            category="food",
+            categoryCode="food",
+            latitude=39.901 + index * 0.001,
+            longitude=116.401 + index * 0.001,
+            openingHoursWeek="周一至周日 07:00-23:00",
+        )
+        for index, name in enumerate(("特色早餐铺", "地方午餐馆", "老字号晚餐馆"))
+    ]
+
+    day = service._build_heuristic_days(
+        AiPlanGenerationRequest(
+            destination="北京",
+            dateRange="07.22",
+            dayCount=1,
+            dailyStart="08:00",
+            dailyEnd="21:00",
+        ),
+        scenic + foods,
+        city_name="北京市",
+    )[0]
+
+    dinner_index = next(index for index, place in enumerate(day.places) if place.mealType == "DINNER")
+    night_index = next(index for index, place in enumerate(day.places) if place.sourcePoiId == "night")
+    assert night_index > dinner_index
+    assert day.places[night_index].suggestedStart >= day.places[dinner_index].suggestedEnd
+
+
+def _ai_review_place(
+    place_id: str,
+    category: str,
+    start: str,
+    end: str,
+    meal_type: str | None = None,
+) -> AiGeneratedPlace:
+    return AiGeneratedPlace(
+        id=place_id,
+        sourcePoiId=place_id,
+        name=place_id,
+        category=category,
+        categoryCode=category,
+        latitude=39.9,
+        longitude=116.4,
+        suggestedStart=start,
+        suggestedEnd=end,
+        note="",
+        mealType=meal_type,
+        rating="4.6",
+    )
+
+
+def test_ai_review_rejects_plan_that_drops_required_meal_period() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    breakfast = _ai_review_place("早餐", "food", "08:00", "09:00", "BREAKFAST")
+    scenic = _ai_review_place("景点", "scenic", "09:30", "11:30")
+    lunch = _ai_review_place("午餐", "food", "12:00", "13:00", "LUNCH")
+    baseline = AiGeneratedDay(dayIndex=1, title="DAY 1", summary="规则草案", places=[breakfast, scenic, lunch])
+    candidate = baseline.model_copy(update={"summary": "AI建议", "places": [breakfast, scenic]}, deep=True)
+
+    selected, accepted, notes = service._select_ai_optimized_days(
+        AiPlanGenerationRequest(destination="北京", dateRange="07.22", dayCount=1, dailyStart="08:00"),
+        [baseline],
+        [candidate],
+    )
+
+    assert accepted == 0
+    assert selected[0].summary == "规则草案"
+    assert "必要餐期" in notes[0]
+
+
+def test_ai_review_accepts_safe_copywriting_improvement_without_reordering() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    scenic = _ai_review_place("景点", "scenic", "09:30", "11:30")
+    baseline = AiGeneratedDay(dayIndex=1, title="DAY 1", summary="规则草案", places=[scenic])
+    candidate = baseline.model_copy(update={"summary": "AI优化后的主题说明"}, deep=True)
+
+    selected, accepted, notes = service._select_ai_optimized_days(
+        AiPlanGenerationRequest(destination="北京", dateRange="07.22", dayCount=1),
+        [baseline],
+        [candidate],
+    )
+
+    assert accepted == 1
+    assert selected[0].summary == "AI优化后的主题说明"
+    assert "顺序不变" in notes[0]
+
+
+def test_ai_review_event_is_part_of_the_public_progress_contract() -> None:
+    event = AiPlanProgressEvent(
+        sequence=1,
+        type="AI_REVIEW",
+        message="AI 建议复核完成",
+        createdAt="2026-07-22T00:00:00Z",
+    )
+
+    assert event.type == "AI_REVIEW"
+
+
+def test_meal_roles_follow_station_times_and_free_text_instead_of_fixed_template() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    late_arrival = AiPlanGenerationRequest(
+        destination="成都",
+        dateRange="07.22",
+        dayCount=1,
+        arrivalDay=1,
+        arrivalTime="11:30",
+        departureDay=1,
+        departureTime="17:00",
+        dailyStart="08:00",
+        dailyEnd="21:00",
+    )
+    sleep_in = late_arrival.model_copy(
+        update={"arrivalTime": "08:00", "departureTime": "21:00", "freeText": "睡到自然醒，不安排早餐"},
+    )
+
+    assert service._requested_meal_roles(late_arrival, 1, full_day=False) == ["LUNCH"]
+    assert service._requested_meal_roles(sleep_in, 1, full_day=False) == ["LUNCH", "DINNER"]
+
+
+def test_preferences_affect_scenic_ranking_and_requested_density() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="南京",
+        dateRange="07.22",
+        dayCount=1,
+        preferences=["文艺展览"],
+        freeText="不要太累，慢慢逛",
+    )
+    museum = PlaceSummary(
+        id="museum",
+        sourcePoiId="museum",
+        name="城市美术馆",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=32.0,
+        longitude=118.8,
+    )
+    park = museum.model_copy(update={"id": "park", "sourcePoiId": "park", "name": "城市公园"})
+
+    assert service._preference_place_score(request, museum) > service._preference_place_score(request, park)
+    assert service._scenic_target_for_request(request) == 2
+
+
 def test_map_selected_anchor_keeps_exact_coordinates() -> None:
     service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
     point = AiMapPointInput(
@@ -735,6 +916,68 @@ def test_map_selected_anchor_keeps_exact_coordinates() -> None:
     assert place.latitude == point.latitude
     assert place.longitude == point.longitude
     assert place.name == point.name
+
+
+def test_map_selected_anchor_must_belong_to_destination_city() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="成都",
+        dateRange="07.22",
+        dayCount=1,
+        hotelName="地图住宿",
+        hotelPoint=AiMapPointInput(
+            name="南京酒店",
+            latitude=32.0,
+            longitude=118.8,
+            adCode="320102",
+            cityName="南京市",
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service._validate_map_point_cities(request, "510100", "成都市")
+
+    assert exc.value.status_code == 422
+    assert "不在目的城市" in str(exc.value.detail)
+
+
+def test_ai_merge_preserves_repeated_hotel_anchor_occurrences() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="成都",
+        dateRange="07.22",
+        dayCount=1,
+        dailyStart="08:00",
+        dailyEnd="23:00",
+    )
+    hotel = _ai_review_place("hotel", "lodging", "08:00", "08:45")
+    scenic = _ai_review_place("scenic", "scenic", "09:30", "11:30")
+    baseline = AiGeneratedDay(
+        dayIndex=1,
+        title="DAY 1",
+        summary="草案",
+        places=[hotel, scenic, hotel.model_copy(update={"suggestedStart": "21:00", "suggestedEnd": "21:45"})],
+    )
+    scenic_candidate = PlaceSummary(
+        id="scenic",
+        sourcePoiId="scenic",
+        name="scenic",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+    )
+
+    merged = service._merge_ai_result(
+        request,
+        {"days": [{"dayIndex": 1, "places": [{"sourcePoiId": "scenic"}]}]},
+        [scenic_candidate],
+        [baseline],
+    )
+
+    assert [place.sourcePoiId for place in merged[0].places].count("hotel") == 2
+    assert merged[0].places[0].sourcePoiId == "hotel"
+    assert merged[0].places[-1].sourcePoiId == "hotel"
 
 
 def test_generated_transfer_serializes_actual_route_polyline() -> None:

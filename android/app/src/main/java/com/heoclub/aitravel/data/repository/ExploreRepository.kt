@@ -1,5 +1,6 @@
 package com.heoclub.aitravel.data.repository
 
+import com.google.gson.Gson
 import com.heoclub.aitravel.data.model.ExploreCategories
 import com.heoclub.aitravel.data.model.ExploreCategory
 import com.heoclub.aitravel.data.model.ExploreCity
@@ -7,13 +8,22 @@ import com.heoclub.aitravel.data.model.ExploreWeather
 import com.heoclub.aitravel.data.model.PaginatedPlaces
 import com.heoclub.aitravel.data.model.PlaceCollection
 import com.heoclub.aitravel.data.model.PlaceDetail
+import com.heoclub.aitravel.data.model.PlaceEnrichmentBatchRequest
+import com.heoclub.aitravel.data.model.PlaceEnrichmentBatchResponse
+import com.heoclub.aitravel.data.model.PlaceEnrichmentEvent
 import com.heoclub.aitravel.data.model.PlaceSuggestion
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.ReviewHighlight
+import com.heoclub.aitravel.data.model.ReverseGeocodePoint
 import com.heoclub.aitravel.data.remote.ApiService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 
 interface ExploreRepository {
@@ -38,6 +48,12 @@ interface ExploreRepository {
         cityLimit: Boolean = true,
     ): List<PlaceSuggestion>
 
+    suspend fun reverseGeocode(
+        latitude: Double,
+        longitude: Double,
+        radius: Int = 50,
+    ): ReverseGeocodePoint
+
     suspend fun searchCities(keyword: String): List<ExploreCity>
 
     suspend fun getCityWeather(adcode: String): ExploreWeather
@@ -46,12 +62,15 @@ interface ExploreRepository {
     fun getPlace(placeId: String): PlaceSummary?
     fun getPlaceDetail(placeId: String): PlaceDetail?
     suspend fun refreshPlaceDetail(placeId: String): PlaceDetail?
+    suspend fun preparePlaceEnrichment(places: List<PlaceSummary>): PlaceEnrichmentBatchResponse
+    fun streamPlaceEnrichment(batchId: String): Flow<PlaceEnrichmentEvent>
     fun toggleFavorite(placeId: String)
 }
 
 class RemoteExploreRepository(
     private val apiService: ApiService,
 ) : ExploreRepository {
+    private val gson = Gson()
     override val categories: List<ExploreCategory> = ExploreCategories.all
     override val collections: List<PlaceCollection> = emptyList()
 
@@ -100,6 +119,16 @@ class RemoteExploreRepository(
         )
     }
 
+    override suspend fun reverseGeocode(
+        latitude: Double,
+        longitude: Double,
+        radius: Int,
+    ): ReverseGeocodePoint = apiService.reverseGeocode(
+        latitude = latitude,
+        longitude = longitude,
+        radius = radius,
+    )
+
     override suspend fun searchCities(keyword: String): List<ExploreCity> {
         val query = keyword.trim()
         if (query.length < 2) return emptyList()
@@ -144,6 +173,49 @@ class RemoteExploreRepository(
         }
         details[placeId] = detail
         return detail
+    }
+
+    override suspend fun preparePlaceEnrichment(places: List<PlaceSummary>): PlaceEnrichmentBatchResponse {
+        val uniquePlaces = places.distinctBy { it.sourcePoiId }.take(30)
+        return apiService.preparePlaceEnrichmentBatch(
+            PlaceEnrichmentBatchRequest(places = uniquePlaces),
+        ).also { batch ->
+            batch.items.mapNotNull { it.detail }.forEach(::cacheDetail)
+        }
+    }
+
+    override fun streamPlaceEnrichment(batchId: String): Flow<PlaceEnrichmentEvent> = flow {
+        apiService.streamPlaceEnrichmentBatch(batchId).use { responseBody ->
+            responseBody.charStream().buffered().use { reader ->
+                val data = StringBuilder()
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    when {
+                        line.startsWith("data:") -> data.append(line.removePrefix("data:").trim())
+                        line.isBlank() && data.isNotEmpty() -> {
+                            val event = gson.fromJson(data.toString(), PlaceEnrichmentEvent::class.java)
+                            event.detail?.let(::cacheDetail)
+                            emit(event)
+                            data.clear()
+                        }
+                    }
+                }
+                if (data.isNotEmpty()) {
+                    val event = gson.fromJson(data.toString(), PlaceEnrichmentEvent::class.java)
+                    event.detail?.let(::cacheDetail)
+                    emit(event)
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private fun cacheDetail(detail: PlaceDetail) {
+        val current = getPlace(detail.summary.id)
+        details[detail.summary.id] = if (current == null) {
+            detail
+        } else {
+            detail.copy(summary = detail.summary.copy(isFavorite = current.isFavorite))
+        }
     }
 
     override fun toggleFavorite(placeId: String) {
@@ -209,6 +281,21 @@ class MockExploreRepository : ExploreRepository {
         cityLimit: Boolean,
     ): List<PlaceSuggestion> = emptyList()
 
+    override suspend fun reverseGeocode(
+        latitude: Double,
+        longitude: Double,
+        radius: Int,
+    ): ReverseGeocodePoint = ReverseGeocodePoint(
+        name = "地图选定位置",
+        formattedAddress = "北京市地图选定位置",
+        provinceName = "北京市",
+        cityName = "北京市",
+        districtName = "北京市",
+        adCode = "110100",
+        latitude = latitude,
+        longitude = longitude,
+    )
+
     override suspend fun searchCities(keyword: String): List<ExploreCity> = emptyList()
 
     override suspend fun getCityWeather(adcode: String): ExploreWeather {
@@ -237,6 +324,21 @@ class MockExploreRepository : ExploreRepository {
     }
 
     override suspend fun refreshPlaceDetail(placeId: String): PlaceDetail? = getPlaceDetail(placeId)
+
+    override suspend fun preparePlaceEnrichment(places: List<PlaceSummary>): PlaceEnrichmentBatchResponse {
+        return PlaceEnrichmentBatchResponse(
+            batchId = "mock",
+            items = places.take(30).map { place ->
+                com.heoclub.aitravel.data.model.PlaceEnrichmentBatchItem(
+                    sourcePoiId = place.sourcePoiId,
+                    status = "UNAVAILABLE",
+                    detail = getPlaceDetail(place.id),
+                )
+            },
+        )
+    }
+
+    override fun streamPlaceEnrichment(batchId: String): Flow<PlaceEnrichmentEvent> = emptyFlow()
 
     override fun toggleFavorite(placeId: String) {
         _places.update { current ->

@@ -89,13 +89,13 @@ class DeepSeekClient:
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="无法连接 AI 服务，请检查网络或 Ark Base URL。",
+                detail="无法连接 AI 服务，请检查网络或 DeepSeek Base URL。",
             ) from exc
 
     def _status_to_exception(self, status_code: int, body: bytes) -> HTTPException:
         detail = "AI 服务调用失败，请稍后重试。"
         if status_code in {401, 403}:
-            detail = "AI 服务鉴权失败，请检查 Ark API Key 或模型权限。"
+            detail = "AI 服务鉴权失败，请检查 DeepSeek API Key 或模型权限。"
         elif status_code == 404:
             detail = "AI 模型或接口不存在，请检查 DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。"
         elif status_code == 429:
@@ -157,7 +157,7 @@ class DeepSeekClient:
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="无法连接 AI 服务，请检查网络或 Ark Base URL。",
+                detail="无法连接 AI 服务，请检查网络或 DeepSeek Base URL。",
             ) from exc
 
         if response.status_code >= 400:
@@ -291,7 +291,7 @@ class DeepSeekClient:
     def _to_http_exception(self, response: httpx.Response) -> HTTPException:
         detail = "AI 服务调用失败，请稍后重试。"
         if response.status_code in {401, 403}:
-            detail = "AI 服务鉴权失败，请检查 Ark API Key 或模型权限。"
+            detail = "AI 服务鉴权失败，请检查 DeepSeek API Key 或模型权限。"
         elif response.status_code == 404:
             detail = "AI 模型或接口不存在，请检查 DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。"
         elif response.status_code == 429:
