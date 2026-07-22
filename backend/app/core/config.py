@@ -16,13 +16,13 @@ class Settings(BaseSettings):
     tikhub_connect_timeout_seconds: float = 5.0
     tikhub_read_timeout_seconds: float = 12.0
     tikhub_max_sources: int = 6
-    rnote_api_key: str = ""
-    rnote_base_url: str = "https://rnote.dev"
-    rnote_connect_timeout_seconds: float = 5.0
-    rnote_read_timeout_seconds: float = 15.0
-    rnote_max_sources: int = 5
+    ugc_provider_authorized: bool = False
     review_cache_ttl_seconds: int = 21600
     review_empty_cache_ttl_seconds: int = 300
+    review_database_path: str = "data/reviews.sqlite3"
+    review_author_hash_salt: str = "change-me-in-production"
+    content_admin_token: str = ""
+    mediacrawler_data_dir: str = "../tools/MediaCrawler/data/xhs/jsonl"
     ark_api_key: str = ""
     ark_model: str = "doubao-seed-2-1-pro-260628"
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
@@ -75,16 +75,18 @@ class Settings(BaseSettings):
         return bool(self.tikhub_api_key.strip() and self.tikhub_base_url.strip())
 
     @property
-    def rnote_configured(self) -> bool:
-        return bool(self.rnote_api_key.strip() and self.rnote_base_url.strip())
+    def authorized_ugc_configured(self) -> bool:
+        return self.ugc_provider_authorized and self.tikhub_configured
 
     @property
     def active_review_provider(self) -> str | None:
-        if self.rnote_configured:
-            return "rnote"
-        if self.tikhub_configured:
-            return "tikhub"
+        if self.authorized_ugc_configured:
+            return "authorized_ugc"
         return None
+
+    @property
+    def content_admin_configured(self) -> bool:
+        return len(self.content_admin_token.strip()) >= 16
 
 
 @lru_cache

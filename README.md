@@ -180,11 +180,24 @@ http://127.0.0.1:8000/docs
 | 基础 | GET | `/` | 欢迎信息 |
 | 健康 | GET | `/api/health` | 后端基础健康检查 |
 | 健康 | GET | `/api/health/amap` | 高德 Web 服务 Key 配置状态 |
-| 健康 | GET | `/api/health/reviews` | 小红书内容服务配置与当前提供方 |
+| 健康 | GET | `/api/health/reviews` | 授权 UGC 提供方、授权开关与配置状态 |
 | 健康 | GET | `/api/health/ai` | Ark AI 配置状态 |
 | 探索 | GET | `/api/explore/cities/search` | 城市搜索 |
 | 探索 | GET | `/api/explore/input-tips` | 地点输入提示 |
 | 探索 | GET | `/api/explore/pois/search` | 城市分类 POI / 关键词地点搜索 |
+| 探索 | POST | `/api/explore/pois/detail` | 立即返回三层地点档案；缺失体验数据进入后台队列 |
+| 探索 | POST | `/api/explore/reviews/batch` | 批量检查并补全 1～30 个最终行程 POI |
+| 探索 | GET | `/api/explore/reviews/batches/{batchId}/events` | 流式返回地点体验缓存与聚合状态 |
+| 内容 | GET | `/api/content/catalog` | 查看全国热门 POI 种子目录 |
+| 内容 | POST | `/api/content/ingestion/runs` | 启动最多 30 个 POI 的清洗、去重、聚合任务（管理令牌） |
+| 内容 | GET | `/api/content/ingestion/runs/{runId}` | 查询采集数量、入库数量和明确的上游错误（管理令牌） |
+| 内容 | GET | `/api/content/targets` | 查看热门/冷门目标及下次刷新时间（管理令牌） |
+| 内容 | GET | `/api/content/stats` | 查看地点、证据、聚合和任务统计（管理令牌） |
+| 内容 | POST | `/api/content/official/sync` | 同步已适配景区的官方公告（管理令牌） |
+| 内容 | POST | `/api/content/cities/bootstrap` | 按城市从高德发现热门景点并创建采集目标（管理令牌） |
+| 内容 | GET | `/api/content/official/sources` | 查询 A 级认证、官网、公众号、小程序和票务来源目录 |
+| 内容 | GET | `/api/content/mediacrawler/exports` | 列出本机 MediaCrawler JSONL 输出（管理令牌） |
+| 内容 | POST | `/api/content/mediacrawler/import` | 清洗并导入真实小红书采集结果（管理令牌） |
 | 探索 | GET | `/api/explore/weather` | 城市天气 |
 | 路线 | POST | `/api/routes/segment` | 两点路线 |
 | 路线 | POST | `/api/routes/day/calculate` | 单日多地点路线 |
@@ -222,21 +235,16 @@ DEV_CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:30
 
 AMAP_WEB_SERVICE_KEY=
 
-# 可选：地点详情页的小红书公开内容来源
+# 可选：只有已取得相应数据使用授权后才能打开
+UGC_PROVIDER_AUTHORIZED=false
 TIKHUB_API_KEY=
 TIKHUB_BASE_URL=https://api.tikhub.io
 TIKHUB_CONNECT_TIMEOUT_SECONDS=5
 TIKHUB_READ_TIMEOUT_SECONDS=12
 TIKHUB_MAX_SOURCES=6
-
-# 推荐：配置后优先使用 Rnote 搜索小红书公开内容
-RNOTE_API_KEY=
-RNOTE_BASE_URL=https://rnote.dev
-RNOTE_CONNECT_TIMEOUT_SECONDS=5
-RNOTE_READ_TIMEOUT_SECONDS=15
-RNOTE_MAX_SOURCES=5
-REVIEW_CACHE_TTL_SECONDS=21600
-REVIEW_EMPTY_CACHE_TTL_SECONDS=300
+REVIEW_DATABASE_PATH=data/reviews.sqlite3
+REVIEW_AUTHOR_HASH_SALT=请替换为生产环境随机盐
+CONTENT_ADMIN_TOKEN=请设置至少16位且只保存在后端的管理令牌
 
 ARK_API_KEY=
 ARK_MODEL=doubao-seed-2-1-pro-260628
@@ -249,10 +257,12 @@ ARK_TEMPERATURE=0.35
 说明：
 
 - `AMAP_WEB_SERVICE_KEY` 用于后端调用高德 Web 服务，包括 POI、输入提示、天气和路线。
-- `TIKHUB_API_KEY` 是可选的第三方内容服务 Key，用于地点详情页搜索小红书 App V2 公开内容。未配置、额度不足或请求失败时，页面会隐藏“查看原始内容”，改为展示高德地点事实与“地点亮点”，不会伪造真实评价。
-- `RNOTE_API_KEY` 是推荐的小红书公开内容服务 Key。配置后优先于 TikHub，后端每个地点只进行一次搜索请求，并把成功结果缓存 6 小时，减少重复扣费。
-- Rnote 来源卡片可展示笔记封面、作者、点赞数和原文链接；Key 只保存在 FastAPI 后端，不进入 Android 安装包。
-- 生产环境接入前应确认内容展示、缓存、跳转和用户隐私符合平台条款；服务端只返回来源标题、作者、短摘要和原文链接，不复制完整笔记。
+- `UGC_PROVIDER_AUTHORIZED` 默认关闭。它只是“项目已取得相应授权”的显式确认；配置第三方 Key 本身不代表获得小红书内容的商业使用授权。
+- TikHub 目前只是可替换的 UGC 适配器。生产环境应替换为平台合作、内容采购或其他有书面授权的数据源；未授权时只展示高德事实与景区官方信息。
+- `CONTENT_ADMIN_TOKEN` 只用于后台采集管理接口，必须通过 `X-Content-Admin-Token` 请求头传入，不能打包到 Android App。
+- 后端不保存 UGC 图片、视频、原文或原作者标识，只保存来源笔记 ID/链接、匿名作者哈希、短摘要、标签、证据 ID、更新时间和软删除状态。
+- 1 条可追溯体验即可作为参考展示，并在界面标注样本量和“仅供参考”；3 条及以上显示为交叉参考。排队信息 7 天过期，其他体验信息 30 天过期，高德事实信息按 1 天核验周期管理。
+- 第一版景区官方连接器已支持故宫、九寨沟、黄山、秦始皇帝陵博物院和成都大熊猫繁育研究基地：读取官网公告、预约规则、官方票价、开放时间、承载量等公开信息，保留原始官方链接与核验时间；它们是受域名白名单约束的网页监测适配器，不伪装成官方开放 API。
 - `ARK_API_KEY` 用于后端调用火山方舟 / 豆包模型。
 - README 只保留变量名，不应出现真实 Key。
 
@@ -282,6 +292,37 @@ cd F:\travel-app\backend
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+### 测试阶段内容同步
+
+不启动 HTTP 服务也可以运行后台管道：
+
+```powershell
+cd F:\Projects\travel\backend
+# 仅同步故宫官方信息
+.\.venv\Scripts\python.exe scripts\sync_content.py --official-source dpm
+# 批量处理前 10 个热门 POI；只有 UGC_PROVIDER_AUTHORIZED=true 时才会请求 UGC
+.\.venv\Scripts\python.exe scripts\sync_content.py --limit 10 --include-official
+# 为任意城市自动建立热门景点目录
+.\.venv\Scripts\python.exe scripts\sync_content.py --bootstrap-city 天津市 --limit 12
+# 同步当前已实现的五个官方站点
+.\.venv\Scripts\python.exe scripts\sync_content.py --official-source all
+# 导入 MediaCrawler 的本地 JSONL
+.\.venv\Scripts\python.exe scripts\sync_content.py --import-mediacrawler search_contents_2026-07-22.jsonl --city 天津市
+```
+
+清洗过程会校验 POI 相关性，去除 URL/联系方式，过滤纯广告，对笔记 ID 和规范化正文去重，并提取拍照、排队、预约、步行量、美食、是否值得等结构化标签。上游的鉴权、余额、限流和网络错误会写入任务状态，不会再被当成“没有相关笔记”。
+
+课程演示可以使用 `tools\MediaCrawler` 的独立环境采集公开笔记。建议每次只选一个城市的 3～10 个最终热门 POI，不抓评论、图片和视频：
+
+```powershell
+cd F:\Projects\travel\tools\MediaCrawler
+.\.venv\Scripts\python.exe main.py --platform xhs --lt qrcode --type search `
+  --keywords "天津五大道文化旅游区,民园广场,小白楼" `
+  --get_comment false --get_sub_comment false --save_data_option jsonl
+```
+
+浏览器登录态会保存在 MediaCrawler 自己的 `browser_data` 目录；首次或登录过期时需要扫码。采集输出只作为输入文件，业务数据库仍由本项目统一清洗、匿名化和聚合。
 
 启动服务：
 
@@ -444,21 +485,21 @@ F:\travel-app
 - 暂无登录注册和云端同步。
 - 暂无 Room 数据库。
 - 暂无实时定位、实时导航和语音导航。
-- 暂无小红书、携程、酒店、门票、支付等第三方业务接口。
+- 暂无可直接用于商业发布的小红书官方内容授权；当前 UGC 适配器默认关闭，测试 Key 没有可用额度时任务会明确返回 `QUOTA_EXHAUSTED`。
 - AI 不直接修改计划，所有结构化建议都必须由用户确认。
-- AI 不做流式输出。
-- 地点热度、营业时间、评价等信息以高德返回为准，缺失时不编造。
+- 智能规划和地点体验补全均支持 SSE 流式状态更新。
+- 地址、坐标、营业时间、评分和电话以高德/景区官方为事实来源；拍照、排队、步行量等只作为有证据的体验聚合，不冒充事实。
 
 ## 后续路线
 
 建议后续按以下顺序推进：
 
-1. 优化 AI 对话体验：流式输出、上下文裁剪、失败重试、中文提示词稳定性。
+1. 优化 AI 对话体验：上下文裁剪、失败重试、中文提示词稳定性。
 2. 增加计划编辑体验：拖拽排序、跨 DAY 移动、待规划批量安排。
-3. 增加地点详情：营业时间、费用、电话、图片来源说明。
+3. 在现有故宫适配器基础上扩展全国重点景区的官网公告、预约与票价连接器，并为页面结构变化加监控告警。
 4. 增加用户系统：登录、云端同步、多设备保存。
-5. 增加数据库：后端持久化计划、用户、收藏和历史。
-6. 接入更多内容源：小红书 / Wikimedia / 公开旅游数据，但需注意授权和合规。
+5. 将单机 SQLite/内存队列迁移为 PostgreSQL + Redis/Celery，并加入分布式 POI 去重锁。
+6. 接入已授权 UGC / 自有评价和官方开放数据，建立删除同步与审计流程。
 7. 增加课程展示材料：架构图、接口文档、演示脚本和答辩 PPT。
 
 ## Git 提交前检查

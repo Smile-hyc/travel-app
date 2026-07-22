@@ -31,7 +31,7 @@ def test_review_provider_health_does_not_expose_keys() -> None:
     assert set(payload) == {
         "configured",
         "activeProvider",
-        "rnoteConfigured",
-        "tikhubConfigured",
+        "authorizedUgcConfigured",
+        "authorized",
     }
     assert "apiKey" not in payload

@@ -78,6 +78,7 @@ class AiPlanGenerationViewModel(
     val uiState: StateFlow<AiPlanGenerationUiState> = _uiState.asStateFlow()
 
     private var generationJob: Job? = null
+    private var enrichmentJob: Job? = null
     private var activeJobId: String? = null
 
     init {
@@ -90,6 +91,7 @@ class AiPlanGenerationViewModel(
 
     fun cancel() {
         generationJob?.cancel()
+        enrichmentJob?.cancel()
         activeJobId = null
     }
 
@@ -131,6 +133,7 @@ class AiPlanGenerationViewModel(
             visibleDayCount = days.size,
             savedPlanId = plan.id,
         )
+        prepareAndObserveEnrichment(days)
         return true
     }
 
@@ -217,6 +220,26 @@ class AiPlanGenerationViewModel(
                 visibleDayCount = completedResult.days.size,
                 savedPlanId = plan.id,
             )
+            completedResult.enrichmentBatchId?.let(::observeEnrichment)
+        }
+    }
+
+    private fun prepareAndObserveEnrichment(days: List<AiGeneratedDay>) {
+        enrichmentJob?.cancel()
+        enrichmentJob = viewModelScope.launch {
+            runCatching {
+                val places = days.flatMap { it.places }.map { it.toPlaceSummary() }
+                exploreRepository.preparePlaceEnrichment(places).batchId
+            }.onSuccess(::observeEnrichment)
+        }
+    }
+
+    private fun observeEnrichment(batchId: String) {
+        enrichmentJob?.cancel()
+        enrichmentJob = viewModelScope.launch {
+            runCatching {
+                exploreRepository.streamPlaceEnrichment(batchId).collect { /* Repository merges by POI ID. */ }
+            }
         }
     }
 

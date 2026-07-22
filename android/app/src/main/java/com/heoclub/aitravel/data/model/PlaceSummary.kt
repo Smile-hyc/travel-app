@@ -106,6 +106,19 @@ data class PlaceSuggestion(
     val hasLocation: Boolean = false,
 )
 
+data class ReverseGeocodePoint(
+    val name: String,
+    val formattedAddress: String,
+    val provinceName: String? = null,
+    val cityName: String? = null,
+    val districtName: String? = null,
+    val adCode: String? = null,
+    val latitude: Double,
+    val longitude: Double,
+    val matchedPoiWithin50m: Boolean = false,
+    val distanceMeters: Int? = null,
+)
+
 data class PaginatedPlaces(
     val items: List<PlaceSummary>,
     val page: Int,

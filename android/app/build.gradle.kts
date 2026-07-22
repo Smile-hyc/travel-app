@@ -34,7 +34,7 @@ val debugApiBaseUrl = localConfigValue(
 )
 val amapAndroidKey = localConfigValue(
     key = "AMAP_ANDROID_KEY",
-    fallback = backendEnvProperties.getProperty("AMAP_WEB_SERVICE_KEY", ""),
+    fallback = "",
 )
 
 android {
