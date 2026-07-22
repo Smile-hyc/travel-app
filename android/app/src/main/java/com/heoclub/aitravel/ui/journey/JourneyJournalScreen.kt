@@ -75,7 +75,7 @@ private enum class JournalGroupMode {
 }
 
 @Composable
-internal fun JourneyJournalRoute(
+internal fun JourneyJournalScreen(
     entries: List<JournalEntry>,
     onBack: () -> Unit,
     onWriteJourney: () -> Unit,
