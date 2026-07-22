@@ -55,7 +55,7 @@ class TravelAiService:
         messages = self._build_messages(request)
 
         full_text = ""
-        async for chunk in self._ark_client.chat_stream(messages):
+        async for chunk in self._ark_client.chat_stream_chunks(messages):
             full_text += chunk
             yield json.dumps({"type": "chunk", "content": chunk}, ensure_ascii=False)
 

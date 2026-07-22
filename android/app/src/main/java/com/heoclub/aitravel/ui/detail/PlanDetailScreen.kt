@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +38,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DragHandle
@@ -45,6 +48,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -93,8 +98,12 @@ import com.heoclub.aitravel.data.model.DayRoutePlan
 import com.heoclub.aitravel.data.model.PlanDay
 import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.RouteModes
+import com.heoclub.aitravel.data.model.RouteStep
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.R
 import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
+import com.heoclub.aitravel.ui.components.PlaceCoverImage
+import com.heoclub.aitravel.ui.components.loadMapMarkerImage
 import android.graphics.Color as AndroidColor
 
 @Composable
@@ -115,7 +124,11 @@ fun PlanDetailScreen(
     }
     val displayRoute = uiState.optimization?.route ?: uiState.route
     val displayItems = orderedPreviewItems(
-        items = uiState.selectedDay?.items.orEmpty(),
+        items = if (uiState.selectedDayIndex == 0) {
+            plan.days.sortedBy { it.dayIndex }.flatMap { it.items.sortedBy { item -> item.visitOrder } }
+        } else {
+            uiState.selectedDay?.items.orEmpty()
+        },
         optimizedPlaceIds = uiState.optimization?.optimizedPlaceIds,
     )
     var sheetExpanded by remember { mutableStateOf(false) }
@@ -150,6 +163,7 @@ fun PlanDetailScreen(
                 onSelectDay = viewModel::selectDay,
                 onSelectMode = viewModel::selectMode,
                 onReorderItems = viewModel::reorderItems,
+                onSelectSegmentMode = viewModel::updateSegmentTransportMode,
                 onMoveUnplannedToDay = viewModel::moveUnplannedItemToDay,
                 onOptimize = viewModel::optimizeRoute,
                 onApplyOptimization = viewModel::applyOptimization,
@@ -221,6 +235,7 @@ private fun PlanDetailSheet(
     onSelectDay: (Int) -> Unit,
     onSelectMode: (String) -> Unit,
     onReorderItems: (List<String>) -> Unit,
+    onSelectSegmentMode: (String, String) -> Unit,
     onMoveUnplannedToDay: (String, Int) -> Unit,
     onOptimize: () -> Unit,
     onApplyOptimization: () -> Unit,
@@ -231,7 +246,11 @@ private fun PlanDetailSheet(
 ) {
     val displayRoute = uiState.optimization?.route ?: uiState.route
     val displayItems = orderedPreviewItems(
-        items = uiState.selectedDay?.items.orEmpty(),
+        items = if (uiState.selectedDayIndex == 0) {
+            plan.days.sortedBy { it.dayIndex }.flatMap { it.items.sortedBy { item -> item.visitOrder } }
+        } else {
+            uiState.selectedDay?.items.orEmpty()
+        },
         optimizedPlaceIds = uiState.optimization?.optimizedPlaceIds,
     )
     val dragThresholdPx = with(LocalDensity.current) { 48.dp.toPx() }
@@ -310,34 +329,46 @@ private fun PlanDetailSheet(
                 onSelectDay = onSelectDay,
             )
 
-            RouteModeTabs(
-                selectedMode = uiState.routeMode,
-                onSelectMode = onSelectMode,
-            )
+            if (uiState.selectedDayIndex == 0) {
+                Surface(color = Color(0xFFF6FAFF), shape = RoundedCornerShape(18.dp)) {
+                    Text(
+                        "全程总览按天分组展示；各天路线独立计算，不会把前一天终点错误连接到第二天起点。",
+                        modifier = Modifier.padding(14.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                PlanOverviewItinerary(plan.days, onOpenPlace)
+            } else {
+                RouteModeTabs(
+                    selectedMode = uiState.routeMode,
+                    onSelectMode = onSelectMode,
+                )
 
-            RouteSummary(
-                route = displayRoute,
-                loading = uiState.isLoadingRoute,
-                error = uiState.routeError,
-                onRetry = onRetry,
-            )
+                RouteSummary(
+                    route = displayRoute,
+                    loading = uiState.isLoadingRoute,
+                    error = uiState.routeError,
+                    onRetry = onRetry,
+                )
 
-            OptimizationBanner(
-                uiState = uiState,
-                onOptimize = onOptimize,
-                onApplyOptimization = onApplyOptimization,
-                onDismissOptimization = onDismissOptimization,
-            )
+                OptimizationBanner(
+                    uiState = uiState,
+                    onOptimize = onOptimize,
+                    onApplyOptimization = onApplyOptimization,
+                    onDismissOptimization = onDismissOptimization,
+                )
 
-            DayItinerary(
-                day = uiState.selectedDay,
-                items = displayItems,
-                route = displayRoute,
-                routeLoading = uiState.isLoadingRoute,
-                previewing = uiState.optimization != null,
-                onReorderItems = onReorderItems,
-                onOpenPlace = onOpenPlace,
-            )
+                DayItinerary(
+                    day = uiState.selectedDay,
+                    items = displayItems,
+                    route = displayRoute,
+                    routeLoading = uiState.isLoadingRoute,
+                    previewing = uiState.optimization != null,
+                    onReorderItems = onReorderItems,
+                    onSelectSegmentMode = onSelectSegmentMode,
+                    onOpenPlace = onOpenPlace,
+                )
+            }
 
             UnplannedSection(
                 items = plan.unplannedItems,
@@ -352,7 +383,7 @@ private fun PlanDetailSheet(
                     shape = RoundedCornerShape(18.dp),
                 ) {
                     Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
-                    Text("问 AI", modifier = Modifier.padding(start = 6.dp))
+                    Text("行程助手", modifier = Modifier.padding(start = 6.dp))
                 }
                 OutlinedButton(
                     onClick = onContinueAdding,
@@ -395,6 +426,19 @@ private fun DayTabs(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        val overviewSelected = selectedDayIndex == 0
+        Surface(
+            modifier = Modifier.clickable { onSelectDay(0) },
+            color = if (overviewSelected) Color(0xFFE8F7FF) else Color(0xFFF4F7FB),
+            shape = RoundedCornerShape(50),
+        ) {
+            Text(
+                text = "全程总览",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                color = if (overviewSelected) MaterialTheme.colorScheme.primary else Color(0xFF667085),
+                fontWeight = FontWeight.Bold,
+            )
+        }
         days.forEach { day ->
             val selected = day.dayIndex == selectedDayIndex
             Surface(
@@ -474,7 +518,7 @@ private fun RouteSummary(
                 else -> {
                     Text("路线总览", fontWeight = FontWeight.Bold)
                     Text(
-                        text = "${formatDistance(route.totalDistanceMeters)} · ${formatDuration(route.totalDurationSeconds)} · ${RouteModes.label(route.mode)}",
+                        text = "${formatDistance(route.totalDistanceMeters)} · ${formatDuration(route.totalDurationSeconds)} · ${routeTransportLabel(route)}",
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -548,6 +592,7 @@ private fun DayItinerary(
     routeLoading: Boolean,
     previewing: Boolean,
     onReorderItems: (List<String>) -> Unit,
+    onSelectSegmentMode: (String, String) -> Unit,
     onOpenPlace: (PlanItem) -> Unit,
 ) {
     var visualItems by remember(day?.id) { mutableStateOf(items) }
@@ -724,24 +769,20 @@ private fun DayItinerary(
                         settleReady -> settleOffsetY.value
                         else -> dragOffsetY
                     }
-                    val displayIndex = when {
-                        activeItemId == null -> index
-                        active -> targetIndex.coerceIn(0, visualItems.lastIndex)
-                        targetIndex > dragStartIndex && index in (dragStartIndex + 1)..targetIndex ->
-                            index - 1
-                        targetIndex < dragStartIndex && index in targetIndex until dragStartIndex ->
-                            index + 1
-                        else -> index
-                    }
                     PlanItemCard(
-                        index = displayIndex,
                         item = item,
+                        nextPlaceName = visualItems.getOrNull(index + 1)?.name,
                         nextSegmentText = when {
                             routeLoading && index < visualItems.lastIndex -> "正在重新计算..."
                             else -> route?.segments?.getOrNull(index)?.let {
                                 "${formatDistance(it.distanceMeters)} · ${formatDuration(it.durationSeconds)}"
                             }
                         },
+                        segmentMode = route?.segments?.getOrNull(index)?.mode
+                            ?: item.transportModeToNext,
+                        segmentSteps = route?.segments?.getOrNull(index)?.steps.orEmpty(),
+                        segmentEditable = !previewing,
+                        onSegmentModeChange = { mode -> onSelectSegmentMode(item.id, mode) },
                         dragEnabled = dragEnabled,
                         isDragging = active,
                         onOpenPlace = { onOpenPlace(item) },
@@ -846,6 +887,50 @@ private fun UnplannedSection(
 }
 
 @Composable
+private fun PlanOverviewItinerary(
+    days: List<PlanDay>,
+    onOpenPlace: (PlanItem) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        days.sortedBy { it.dayIndex }.forEach { day ->
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = day.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF071A3D),
+                    )
+                    Text(
+                        text = "${day.items.size} 个地点",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                val items = day.items.sortedBy { it.visitOrder }
+                if (items.isEmpty()) {
+                    EmptyDayCard()
+                } else {
+                    items.forEach { item ->
+                        PlanItemCard(
+                            item = item,
+                            nextSegmentText = null,
+                            dragEnabled = false,
+                            isDragging = false,
+                            onOpenPlace = { onOpenPlace(item) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun EmptyDayCard() {
     Surface(color = Color(0xFFF6FAFF), shape = RoundedCornerShape(22.dp)) {
         Column(
@@ -853,21 +938,26 @@ private fun EmptyDayCard() {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("这一天还没有地点", fontWeight = FontWeight.Bold)
-            Text("去探索页选择真实高德地点，点击 + 加入计划。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("去探索页选择地点，点击 + 加入计划。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
 private fun PlanItemCard(
-    index: Int,
     item: PlanItem,
+    nextPlaceName: String? = null,
     nextSegmentText: String?,
+    segmentMode: String? = null,
+    segmentSteps: List<RouteStep> = emptyList(),
+    segmentEditable: Boolean = false,
+    onSegmentModeChange: (String) -> Unit = {},
     dragEnabled: Boolean,
     isDragging: Boolean,
     onOpenPlace: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var modeMenuExpanded by remember(item.id) { mutableStateOf(false) }
     val containerColor by animateColorAsState(
         targetValue = if (isDragging) Color(0xFFF4F8FF) else Color.Transparent,
         animationSpec = spring(
@@ -898,20 +988,38 @@ private fun PlanItemCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = Color(0xFFE8F7FF), shape = CircleShape) {
-                    Text(
-                        text = "${index + 1}",
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
+                PlaceCoverImage(
+                    imageUrl = item.thumbnailUrl?.takeIf(String::isNotBlank)
+                        ?: item.imageUrls.firstOrNull { it.isNotBlank() },
+                    placeName = item.name,
+                    category = item.category,
+                    modifier = Modifier.size(64.dp),
+                    shape = RoundedCornerShape(16.dp),
+                )
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .padding(start = 12.dp),
                 ) {
                     Text(item.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.padding(top = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.AccessTime,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            text = visitTimeLabel(item),
+                            modifier = Modifier.padding(start = 5.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                     Text(
                         text = listOfNotNull(item.typeName, item.districtName, item.address).joinToString(" · "),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -931,13 +1039,52 @@ private fun PlanItemCard(
                     tint = if (dragEnabled) Color(0xFF667085) else Color(0xFFC4CAD4),
                 )
             }
-            if (nextSegmentText != null) {
-                Text(
-                    text = "下一段：$nextSegmentText",
-                    modifier = Modifier.padding(start = 42.dp),
-                    color = Color(0xFF98A2B3),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            if (nextPlaceName != null) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(start = 76.dp),
+                    color = Color(0xFFF6FAFF),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "到 $nextPlaceName：${nextSegmentText ?: "等待路线数据"}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Box {
+                            OutlinedButton(
+                                onClick = { modeMenuExpanded = true },
+                                enabled = segmentEditable,
+                                modifier = Modifier.height(48.dp),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Text("交通方式：${RouteModes.label(segmentMode ?: item.transportModeToNext, segmentSteps)}")
+                            }
+                            DropdownMenu(
+                                expanded = modeMenuExpanded,
+                                onDismissRequest = { modeMenuExpanded = false },
+                            ) {
+                                listOf(
+                                    RouteModes.WALKING,
+                                    RouteModes.TRANSIT,
+                                    RouteModes.DRIVING,
+                                    RouteModes.CYCLING,
+                                ).forEach { mode ->
+                                    DropdownMenuItem(
+                                        text = { Text(RouteModes.label(mode)) },
+                                        onClick = {
+                                            modeMenuExpanded = false
+                                            onSegmentModeChange(mode)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -961,8 +1108,16 @@ private fun PlanRouteMap(
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
+    val initialMapCenter = items.firstOrNull { it.latitude != null && it.longitude != null }?.let {
+        LatLng(it.latitude!!, it.longitude!!)
+    }
     val mapView = remember {
-        MapView(context).apply { onCreate(Bundle()) }
+        MapView(context).apply {
+            onCreate(Bundle())
+            initialMapCenter?.let { center ->
+                map.moveCamera(CameraUpdateFactory.newLatLngZoom(center, 13.2f))
+            }
+        }
     }
 
     DisposableEffect(lifecycleOwner, mapView) {
@@ -992,7 +1147,6 @@ private fun PlanRouteMap(
                     map.uiSettings.isZoomControlsEnabled = false
                     map.uiSettings.isMyLocationButtonEnabled = false
                     map.uiSettings.isCompassEnabled = false
-                    map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(39.9105, 116.3972), 12.8f))
                 }
             },
             modifier = Modifier.fillMaxSize(),
@@ -1027,19 +1181,33 @@ private fun PlanRouteMap(
             }
         }
 
-        items.forEachIndexed { index, item ->
-            val lat = item.latitude ?: return@forEachIndexed
-            val lng = item.longitude ?: return@forEachIndexed
+        val photoMarkers = mutableListOf<Pair<com.amap.api.maps.model.Marker, PlanItem>>()
+        items.forEach { item ->
+            val lat = item.latitude ?: return@forEach
+            val lng = item.longitude ?: return@forEach
             val latLng = LatLng(lat, lng)
-            amap.addMarker(
+            val marker = amap.addMarker(
                 MarkerOptions()
                     .position(latLng)
-                    .icon(BitmapDescriptorFactory.fromBitmap(createNumberedMarker(context, index + 1)))
+                    .icon(BitmapDescriptorFactory.fromBitmap(createPlanPlaceMarker(context, item, null)))
                     .anchor(0.5f, 0.5f)
                     .zIndex(20f),
             )
+            if (marker != null && (item.thumbnailUrl != null || item.imageUrls.isNotEmpty())) {
+                photoMarkers += marker to item
+            }
             boundsBuilder.include(latLng)
             hasBounds = true
+        }
+
+        val markerPhotoSize = (64f * context.resources.displayMetrics.density).toInt()
+        photoMarkers.forEach { (marker, item) ->
+            val imageUrl = item.thumbnailUrl?.takeIf { it.isNotBlank() }
+                ?: item.imageUrls.firstOrNull { it.isNotBlank() }
+            val photo = loadMapMarkerImage(context, imageUrl, markerPhotoSize)
+            if (photo != null) {
+                marker.setIcon(BitmapDescriptorFactory.fromBitmap(createPlanPlaceMarker(context, item, photo)))
+            }
         }
 
         if (hasBounds) {
@@ -1048,25 +1216,50 @@ private fun PlanRouteMap(
     }
 }
 
-private fun createNumberedMarker(context: Context, number: Int): Bitmap {
+private fun createPlanPlaceMarker(context: Context, item: PlanItem, photo: Bitmap?): Bitmap {
     val density = context.resources.displayMetrics.density
-    val size = (42 * density).toInt()
+    val size = (48 * density).toInt()
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val center = size / 2f
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.rgb(49, 180, 224)
+    val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.WHITE
         setShadowLayer(5f * density, 0f, 2f * density, AndroidColor.argb(60, 0, 0, 0))
     }
-    canvas.drawCircle(center, center, center - 3 * density, paint)
-    val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.WHITE
-        textSize = 16f * density
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        textAlign = Paint.Align.CENTER
+    canvas.drawCircle(center, center, center - 3 * density, backgroundPaint)
+    val radius = center - 6 * density
+    if (photo != null) {
+        val clip = Path().apply { addCircle(center, center, radius, Path.Direction.CW) }
+        canvas.save()
+        canvas.clipPath(clip)
+        canvas.drawBitmap(
+            photo,
+            null,
+            RectF(center - radius, center - radius, center + radius, center + radius),
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG),
+        )
+        canvas.restore()
+    } else {
+        val iconRes = when (item.category) {
+            "food" -> R.drawable.ic_marker_food
+            "drink" -> R.drawable.ic_marker_drink
+            "shopping" -> R.drawable.ic_marker_shopping
+            "lodging" -> R.drawable.ic_marker_lodging
+            "transport" -> R.drawable.ic_marker_transport
+            else -> R.drawable.ic_marker_scenic
+        }
+        val icon = context.getDrawable(iconRes)?.mutate()
+        val half = (13f * density).toInt()
+        icon?.setTint(AndroidColor.rgb(31, 122, 224))
+        icon?.setBounds((center - half).toInt(), (center - half).toInt(), (center + half).toInt(), (center + half).toInt())
+        icon?.draw(canvas)
     }
-    val y = center - (textPaint.descent() + textPaint.ascent()) / 2
-    canvas.drawText(number.toString(), center, y, textPaint)
+    val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+        color = AndroidColor.rgb(49, 180, 224)
+    }
+    canvas.drawCircle(center, center, radius, ring)
     return bitmap
 }
 
@@ -1097,6 +1290,27 @@ private fun orderedPreviewItems(
     val optimized = optimizedPlaceIds.mapNotNull(byId::get)
     val remaining = sortedItems.filterNot { it.id in optimizedPlaceIds }
     return optimized + remaining
+}
+
+private fun visitTimeLabel(item: PlanItem): String {
+    return when {
+        !item.suggestedStart.isNullOrBlank() && !item.suggestedEnd.isNullOrBlank() ->
+            "${item.suggestedStart} - ${item.suggestedEnd}"
+        !item.suggestedStart.isNullOrBlank() -> "${item.suggestedStart} 起"
+        !item.suggestedEnd.isNullOrBlank() -> "${item.suggestedEnd} 前结束"
+        else -> "时间待安排"
+    }
+}
+
+private fun routeTransportLabel(route: DayRoutePlan): String {
+    val actualModes = route.segments
+        .map { RouteModes.label(it.mode, it.steps) }
+        .distinct()
+    return when {
+        actualModes.isEmpty() -> RouteModes.label(route.mode)
+        actualModes.size == 1 -> actualModes.first()
+        else -> actualModes.joinToString(" + ")
+    }
 }
 
 private fun formatDistance(meters: Int): String {

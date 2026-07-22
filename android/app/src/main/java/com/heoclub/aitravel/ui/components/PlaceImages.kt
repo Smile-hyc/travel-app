@@ -15,6 +15,13 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.DirectionsTransit
+import androidx.compose.material.icons.outlined.Hotel
+import androidx.compose.material.icons.outlined.LocalCafe
+import androidx.compose.material.icons.outlined.Museum
+import androidx.compose.material.icons.outlined.Park
+import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +47,7 @@ import com.heoclub.aitravel.data.model.PlaceImage
 fun PlaceCoverImage(
     imageUrl: String?,
     placeName: String,
+    category: String? = null,
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(16.dp),
     contentScale: ContentScale = ContentScale.Crop,
@@ -52,7 +60,7 @@ fun PlaceCoverImage(
         contentAlignment = Alignment.Center,
     ) {
         if (cleanUrl == null) {
-            PlaceImagePlaceholder(placeName = placeName)
+            PlaceImagePlaceholder(placeName = placeName, category = category)
         } else {
             SubcomposeAsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
@@ -67,7 +75,7 @@ fun PlaceCoverImage(
                     }
                 },
                 error = {
-                    PlaceImagePlaceholder(placeName = placeName)
+                    PlaceImagePlaceholder(placeName = placeName, category = category)
                 },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -80,6 +88,7 @@ fun PlaceImageCarousel(
     images: List<PlaceImage>,
     fallbackUrls: List<String>,
     placeName: String,
+    category: String? = null,
     modifier: Modifier = Modifier,
     itemHeight: Dp = 132.dp,
 ) {
@@ -92,6 +101,7 @@ fun PlaceImageCarousel(
         PlaceCoverImage(
             imageUrl = null,
             placeName = placeName,
+            category = category,
             modifier = modifier
                 .fillMaxWidth()
                 .height(itemHeight),
@@ -109,6 +119,7 @@ fun PlaceImageCarousel(
             PlaceCoverImage(
                 imageUrl = url,
                 placeName = placeName,
+                category = category,
                 modifier = Modifier
                     .width(if (index == 0) 220.dp else 132.dp)
                     .height(itemHeight),
@@ -119,7 +130,7 @@ fun PlaceImageCarousel(
 }
 
 @Composable
-private fun PlaceImagePlaceholder(placeName: String) {
+private fun PlaceImagePlaceholder(placeName: String, category: String?) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -128,7 +139,16 @@ private fun PlaceImagePlaceholder(placeName: String) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = Icons.Outlined.LocationOn,
+            imageVector = when (category?.lowercase()) {
+                "food" -> Icons.Outlined.Restaurant
+                "drink" -> Icons.Outlined.LocalCafe
+                "lodging" -> Icons.Outlined.Hotel
+                "transport" -> Icons.Outlined.DirectionsTransit
+                "shopping" -> Icons.Outlined.ShoppingBag
+                "nature" -> Icons.Outlined.Park
+                "culture", "museum" -> Icons.Outlined.Museum
+                else -> Icons.Outlined.LocationOn
+            },
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
         )

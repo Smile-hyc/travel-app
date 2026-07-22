@@ -26,7 +26,12 @@ place_detail_service = PlaceDetailService(
     empty_cache_ttl_seconds=settings.review_empty_cache_ttl_seconds,
 )
 travel_ai_service = TravelAiService(ark_client)
-travel_plan_generation_service = TravelPlanGenerationService(ark_client, amap_poi_service)
+travel_plan_generation_service = TravelPlanGenerationService(
+    ark_client,
+    amap_poi_service,
+    amap_route_service,
+    amap_weather_service,
+)
 ai_plan_job_manager = AiPlanJobManager(travel_plan_generation_service)
 
 

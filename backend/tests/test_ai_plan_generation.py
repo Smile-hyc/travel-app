@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -8,10 +9,13 @@ from app.main import app
 from app.schemas.ai import (
     AiGeneratedDay,
     AiGeneratedPlace,
+    AiGeneratedTransfer,
+    AiMapPointInput,
     AiPlanGenerationRequest,
     AiPlanGenerationResponse,
 )
 from app.schemas.explore import CitySearchResult, PaginatedPlaces, PlaceSummary
+from app.schemas.routes import RouteCoordinate, RouteSegment, RouteStep
 from app.services.travel_plan_generation_service import TravelPlanGenerationService
 from app.services.ai_plan_job_manager import AiPlanJobManager
 
@@ -104,8 +108,10 @@ def test_generate_plan_validates_day_count() -> None:
 def test_generate_plan_falls_back_to_real_pois_when_ai_fails() -> None:
     class FakeArkClient:
         model_name = "test-model"
+        calls = 0
 
         async def chat(self, *args, **kwargs) -> str:
+            self.calls += 1
             raise HTTPException(status_code=502, detail="模型暂时不可用")
 
     class FakePoiService:
@@ -144,8 +150,9 @@ def test_generate_plan_falls_back_to_real_pois_when_ai_fails() -> None:
                 hasMore=False,
             )
 
+    ark = FakeArkClient()
     service = TravelPlanGenerationService(
-        FakeArkClient(),
+        ark,
         FakePoiService(),
         reveal_delay_seconds=0,
     )
@@ -162,8 +169,36 @@ def test_generate_plan_falls_back_to_real_pois_when_ai_fails() -> None:
 
     assert len(result.days) == 2
     assert all(day.places for day in result.days)
+    assert not any(place.category in {"transport", "lodging"} for day in result.days for place in day.places)
     assert result.model is None
     assert result.warnings and "已使用地点偏好与距离规则生成" in result.warnings[0]
+    preferred_calls = ark.calls
+
+    fast_result = asyncio.run(
+        service.generate(
+            AiPlanGenerationRequest(
+                destination="北京",
+                dateRange="07.16 - 07.17",
+                dayCount=2,
+                optimizationMode="FAST",
+            ),
+        ),
+    )
+    assert ark.calls == preferred_calls
+    assert fast_result.model is None
+    assert fast_result.quality.dataSources == ["AMAP"]
+
+    with pytest.raises(HTTPException, match="必须 AI 深度优化"):
+        asyncio.run(
+            service.generate(
+                AiPlanGenerationRequest(
+                    destination="北京",
+                    dateRange="07.16 - 07.17",
+                    dayCount=2,
+                    optimizationMode="REQUIRED",
+                ),
+            ),
+        )
 
 
 def test_plan_job_reports_real_progress_and_is_idempotent() -> None:
@@ -403,13 +438,13 @@ def test_constraint_planner_uses_station_hotel_meal_and_open_hours() -> None:
         assert place.scheduleVerified is True
 
 
-def test_ai_optimization_timeout_falls_back_without_long_stall() -> None:
+def test_ai_optimization_waits_for_model_without_service_deadline() -> None:
     class SlowArkClient:
         model_name = "slow-model"
 
         async def chat(self, *args, **kwargs) -> str:
-            await asyncio.sleep(60)
-            return "{}"
+            await asyncio.sleep(0.08)
+            return '{"title":"慢速模型结果","days":[]}'
 
     class MinimalPoiService:
         async def search_cities(self, *, keyword: str, limit: int):
@@ -436,15 +471,17 @@ def test_ai_optimization_timeout_falls_back_without_long_stall() -> None:
         SlowArkClient(),
         MinimalPoiService(),
         reveal_delay_seconds=0,
-        ai_optimization_timeout_seconds=0.05,
     )
     result = asyncio.run(
-        service.generate(
-            AiPlanGenerationRequest(destination="北京", dateRange="07.17", dayCount=1),
-        ),
+        asyncio.wait_for(
+            service.generate(
+                AiPlanGenerationRequest(destination="北京", dateRange="07.17", dayCount=1),
+            ),
+            timeout=1.0,
+        )
     )
-    assert result.quality.usedFallback is True
-    assert any("自动采用" in warning for warning in result.warnings)
+    assert result.quality.usedFallback is False
+    assert result.model == "slow-model"
 
 
 def test_weekly_closure_is_respected_for_trip_date() -> None:
@@ -465,3 +502,252 @@ def test_weekly_closure_is_respected_for_trip_date() -> None:
         dayCount=1,
     )
     assert service._is_open_on_trip_day(museum, monday_request, 1) is False
+
+
+def test_actual_route_duration_retimes_next_place_and_records_mode() -> None:
+    class FakeRouteService:
+        async def best_segment(self, **kwargs):
+            return RouteSegment(
+                originId=kwargs["origin"].id,
+                destinationId=kwargs["destination"].id,
+                originName=kwargs["origin"].name,
+                destinationName=kwargs["destination"].name,
+                mode="transit",
+                distanceMeters=8200,
+                durationSeconds=2700,
+                steps=[
+                    RouteStep(instruction="乘坐地铁2号线"),
+                    RouteStep(instruction="换乘快速公交1线"),
+                ],
+            )
+
+    service = TravelPlanGenerationService(object(), object(), FakeRouteService(), reveal_delay_seconds=0)
+    first = AiGeneratedPlace(
+        id="a",
+        sourcePoiId="a",
+        name="景点A",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+        suggestedStart="09:00",
+        suggestedEnd="10:00",
+        note="",
+    )
+    second = AiGeneratedPlace(
+        id="b",
+        sourcePoiId="b",
+        name="景点B",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.95,
+        longitude=116.5,
+        suggestedStart="10:10",
+        suggestedEnd="11:10",
+        note="",
+    )
+    days = [AiGeneratedDay(dayIndex=1, title="DAY 1", summary="", places=[first, second])]
+    routed = asyncio.run(
+        service._apply_actual_routes(
+            AiPlanGenerationRequest(destination="北京", dateRange="07.20", dayCount=1),
+            days,
+            [],
+            None,
+        ),
+    )
+    assert routed[0].places[1].suggestedStart == "10:45"
+    assert routed[0].transfers[0].mode == "transit"
+    assert routed[0].transfers[0].modeLabel == "地铁 + 公交"
+    assert routed[0].transfers[0].durationMinutes == 45
+    assert routed[0].estimatedDistanceKm == 8.2
+
+
+def test_meal_that_causes_large_detour_is_removed() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+
+    def generated(place_id: str, name: str, category: str, latitude: float, longitude: float):
+        return AiGeneratedPlace(
+            id=place_id,
+            sourcePoiId=place_id,
+            name=name,
+            category=category,
+            categoryCode=category,
+            latitude=latitude,
+            longitude=longitude,
+            suggestedStart="10:00",
+            suggestedEnd="11:00",
+            note="",
+            mealType="LUNCH" if category == "food" else None,
+        )
+
+    scenic_a = generated("a", "景点A", "scenic", 39.90, 116.40)
+    far_meal = generated("meal", "绕路餐馆", "food", 40.10, 116.70)
+    scenic_b = generated("b", "景点B", "scenic", 39.91, 116.41)
+    retained, removed = service._filter_meal_detours(
+        AiPlanGenerationRequest(
+            destination="北京",
+            dateRange="07.20",
+            dayCount=1,
+            transportPreference="MIXED",
+        ),
+        [scenic_a, far_meal, scenic_b],
+    )
+    assert [place.id for place in retained] == ["a", "b"]
+    assert removed == ["绕路餐馆"]
+
+
+def test_model_ndjson_stream_emits_auditable_event_before_result() -> None:
+    captured_options = {}
+
+    class StreamingArk:
+        async def chat_stream(self, messages, *, on_delta, **kwargs):
+            captured_options.update(kwargs)
+            chunks = [
+                '{"kind":"event","type":"MODEL_REASON","message":"雨天优先室内馆",',
+                '"dayIndex":1,"evidence":["天气：雨"],"decision":"保留博物馆"}\n',
+                '{"kind":"result","plan":{"title":"测试","days":[]}}\n',
+            ]
+            for chunk in chunks:
+                on_delta(chunk)
+            return "".join(chunks)
+
+    service = TravelPlanGenerationService(StreamingArk(), object(), reveal_delay_seconds=0)
+    candidate = PlaceSummary(
+        id="museum",
+        sourcePoiId="museum",
+        name="博物馆",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+    )
+    events = []
+
+    def progress(*args):
+        if args[4] is not None:
+            events.append(args[4])
+
+    payload = asyncio.run(
+        service._generate_with_ai(
+            AiPlanGenerationRequest(destination="北京", dateRange="07.20", dayCount=1),
+            "北京市",
+            [candidate],
+            [],
+            progress,
+        ),
+    )
+    assert payload["title"] == "测试"
+    assert events[0].type == "MODEL_REASON"
+    assert events[0].evidence == ["天气：雨"]
+    assert events[0].decision == "保留博物馆"
+    assert captured_options["thinking_type"] == "disabled"
+    assert captured_options["max_tokens"] == 1400
+
+
+def test_sse_endpoint_streams_progress_and_completion() -> None:
+    class FakeStreamingService:
+        async def generate(self, request, progress=None):
+            progress(35, "正在核验天气", 0)
+            await asyncio.sleep(0)
+            progress(70, "正在核验路线", 1)
+            return AiPlanGenerationResponse(
+                requestId="stream-result",
+                title="北京 1 日行程",
+                destination="北京市",
+                dateRange=request.dateRange,
+                dayCount=1,
+                days=[],
+                generatedAt="2026-07-19T00:00:00+00:00",
+            )
+
+    app.dependency_overrides[ai_api.get_travel_plan_generation_service] = lambda: FakeStreamingService()
+    try:
+        response = client.post(
+            "/api/ai/plans/stream",
+            json={"destination": "北京", "dateRange": "07.20", "dayCount": 1},
+        )
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: progress" in response.text
+    assert "event: complete" in response.text
+    assert '"requestId":"stream-result"' in response.text
+
+
+def test_heuristic_plan_can_place_distinctive_breakfast_lunch_and_dinner() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    scenic = [
+        PlaceSummary(
+            id=f"scenic-{index}",
+            sourcePoiId=f"scenic-{index}",
+            name=f"景点{index}",
+            category="scenic",
+            categoryCode="scenic",
+            latitude=39.90 + index * 0.002,
+            longitude=116.40 + index * 0.002,
+            openingHoursWeek="周一至周日 08:00-22:00",
+        )
+        for index in range(4)
+    ]
+    food_names = ["老字号豆浆烧饼早餐", "北京特色炸酱面", "老北京铜锅涮肉"]
+    food = [
+        PlaceSummary(
+            id=f"food-{index}",
+            sourcePoiId=f"food-{index}",
+            name=name,
+            category="food",
+            categoryCode="food",
+            latitude=39.901 + index * 0.002,
+            longitude=116.401 + index * 0.002,
+            openingHoursWeek="周一至周日 07:00-23:00",
+        )
+        for index, name in enumerate(food_names)
+    ]
+    days = service._build_heuristic_days(
+        AiPlanGenerationRequest(
+            destination="北京",
+            dateRange="07.20",
+            dayCount=1,
+            dailyStart="08:00",
+            dailyEnd="21:00",
+        ),
+        scenic + food,
+        city_name="北京市",
+    )
+    meal_types = {place.mealType for place in days[0].places if place.mealType}
+    assert {"BREAKFAST", "LUNCH", "DINNER"}.issubset(meal_types)
+
+
+def test_map_selected_anchor_keeps_exact_coordinates() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    point = AiMapPointInput(
+        name="自驾停车位置",
+        address="北京市东城区测试路1号",
+        latitude=39.901234,
+        longitude=116.401234,
+    )
+
+    place = service._map_point_summary(point, "transport", "北京市", "110100")
+
+    assert place is not None
+    assert place.source == "MAP_SELECTED"
+    assert place.latitude == point.latitude
+    assert place.longitude == point.longitude
+    assert place.name == point.name
+
+
+def test_generated_transfer_serializes_actual_route_polyline() -> None:
+    transfer = AiGeneratedTransfer(
+        originPlaceId="a",
+        destinationPlaceId="b",
+        mode="driving",
+        distanceMeters=1200,
+        durationMinutes=8,
+        polyline=[
+            RouteCoordinate(latitude=39.9, longitude=116.4),
+            RouteCoordinate(latitude=39.91, longitude=116.41),
+        ],
+    )
+
+    assert len(transfer.model_dump()["polyline"]) == 2

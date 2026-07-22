@@ -26,7 +26,12 @@ fun localConfigValue(key: String, fallback: String = ""): String {
         ?: fallback
 }
 
-val debugApiBaseUrl = localConfigValue("API_BASE_URL", "http://127.0.0.1:8000/")
+val debugApiBaseUrl = localConfigValue(
+    key = "API_BASE_URL",
+    fallback = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
+        .orElse("http://127.0.0.1:8000/")
+        .get(),
+)
 val amapAndroidKey = localConfigValue(
     key = "AMAP_ANDROID_KEY",
     fallback = backendEnvProperties.getProperty("AMAP_WEB_SERVICE_KEY", ""),

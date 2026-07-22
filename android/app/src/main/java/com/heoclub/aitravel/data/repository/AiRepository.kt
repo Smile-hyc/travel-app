@@ -19,6 +19,9 @@ import org.json.JSONObject
 import retrofit2.HttpException
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 
 interface AiRepository {
     suspend fun chat(request: AiChatRequest): Result<AiChatResponse>
@@ -31,6 +34,8 @@ interface AiRepository {
     )
 
     suspend fun generatePlan(request: AiPlanGenerationRequest): Result<AiPlanGenerationResponse>
+
+    fun streamPlan(request: AiPlanGenerationRequest): Flow<AiPlanJobStatusResponse>
 
     suspend fun createPlanJob(request: AiPlanGenerationRequest): Result<AiPlanJobStatusResponse>
 
@@ -227,6 +232,37 @@ class RemoteAiRepository(
             throw mapAiError(throwable, "智能行程生成")
         }
     }
+
+    override fun streamPlan(request: AiPlanGenerationRequest): Flow<AiPlanJobStatusResponse> = flow {
+        val body = try {
+            apiService.streamTravelPlan(request)
+        } catch (throwable: Throwable) {
+            throw mapAiError(throwable, "建立智能规划流")
+        }
+        body.use { responseBody ->
+            responseBody.charStream().buffered().use { reader ->
+                val data = StringBuilder()
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    when {
+                        line.startsWith("data:") -> data.append(line.removePrefix("data:").trim())
+                        line.isBlank() && data.isNotEmpty() -> {
+                            val snapshot = runCatching {
+                                gson.fromJson(data.toString(), AiPlanJobStatusResponse::class.java)
+                            }.getOrElse { cause ->
+                                throw RuntimeException("智能规划流返回了无法解析的数据。", cause)
+                            }
+                            emit(snapshot)
+                            data.clear()
+                        }
+                    }
+                }
+                if (data.isNotEmpty()) {
+                    emit(gson.fromJson(data.toString(), AiPlanJobStatusResponse::class.java))
+                }
+            }
+        }
+    }.flowOn(Dispatchers.IO)
 
     override suspend fun createPlanJob(request: AiPlanGenerationRequest): Result<AiPlanJobStatusResponse> {
         return runCatching { apiService.createTravelPlanJob(request) }
