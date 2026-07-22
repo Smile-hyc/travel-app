@@ -11,13 +11,13 @@ from fastapi import HTTPException, status
 from app.core.config import Settings
 
 
-class ArkClient:
+class DeepSeekClient:
     def __init__(self, settings: Settings):
         self._settings = settings
 
     @property
     def model_name(self) -> str:
-        return self._settings.ark_model
+        return self._settings.deepseek_model
 
     async def chat_stream_chunks(
         self,
@@ -28,28 +28,28 @@ class ArkClient:
         timeout_seconds: float | None = None,
     ) -> AsyncGenerator[str, None]:
         """流式调用 AI API，逐 chunk yield 文本内容。"""
-        if not self._settings.ark_configured:
+        if not self._settings.deepseek_configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="AI 服务尚未配置，请检查 ARK_API_KEY、ARK_MODEL 和 ARK_BASE_URL。",
+                detail="AI 服务尚未配置，请检查 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。",
             )
 
-        url = f"{self._settings.ark_base_url.rstrip('/')}/chat/completions"
+        url = f"{self._settings.deepseek_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self._settings.ark_model,
+            "model": self._settings.deepseek_model,
             "messages": messages,
-            "temperature": self._settings.ark_temperature if temperature is None else temperature,
-            "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
+            "temperature": self._settings.deepseek_temperature if temperature is None else temperature,
+            "max_tokens": self._settings.deepseek_max_output_tokens if max_tokens is None else max_tokens,
             "stream": True,
         }
         headers = {
-            "Authorization": f"Bearer {self._settings.ark_api_key}",
+            "Authorization": f"Bearer {self._settings.deepseek_api_key}",
             "Content-Type": "application/json",
         }
 
         timeout = httpx.Timeout(
             connect=10.0,
-            read=self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
+            read=self._settings.deepseek_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
             write=20.0,
             pool=10.0,
         )
@@ -89,15 +89,15 @@ class ArkClient:
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="无法连接 AI 服务，请检查网络或 Ark Base URL。",
+                detail="无法连接 AI 服务，请检查网络或 DeepSeek Base URL。",
             ) from exc
 
     def _status_to_exception(self, status_code: int, body: bytes) -> HTTPException:
         detail = "AI 服务调用失败，请稍后重试。"
         if status_code in {401, 403}:
-            detail = "AI 服务鉴权失败，请检查 Ark API Key 或模型权限。"
+            detail = "AI 服务鉴权失败，请检查 DeepSeek API Key 或模型权限。"
         elif status_code == 404:
-            detail = "AI 模型或接口不存在，请检查 ARK_MODEL 和 ARK_BASE_URL。"
+            detail = "AI 模型或接口不存在，请检查 DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。"
         elif status_code == 429:
             detail = "AI 服务额度或频率受限，请稍后重试。"
         elif status_code >= 500:
@@ -117,21 +117,21 @@ class ArkClient:
         timeout_seconds: float | None = None,
         disable_read_timeout: bool = False,
     ) -> str:
-        if not self._settings.ark_configured:
+        if not self._settings.deepseek_configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="AI 服务尚未配置，请检查 ARK_API_KEY、ARK_MODEL 和 ARK_BASE_URL。",
+                detail="AI 服务尚未配置，请检查 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。",
             )
 
-        url = f"{self._settings.ark_base_url.rstrip('/')}/chat/completions"
+        url = f"{self._settings.deepseek_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self._settings.ark_model,
+            "model": self._settings.deepseek_model,
             "messages": messages,
-            "temperature": self._settings.ark_temperature if temperature is None else temperature,
-            "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
+            "temperature": self._settings.deepseek_temperature if temperature is None else temperature,
+            "max_tokens": self._settings.deepseek_max_output_tokens if max_tokens is None else max_tokens,
         }
         headers = {
-            "Authorization": f"Bearer {self._settings.ark_api_key}",
+            "Authorization": f"Bearer {self._settings.deepseek_api_key}",
             "Content-Type": "application/json",
         }
 
@@ -140,7 +140,7 @@ class ArkClient:
             read=(
                 None
                 if disable_read_timeout
-                else self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds
+                else self._settings.deepseek_request_timeout_seconds if timeout_seconds is None else timeout_seconds
             ),
             write=20.0,
             pool=10.0,
@@ -157,7 +157,7 @@ class ArkClient:
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="无法连接 AI 服务，请检查网络或 Ark Base URL。",
+                detail="无法连接 AI 服务，请检查网络或 DeepSeek Base URL。",
             ) from exc
 
         if response.status_code >= 400:
@@ -190,7 +190,6 @@ class ArkClient:
         timeout_seconds: float | None = None,
         disable_read_timeout: bool = False,
         on_timing: Callable[[str, int], None] | None = None,
-        thinking_type: str | None = None,
     ) -> str:
         """Consume the provider's real SSE token stream.
 
@@ -198,23 +197,21 @@ class ArkClient:
         hidden-reasoning fields are deliberately ignored; planning emits its
         own auditable, structured decision events instead.
         """
-        if not self._settings.ark_configured:
+        if not self._settings.deepseek_configured:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="AI 服务尚未配置，请检查 ARK_API_KEY、ARK_MODEL 和 ARK_BASE_URL。",
+                detail="AI 服务尚未配置，请检查 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。",
             )
-        url = f"{self._settings.ark_base_url.rstrip('/')}/chat/completions"
+        url = f"{self._settings.deepseek_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self._settings.ark_model,
+            "model": self._settings.deepseek_model,
             "messages": messages,
-            "temperature": self._settings.ark_temperature if temperature is None else temperature,
-            "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
+            "temperature": self._settings.deepseek_temperature if temperature is None else temperature,
+            "max_tokens": self._settings.deepseek_max_output_tokens if max_tokens is None else max_tokens,
             "stream": True,
         }
-        if thinking_type:
-            payload["thinking"] = {"type": thinking_type}
         headers = {
-            "Authorization": f"Bearer {self._settings.ark_api_key}",
+            "Authorization": f"Bearer {self._settings.deepseek_api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
@@ -223,7 +220,7 @@ class ArkClient:
             read=(
                 None
                 if disable_read_timeout
-                else self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds
+                else self._settings.deepseek_request_timeout_seconds if timeout_seconds is None else timeout_seconds
             ),
             write=20.0,
             pool=10.0,
@@ -268,7 +265,25 @@ class ArkClient:
             raise HTTPException(status_code=502, detail="无法连接 AI 流式服务。") from exc
         content = "".join(chunks).strip()
         if not content:
-            raise HTTPException(status_code=502, detail="AI 流式服务没有返回可用内容。")
+            # Some DeepSeek reasoning-capable models can consume a short
+            # streaming token budget with hidden reasoning and finish without
+            # emitting visible ``content``. Retry once through the ordinary
+            # completion endpoint with the configured full output budget so a
+            # valid plan is not discarded after the executable draft exists.
+            fallback_started_at = perf_counter()
+            content = await self.chat(
+                messages,
+                max_tokens=max(
+                    self._settings.deepseek_max_output_tokens,
+                    max_tokens or 0,
+                ),
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+                disable_read_timeout=disable_read_timeout,
+            )
+            if on_timing is not None:
+                on_timing("first_token", round((perf_counter() - fallback_started_at) * 1000))
+            on_delta(content)
         if on_timing is not None:
             on_timing("completed", round((perf_counter() - started_at) * 1000))
         return content
@@ -276,9 +291,9 @@ class ArkClient:
     def _to_http_exception(self, response: httpx.Response) -> HTTPException:
         detail = "AI 服务调用失败，请稍后重试。"
         if response.status_code in {401, 403}:
-            detail = "AI 服务鉴权失败，请检查 Ark API Key 或模型权限。"
+            detail = "AI 服务鉴权失败，请检查 DeepSeek API Key 或模型权限。"
         elif response.status_code == 404:
-            detail = "AI 模型或接口不存在，请检查 ARK_MODEL 和 ARK_BASE_URL。"
+            detail = "AI 模型或接口不存在，请检查 DEEPSEEK_MODEL 和 DEEPSEEK_BASE_URL。"
         elif response.status_code == 429:
             detail = "AI 服务额度或频率受限，请稍后重试。"
         elif response.status_code >= 500:
