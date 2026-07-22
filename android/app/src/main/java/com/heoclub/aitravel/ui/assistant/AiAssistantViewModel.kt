@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import android.util.Log
 import java.util.UUID
 
 data class ChatMessage(
@@ -47,10 +48,13 @@ data class AiAssistantUiState(
     val messages: List<ChatMessage> = emptyList(),
     val quickReplies: List<String> = defaultQuickReplies,
     val isSending: Boolean = false,
+    val isStreaming: Boolean = false,
+    val streamingText: String = "",
     val isApplyingActions: Boolean = false,
     val errorMessage: String? = null,
     val actionSet: AiActionSetUi? = null,
     val actionMessage: String? = null,
+    val actionWarnings: List<String> = emptyList(),
     val undoToken: String? = null,
     val cards: List<AiCard> = emptyList(),
 )
@@ -112,54 +116,122 @@ class AiAssistantViewModel(
                 context = buildPlanContext(currentPlan),
             )
 
-            val result = aiRepository.chat(request)
-            result.onSuccess { response ->
-                conversationId = response.conversationId
-                lastFailedInput = null
-                val latestPlan = planId?.let(travelPlanRepository::getPlan)
-                val actionSet = buildActionSet(
-                    plan = latestPlan,
-                    actionSetId = response.actionSetId,
-                    planRevision = response.planRevision,
-                    actions = response.suggestedActions,
-                    warnings = response.actionWarnings,
+            _uiState.update { it.copy(isStreaming = true, streamingText = "") }
+
+            aiRepository.chatStream(
+                request = request,
+                onChunk = { chunk ->
+                    _uiState.update { it.copy(streamingText = it.streamingText + chunk) }
+                },
+                onDone = { response ->
+                    Log.e("AiAssistant", "Stream done: cards=${response.cards.size}, actions=${response.suggestedActions.size}, textLen=${response.message.length}")
+                    conversationId = response.conversationId
+                    lastFailedInput = null
+                    val latestPlan = planId?.let(travelPlanRepository::getPlan)
+                    val actionSet = buildActionSet(
+                        plan = latestPlan,
+                        actionSetId = response.actionSetId,
+                        planRevision = response.planRevision,
+                        actions = response.suggestedActions,
+                        warnings = response.actionWarnings,
+                    )
+                    val staleWarning = if (
+                        actionSet != null &&
+                        latestPlan != null &&
+                        response.planRevision != null &&
+                        response.planRevision != latestPlan.revision
+                    ) {
+                        "AI 建议基于旧版本计划生成，请重新发送需求生成新建议。"
+                    } else {
+                        null
+                    }
+
+                    val responseCards = if (staleWarning == null) response.cards else emptyList()
+
+                    _uiState.update { state ->
+                        state.copy(
+                            currentPlan = latestPlan,
+                            messages = state.messages + ChatMessage(
+                                text = response.message,
+                                fromUser = false,
+                            ),
+                            quickReplies = response.quickReplies.ifEmpty { defaultQuickReplies },
+                            isSending = false,
+                            isStreaming = false,
+                            streamingText = "",
+                            errorMessage = null,
+                            actionSet = if (staleWarning == null) actionSet else null,
+                            actionMessage = staleWarning,
+                            actionWarnings = response.actionWarnings,
+                            cards = responseCards,
+                        )
+                    }
+                },
+                onError = { error ->
+                    Log.e("AiAssistant", "Stream error, falling back: $error")
+                    viewModelScope.launch {
+                        fallbackToNonStreaming(request, cleanInput)
+                    }
+                },
+            )
+        }
+    }
+
+    private suspend fun fallbackToNonStreaming(request: AiChatRequest, cleanInput: String) {
+        Log.e("AiAssistant", "Falling back to non-streaming")
+        val result = aiRepository.chat(request)
+        result.onSuccess { response ->
+            Log.e("AiAssistant", "Non-stream success: cards=${response.cards.size}, actions=${response.suggestedActions.size}")
+            conversationId = response.conversationId
+            lastFailedInput = null
+            val latestPlan = planId?.let(travelPlanRepository::getPlan)
+            val actionSet = buildActionSet(
+                plan = latestPlan,
+                actionSetId = response.actionSetId,
+                planRevision = response.planRevision,
+                actions = response.suggestedActions,
+                warnings = response.actionWarnings,
+            )
+            val staleWarning = if (
+                actionSet != null &&
+                latestPlan != null &&
+                response.planRevision != null &&
+                response.planRevision != latestPlan.revision
+            ) {
+                "AI 建议基于旧版本计划生成，请重新发送需求生成新建议。"
+            } else {
+                null
+            }
+
+            val responseCards = if (staleWarning == null) response.cards else emptyList()
+
+            _uiState.update { state ->
+                state.copy(
+                    currentPlan = latestPlan,
+                    messages = state.messages + ChatMessage(
+                        text = response.message,
+                        fromUser = false,
+                    ),
+                    quickReplies = response.quickReplies.ifEmpty { defaultQuickReplies },
+                    isSending = false,
+                    isStreaming = false,
+                    streamingText = "",
+                    errorMessage = null,
+                    actionSet = if (staleWarning == null) actionSet else null,
+                    actionMessage = staleWarning,
+                    actionWarnings = response.actionWarnings,
+                    cards = responseCards,
                 )
-                val staleWarning = if (
-                    actionSet != null &&
-                    latestPlan != null &&
-                    response.planRevision != null &&
-                    response.planRevision != latestPlan.revision
-                ) {
-                    "AI 建议基于旧版本计划生成，请重新发送需求生成新建议。"
-                } else {
-                    null
-                }
-
-                val responseCards = if (staleWarning == null) response.cards else emptyList()
-
-                _uiState.update { state ->
-                    state.copy(
-                        currentPlan = latestPlan,
-                        messages = state.messages + ChatMessage(
-                            text = response.message,
-                            fromUser = false,
-                        ),
-                        quickReplies = response.quickReplies.ifEmpty { defaultQuickReplies },
-                        isSending = false,
-                        errorMessage = null,
-                        actionSet = if (staleWarning == null) actionSet else null,
-                        actionMessage = staleWarning,
-                        cards = responseCards,
-                    )
-                }
-            }.onFailure { throwable ->
-                lastFailedInput = cleanInput
-                _uiState.update { state ->
-                    state.copy(
-                        isSending = false,
-                        errorMessage = throwable.message ?: "AI 暂时没有回复，请稍后重试。",
-                    )
-                }
+            }
+        }.onFailure { throwable ->
+            lastFailedInput = cleanInput
+            _uiState.update { state ->
+                state.copy(
+                    isSending = false,
+                    isStreaming = false,
+                    streamingText = "",
+                    errorMessage = throwable.message ?: "AI 暂时没有回复，请稍后重试。",
+                )
             }
         }
     }
@@ -200,7 +272,17 @@ class AiAssistantViewModel(
     fun applySuggestedActions() {
         val state = _uiState.value
         val plan = state.currentPlan ?: return
-        val actionSet = state.actionSet ?: return
+        val actionSet = state.actionSet
+        if (actionSet == null) {
+            val warnings = state.actionWarnings
+            val msg = if (warnings.isNotEmpty()) {
+                "AI 建议无法执行：${warnings.joinToString("；")}"
+            } else {
+                "AI 未生成可执行的调整动作，请重新描述需求。"
+            }
+            _uiState.update { it.copy(actionMessage = msg) }
+            return
+        }
         val selectedActions = actionSet.cards.filter { it.selected }.map { it.action }
         if (selectedActions.isEmpty()) {
             _uiState.update { it.copy(actionMessage = "请至少选择一条建议后再应用。") }

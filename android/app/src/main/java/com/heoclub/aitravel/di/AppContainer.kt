@@ -19,15 +19,20 @@ class AppContainer(
     apiBaseUrl: String,
     isDebug: Boolean,
 ) {
-    private val apiService = RetrofitClient.create(
+    private val apiClient = RetrofitClient.create(
         baseUrl = apiBaseUrl,
         isDebug = isDebug,
     )
+    private val apiService = apiClient.apiService
 
     val healthRepository: HealthRepository = DefaultHealthRepository(apiService)
     val currentLocationRepository = CurrentLocationRepository(context)
     val travelPlanRepository: TravelPlanRepository = PersistentTravelPlanRepository(context)
     val exploreRepository: ExploreRepository = RemoteExploreRepository(apiService)
     val routeRepository: RouteRepository = RemoteRouteRepository(apiService)
-    val aiRepository: AiRepository = RemoteAiRepository(apiService)
+    val aiRepository: AiRepository = RemoteAiRepository(
+        apiService = apiService,
+        okHttpClient = apiClient.okHttpClient,
+        apiBaseUrl = apiBaseUrl,
+    )
 }

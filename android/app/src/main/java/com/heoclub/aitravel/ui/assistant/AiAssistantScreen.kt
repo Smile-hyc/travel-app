@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import com.heoclub.aitravel.data.model.AiCard
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.ui.components.MarkdownText
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -97,7 +98,11 @@ fun AiAssistantScreen(
             items(state.messages, key = { it.id }) { message ->
                 ChatBubble(message = message)
             }
-            if (state.isSending) {
+            if (state.isStreaming) {
+                item(key = "streaming") {
+                    StreamingBubble(text = state.streamingText)
+                }
+            } else if (state.isSending) {
                 item {
                     AssistantStatusBubble(text = "正在分析计划…")
                 }
@@ -213,11 +218,19 @@ private fun ChatBubble(message: ChatMessage) {
                         modifier = Modifier.padding(end = 8.dp),
                     )
                 }
-                Text(
-                    text = message.text,
-                    color = Color(0xFF162235),
-                    style = MaterialTheme.typography.bodyLarge,
-                )
+                if (message.fromUser) {
+                    Text(
+                        text = message.text,
+                        color = Color(0xFF162235),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                } else {
+                    MarkdownText(
+                        text = message.text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color(0xFF162235),
+                    )
+                }
             }
         }
     }
@@ -305,6 +318,42 @@ private fun SuggestedActionsPanel(
                 ) {
                     Text("取消建议")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamingBubble(text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+    ) {
+        Surface(
+            color = Color.White,
+            shape = RoundedCornerShape(
+                topStart = 20.dp,
+                topEnd = 20.dp,
+                bottomStart = 4.dp,
+                bottomEnd = 20.dp,
+            ),
+            shadowElevation = 2.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.SmartToy,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+                MarkdownText(
+                    text = text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color(0xFF162235),
+                )
             }
         }
     }

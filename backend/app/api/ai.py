@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from app.core.config import Settings, get_settings
 from app.main_state import (
@@ -37,6 +38,26 @@ async def chat_with_ai(
     service: TravelAiService = Depends(get_travel_ai_service),
 ) -> AiChatResponse:
     return await service.chat(request)
+
+
+@router.post("/ai/chat/stream")
+async def chat_with_ai_stream(
+    request: AiChatRequest,
+    service: TravelAiService = Depends(get_travel_ai_service),
+):
+    async def event_generator():
+        async for sse_event in service.chat_stream(request):
+            yield f"data: {sse_event}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/ai/plans/generate", response_model=AiPlanGenerationResponse)

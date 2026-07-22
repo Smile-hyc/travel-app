@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,16 +27,10 @@ class TravelAiService:
     def __init__(self, ark_client: ArkClient):
         self._ark_client = ark_client
 
-    async def chat(self, request: AiChatRequest) -> AiChatResponse:
-        conversation_id = request.conversationId or str(uuid.uuid4())
-        message_id = str(uuid.uuid4())
+    def _build_messages(self, request: AiChatRequest) -> list[dict[str, str]]:
         context_text = self._format_plan_context(request.context)
-
         messages: list[dict[str, str]] = [
-            {
-                "role": "system",
-                "content": self._system_prompt(),
-            },
+            {"role": "system", "content": self._system_prompt()},
         ]
         if context_text:
             messages.append(
@@ -48,17 +43,50 @@ class TravelAiService:
                     ),
                 },
             )
-
         for item in request.history[-4:]:
-            messages.append(
-                {
-                    "role": item.role,
-                    "content": item.content[:500],
-                },
-            )
-
+            messages.append({"role": item.role, "content": item.content[:500]})
         messages.append({"role": "user", "content": request.message.strip()[:800]})
+        return messages
 
+    async def chat_stream(self, request: AiChatRequest) -> AsyncGenerator[str, None]:
+        """流式对话：逐 chunk yield SSE 事件字符串。"""
+        conversation_id = request.conversationId or str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        messages = self._build_messages(request)
+
+        full_text = ""
+        async for chunk in self._ark_client.chat_stream(messages):
+            full_text += chunk
+            yield json.dumps({"type": "chunk", "content": chunk}, ensure_ascii=False)
+
+        parsed_reply, raw_actions, raw_cards, parse_warnings = self._parse_ai_reply(full_text)
+        actions, validation_warnings = self._validate_actions(raw_actions, request.context)
+        cards, card_warnings = self._validate_cards(raw_cards, request.context, actions)
+        visible_reply = parsed_reply or full_text
+        all_warnings = parse_warnings + validation_warnings + card_warnings
+
+
+        done_payload = {
+            "type": "done",
+            "fullText": visible_reply,
+            "conversationId": conversation_id,
+            "messageId": message_id,
+            "quickReplies": self._build_quick_replies(request.context),
+            "referencedPlaceItemIds": self._find_referenced_places(visible_reply, request.context),
+            "actionSetId": str(uuid.uuid4()) if actions else None,
+            "planRevision": request.context.revision if request.context else None,
+            "suggestedActions": [a.model_dump(mode="json") for a in actions],
+            "actionWarnings": all_warnings,
+            "cards": [c.model_dump(mode="json") for c in cards],
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "model": self._ark_client.model_name,
+        }
+        yield json.dumps(done_payload, ensure_ascii=False)
+
+    async def chat(self, request: AiChatRequest) -> AiChatResponse:
+        conversation_id = request.conversationId or str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        messages = self._build_messages(request)
         raw_reply = await self._ark_client.chat(messages)
         parsed_reply, raw_actions, raw_cards, parse_warnings = self._parse_ai_reply(raw_reply)
         actions, validation_warnings = self._validate_actions(raw_actions, request.context)
@@ -88,31 +116,22 @@ class TravelAiService:
             "你不能直接修改计划，不能声称已经添加、删除、移动或应用优化。"
             "如果缺少路线、天气、营业时间、价格等真实数据，必须说明当前暂无可用数据，不能编造。"
             "回答要优先引用用户计划中的真实地点名称。"
-            "只有当用户明确要求调整、安排、优化、放入某天、重新排序时，才可以在中文回复末尾追加一个 JSON 代码块。"
-            "JSON 格式必须是："
-            "{\"actions\":[{\"type\":\"MOVE_PLACE_TO_DAY|REORDER_PLACE|ASSIGN_UNPLANNED_PLACE|MOVE_TO_UNPLANNED\","
-            "\"placeItemId\":\"计划上下文中的 itemId\",\"toDayIndex\":1,\"toPosition\":1,\"reason\":\"原因\"}]}"
-            "不要使用不存在的地点 ID，不要创建新地点，不要删除地点。"
-            "如果只是普通问答或总结，不要输出 actions。"
+            "当用户要求调整、安排、优化、重新排序时，你必须在中文回复末尾追加 JSON 代码块。"
+            "当用户说「好的」「同意」「可以」「执行」「确认」等确认词时，你必须立刻输出包含 actions 和 cards 的 JSON 代码块。"
+            "JSON 必须严格用 ```json 包裹，示例：\n"
+            "```json\n"
+            "{\"actions\":[{\"type\":\"MOVE_PLACE_TO_DAY\",\"placeItemId\":\"计划中的itemId\",\"toDayIndex\":1,\"toPosition\":1,\"reason\":\"原因\"}],"
+            "\"cards\":[{\"id\":\"card-itin\",\"type\":\"ITINERARY_OPTIMIZATION\",\"title\":\"优化后的行程\","
+            "\"days\":[{\"day_index\":1,\"title\":\"优化后 DAY 1\",\"place_refs\":[{\"itemId\":\"上下文中的itemId\",\"note\":\"建议上午先去\"}]}]}]}\n"
+            "```\n"
+            "必须使用上下文中已有的真实 itemId 和 dayIndex，绝不允许编造地点 ID。"
+            "注意：dayIndex 从 1 开始计数（DAY 1 = 1，不是 0）。toDayIndex 最小值是 1。"
+            "普通问答或总结不要输出 JSON。\n"
             "\n"
-            "## 可交互卡片\n"
-            "当你的回复需要引导用户执行某个操作时，可以在同一个 JSON 代码块中附带 cards 字段。\n"
-            "### 链接卡片（LINK）\n"
-            "只有当用户要求创建/规划旅行但没有绑定旅行计划时，才使用此卡片引导用户。\n"
-            "格式："
-            "{\"cards\":[{\"id\":\"card-1\",\"type\":\"LINK\",\"title\":\"创建旅行计划\","
-            "\"subtitle\":\"简短引导文案\","
-            "\"payload\":{\"action_type\":\"NAVIGATE_TO_CREATE_PLAN\"}}]}\n"
-            "### 行程优化卡片（ITINERARY_OPTIMIZATION）\n"
-            "只有在你已经询问用户是否需要优化、且用户在当前消息中明确同意后，才输出此卡片。\n"
-            "卡片中的 placeRefs 必须使用上下文中的真实 itemId，不得编造。"
-            "建议同时输出对应的 actions 以便前端执行修改。\n"
-            "格式："
-            "{\"cards\":[{\"id\":\"card-1\",\"type\":\"ITINERARY_OPTIMIZATION\","
-            "\"title\":\"优化后的行程\","
-            "\"days\":[{\"day_index\":1,\"title\":\"优化后 DAY 1\","
-            "\"place_refs\":[{\"itemId\":\"上下文中的itemId\",\"note\":\"建议上午先去\"}]}]}]}\n"
-            "普通问答、分析、总结时不要输出 cards。"
+            "## 卡片类型补充\n"
+            "### LINK 卡片（用户无绑定计划时要求创建旅行）\n"
+            "{\"cards\":[{\"id\":\"card-link\",\"type\":\"LINK\",\"title\":\"创建旅行计划\",\"subtitle\":\"引导文案\",\"payload\":{\"action_type\":\"NAVIGATE_TO_CREATE_PLAN\"}}]}\n"
+            "### ITINERARY 卡片（用户确认优化后必须输出，需同时输出对应的 actions）"
         )
 
     def _parse_ai_reply(self, raw_reply: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], list[str]]:

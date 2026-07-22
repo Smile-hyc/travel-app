@@ -6,11 +6,16 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
+data class ApiClient(
+    val apiService: ApiService,
+    val okHttpClient: OkHttpClient,
+)
+
 object RetrofitClient {
     fun create(
         baseUrl: String,
         isDebug: Boolean,
-    ): ApiService {
+    ): ApiClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
             level = if (isDebug) {
                 HttpLoggingInterceptor.Level.BASIC
@@ -26,11 +31,16 @@ object RetrofitClient {
             .addInterceptor(loggingInterceptor)
             .build()
 
-        return Retrofit.Builder()
+        val apiService = Retrofit.Builder()
             .baseUrl(baseUrl)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(ApiService::class.java)
+
+        return ApiClient(
+            apiService = apiService,
+            okHttpClient = okHttpClient,
+        )
     }
 }
