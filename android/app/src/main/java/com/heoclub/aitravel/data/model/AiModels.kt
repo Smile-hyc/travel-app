@@ -76,6 +76,7 @@ data class AiChatResponse(
     val planRevision: Long? = null,
     val suggestedActions: List<AiSuggestedAction> = emptyList(),
     val actionWarnings: List<String> = emptyList(),
+    val cards: List<AiCard> = emptyList(),
     val createdAt: String? = null,
     val model: String? = null,
 )
@@ -91,6 +92,32 @@ data class AiSuggestedAction(
     val reason: String? = null,
     val requiresRouteRefresh: Boolean = true,
     val affectedDayIndexes: List<Int> = emptyList(),
+)
+
+// ── AI Chat Cards ──
+
+data class AiCardPlaceRef(
+    val itemId: String,
+    val note: String = "",
+)
+
+data class AiCardDay(
+    val day_index: Int,
+    val title: String = "",
+    val place_refs: List<AiCardPlaceRef> = emptyList(),
+)
+
+data class AiLinkCardPayload(
+    val action_type: String = "NAVIGATE_TO_CREATE_PLAN",
+)
+
+data class AiCard(
+    val id: String = "",
+    val type: String = "",           // "LINK" | "ITINERARY_OPTIMIZATION"
+    val title: String? = null,
+    val subtitle: String? = null,    // LINK only
+    val payload: AiLinkCardPayload? = null,  // LINK only
+    val days: List<AiCardDay>? = null,       // ITINERARY only
 )
 
 data class AiPlanGenerationRequest(

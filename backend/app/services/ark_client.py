@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 import json
 from time import perf_counter
 from typing import Callable
@@ -17,6 +18,95 @@ class ArkClient:
     @property
     def model_name(self) -> str:
         return self._settings.ark_model
+
+    async def chat_stream_chunks(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """流式调用 AI API，逐 chunk yield 文本内容。"""
+        if not self._settings.ark_configured:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="AI 服务尚未配置，请检查 ARK_API_KEY、ARK_MODEL 和 ARK_BASE_URL。",
+            )
+
+        url = f"{self._settings.ark_base_url.rstrip('/')}/chat/completions"
+        payload = {
+            "model": self._settings.ark_model,
+            "messages": messages,
+            "temperature": self._settings.ark_temperature if temperature is None else temperature,
+            "max_tokens": self._settings.ark_max_output_tokens if max_tokens is None else max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._settings.ark_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=self._settings.ark_request_timeout_seconds if timeout_seconds is None else timeout_seconds,
+            write=20.0,
+            pool=10.0,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code >= 400:
+                        # 读取完整响应体以构建错误信息
+                        body = await response.aread()
+                        raise self._status_to_exception(response.status_code, body)
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line.removeprefix("data:").strip()
+                        if data_str == "[DONE]":
+                            return
+                        try:
+                            import json
+
+                            data = json.loads(data_str)
+                        except (ValueError, TypeError):
+                            continue
+                        choices = data.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        content = delta.get("content")
+                        if content:
+                            yield content
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="AI 回复超时，请稍后重试，或把问题问得更具体一些。",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="无法连接 AI 服务，请检查网络或 Ark Base URL。",
+            ) from exc
+
+    def _status_to_exception(self, status_code: int, body: bytes) -> HTTPException:
+        detail = "AI 服务调用失败，请稍后重试。"
+        if status_code in {401, 403}:
+            detail = "AI 服务鉴权失败，请检查 Ark API Key 或模型权限。"
+        elif status_code == 404:
+            detail = "AI 模型或接口不存在，请检查 ARK_MODEL 和 ARK_BASE_URL。"
+        elif status_code == 429:
+            detail = "AI 服务额度或频率受限，请稍后重试。"
+        elif status_code >= 500:
+            detail = "AI 服务暂时不可用，请稍后重试。"
+
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=detail,
+        )
 
     async def chat(
         self,

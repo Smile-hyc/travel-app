@@ -1,22 +1,37 @@
 package com.heoclub.aitravel.data.repository
 
 import com.google.gson.Gson
+import com.heoclub.aitravel.data.model.AiCard
 import com.heoclub.aitravel.data.model.AiChatRequest
 import com.heoclub.aitravel.data.model.AiChatResponse
 import com.heoclub.aitravel.data.model.AiPlanGenerationRequest
 import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
 import com.heoclub.aitravel.data.model.AiPlanJobStatusResponse
+import com.heoclub.aitravel.data.model.AiSuggestedAction
 import com.heoclub.aitravel.data.remote.ApiService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import retrofit2.HttpException
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 
 interface AiRepository {
     suspend fun chat(request: AiChatRequest): Result<AiChatResponse>
+
+    suspend fun chatStream(
+        request: AiChatRequest,
+        onChunk: (String) -> Unit,
+        onDone: (AiChatResponse) -> Unit,
+        onError: (String) -> Unit,
+    )
 
     suspend fun generatePlan(request: AiPlanGenerationRequest): Result<AiPlanGenerationResponse>
 
@@ -31,8 +46,11 @@ interface AiRepository {
 
 class RemoteAiRepository(
     private val apiService: ApiService,
+    private val okHttpClient: OkHttpClient,
+    private val apiBaseUrl: String,
 ) : AiRepository {
     private val gson = Gson()
+
     override suspend fun chat(request: AiChatRequest): Result<AiChatResponse> {
         return runCatching {
             apiService.chatWithAi(request)
@@ -59,6 +77,150 @@ class RemoteAiRepository(
                     throwable.message ?: "AI 服务暂时不可用，请稍后重试。",
                     throwable,
                 )
+            }
+        }
+    }
+
+    override suspend fun chatStream(
+        request: AiChatRequest,
+        onChunk: (String) -> Unit,
+        onDone: (AiChatResponse) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                val jsonBody = gson.toJson(request)
+                    .toRequestBody("application/json".toMediaType())
+                val httpRequest = Request.Builder()
+                    .url("${apiBaseUrl}api/ai/chat/stream")
+                    .post(jsonBody)
+                    .header("Content-Type", "application/json")
+                    .build()
+
+                val response = okHttpClient.newCall(httpRequest).execute()
+                if (!response.isSuccessful) {
+                    val errorMsg = when (response.code) {
+                        401, 403 -> "AI 鉴权失败，请检查后端 API Key 或模型权限。"
+                        429 -> "AI 调用频率或额度受限，请稍后重试。"
+                        502 -> "AI 服务调用失败，请检查后端配置。"
+                        503 -> "AI 服务尚未配置，请检查后端 .env。"
+                        504 -> "AI 回复超时，请稍后再试。"
+                        else -> "AI 服务异常：HTTP ${response.code}"
+                    }
+                    withContext(Dispatchers.Main) { onError(errorMsg) }
+                    return@withContext
+                }
+
+                val source = response.body?.source() ?: run {
+                    withContext(Dispatchers.Main) { onError("AI 返回了空响应") }
+                    return@withContext
+                }
+
+                while (!source.exhausted()) {
+                    val line = source.readUtf8Line() ?: break
+                    if (!line.startsWith("data: ")) continue
+                    val jsonStr = line.removePrefix("data: ")
+                    val json = try {
+                        JSONObject(jsonStr)
+                    } catch (_: Exception) {
+                        continue
+                    }
+
+                    when (json.optString("type")) {
+                        "chunk" -> {
+                            val content = json.optString("content", "")
+                            if (content.isNotEmpty()) {
+                                withContext(Dispatchers.Main) { onChunk(content) }
+                            }
+                        }
+                        "done" -> {
+                            val chatResponse = AiChatResponse(
+                                conversationId = json.getString("conversationId"),
+                                messageId = json.optString("messageId"),
+                                message = json.getString("fullText"),
+                                quickReplies = json.optJSONArray("quickReplies")?.let { arr ->
+                                    (0 until arr.length()).map { arr.getString(it) }
+                                } ?: emptyList(),
+                                referencedPlaceItemIds = json.optJSONArray("referencedPlaceItemIds")?.let { arr ->
+                                    (0 until arr.length()).map { arr.getString(it) }
+                                } ?: emptyList(),
+                                actionSetId = json.optString("actionSetId").takeIf { it.isNotEmpty() },
+                                planRevision = if (json.has("planRevision") && !json.isNull("planRevision")) json.getLong("planRevision") else null,
+                                suggestedActions = json.optJSONArray("suggestedActions")?.let { arr ->
+                                    (0 until arr.length()).map { i ->
+                                        val a = arr.getJSONObject(i)
+                                        AiSuggestedAction(
+                                            id = a.getString("id"),
+                                            type = a.getString("type"),
+                                            placeItemId = a.getString("placeItemId"),
+                                            fromDayIndex = a.optInt("fromDayIndex").takeIf { !a.isNull("fromDayIndex") },
+                                            toDayIndex = a.optInt("toDayIndex").takeIf { !a.isNull("toDayIndex") },
+                                            fromPosition = a.optInt("fromPosition").takeIf { !a.isNull("fromPosition") },
+                                            toPosition = a.optInt("toPosition").takeIf { !a.isNull("toPosition") },
+                                            reason = a.optString("reason").takeIf { it.isNotEmpty() },
+                                            requiresRouteRefresh = a.optBoolean("requiresRouteRefresh", true),
+                                            affectedDayIndexes = a.optJSONArray("affectedDayIndexes")?.let { idxArr ->
+                                                (0 until idxArr.length()).map { idxArr.getInt(it) }
+                                            } ?: emptyList(),
+                                        )
+                                    }
+                                } ?: emptyList(),
+                                actionWarnings = json.optJSONArray("actionWarnings")?.let { arr ->
+                                    (0 until arr.length()).map { arr.getString(it) }
+                                } ?: emptyList(),
+                                cards = json.optJSONArray("cards")?.let { arr ->
+                                    (0 until arr.length()).map { i ->
+                                        val c = arr.getJSONObject(i)
+                                        AiCard(
+                                            id = c.getString("id"),
+                                            type = c.getString("type"),
+                                            title = c.optString("title"),
+                                            subtitle = c.optString("subtitle").takeIf { it.isNotEmpty() },
+                                            payload = c.optJSONObject("payload")?.let { p ->
+                                                com.heoclub.aitravel.data.model.AiLinkCardPayload(
+                                                    action_type = p.optString("action_type", "NAVIGATE_TO_CREATE_PLAN"),
+                                                )
+                                            },
+                                            days = c.optJSONArray("days")?.let { daysArr ->
+                                                (0 until daysArr.length()).map { di ->
+                                                    val d = daysArr.getJSONObject(di)
+                                                    com.heoclub.aitravel.data.model.AiCardDay(
+                                                        day_index = d.getInt("day_index"),
+                                                        title = d.optString("title", ""),
+                                                        place_refs = d.optJSONArray("place_refs")?.let { refsArr ->
+                                                            (0 until refsArr.length()).map { ri ->
+                                                                val r = refsArr.getJSONObject(ri)
+                                                                com.heoclub.aitravel.data.model.AiCardPlaceRef(
+                                                                    itemId = r.getString("itemId"),
+                                                                    note = r.optString("note", ""),
+                                                                )
+                                                            }
+                                                        } ?: emptyList(),
+                                                    )
+                                                }
+                                            },
+                                        )
+                                    }
+                                } ?: emptyList(),
+                                createdAt = json.optString("createdAt"),
+                                model = json.optString("model").takeIf { it.isNotEmpty() },
+                            )
+                            withContext(Dispatchers.Main) { onDone(chatResponse) }
+                            return@withContext
+                        }
+                    }
+                }
+                // If we exit the loop without a "done" event
+                withContext(Dispatchers.Main) { onError("AI 流式响应意外结束") }
+            } catch (e: IOException) {
+                withContext(Dispatchers.Main) {
+                    onError("无法连接后端 AI 服务，请确认 FastAPI 已启动。")
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                withContext(Dispatchers.Main) {
+                    onError(e.message ?: "AI 服务暂时不可用，请稍后重试。")
+                }
             }
         }
     }

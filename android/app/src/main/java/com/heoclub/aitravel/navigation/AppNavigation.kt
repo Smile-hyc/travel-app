@@ -657,11 +657,23 @@ fun AiTravelNavHost() {
                         planId = planId,
                         travelPlanRepository = application.container.travelPlanRepository,
                         aiRepository = application.container.aiRepository,
+                        onNavigateToCreatePlan = {
+                            navController.navigate(Routes.createPlan)
+                        },
+                        onNavigateToPlaceDetail = { placeId ->
+                            navController.navigate(Routes.placeDetail(placeId))
+                        },
                     ),
                 )
                 AiAssistantScreen(
                     viewModel = assistantViewModel,
                     onClose = { navController.popBackStack() },
+                    onNavigateToCreatePlan = {
+                        navController.navigate(Routes.createPlan)
+                    },
+                    onNavigateToPlaceDetail = { placeId ->
+                        navController.navigate(Routes.placeDetail(placeId))
+                    },
                 )
             }
         }
