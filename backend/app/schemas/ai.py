@@ -4,6 +4,7 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, Field
 
 from app.schemas.routes import RouteCoordinate
+from app.schemas.explore import PlaceSummary
 
 
 class AiHealthResponse(BaseModel):
@@ -147,6 +148,10 @@ class AiItineraryCard(BaseModel):
 AiCard = AiLinkCard | AiItineraryCard
 
 
+class AiRecommendedPlace(PlaceSummary):
+    description: str
+
+
 class AiChatResponse(BaseModel):
     conversationId: str
     messageId: str
@@ -158,6 +163,10 @@ class AiChatResponse(BaseModel):
     suggestedActions: list[AiSuggestedAction] = Field(default_factory=list)
     actionWarnings: list[str] = Field(default_factory=list)
     cards: list[AiCard] = Field(default_factory=list)
+    recommendedPlaces: list[AiRecommendedPlace] = Field(default_factory=list)
+    retrievalCity: str | None = None
+    offerPlan: bool = False
+    dataSources: list[str] = Field(default_factory=list)
     createdAt: str
     model: str | None = None
 
@@ -261,7 +270,7 @@ class AiPlanQuality(BaseModel):
     duplicatePlaceCount: int = 0
     totalPlaceCount: int = 0
     usedFallback: bool = False
-    dataSources: list[str] = Field(default_factory=lambda: ["AMAP", "ARK"])
+    dataSources: list[str] = Field(default_factory=lambda: ["AMAP", "DEEPSEEK"])
 
 
 class AiPlanGenerationResponse(BaseModel):

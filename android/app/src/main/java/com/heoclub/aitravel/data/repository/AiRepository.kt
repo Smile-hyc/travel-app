@@ -6,6 +6,7 @@ import com.heoclub.aitravel.data.model.AiChatRequest
 import com.heoclub.aitravel.data.model.AiChatResponse
 import com.heoclub.aitravel.data.model.AiPlanGenerationRequest
 import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
+import com.heoclub.aitravel.data.model.AiRecommendedPlace
 import com.heoclub.aitravel.data.model.AiPlanJobStatusResponse
 import com.heoclub.aitravel.data.model.AiSuggestedAction
 import com.heoclub.aitravel.data.remote.ApiService
@@ -58,9 +59,9 @@ class RemoteAiRepository(
             throw when (throwable) {
                 is HttpException -> RuntimeException(
                     when (throwable.code()) {
-                        401, 403 -> "AI 鉴权失败，请检查后端 Ark API Key 或模型权限。"
+                        401, 403 -> "AI 鉴权失败，请检查后端 DeepSeek API Key 或模型权限。"
                         429 -> "AI 调用频率或额度受限，请稍后重试。"
-                        502 -> "AI 服务调用失败，请检查后端配置或火山方舟状态。"
+                        502 -> "AI 服务调用失败，请检查后端 DeepSeek 或高德配置。"
                         503 -> "AI 服务尚未配置，请检查后端 .env。"
                         504 -> "AI 回复超时，请稍后再试，或把问题问得更具体一些。"
                         else -> "AI 服务异常：HTTP ${throwable.code()}"
@@ -202,6 +203,14 @@ class RemoteAiRepository(
                                         )
                                     }
                                 } ?: emptyList(),
+                                recommendedPlaces = json.optJSONArray("recommendedPlaces")?.let { arr ->
+                                    gson.fromJson(arr.toString(), Array<AiRecommendedPlace>::class.java).toList()
+                                } ?: emptyList(),
+                                retrievalCity = json.optString("retrievalCity").takeIf { it.isNotEmpty() },
+                                offerPlan = json.optBoolean("offerPlan", false),
+                                dataSources = json.optJSONArray("dataSources")?.let { arr ->
+                                    (0 until arr.length()).map { arr.getString(it) }
+                                } ?: emptyList(),
                                 createdAt = json.optString("createdAt"),
                                 model = json.optString("model").takeIf { it.isNotEmpty() },
                             )
@@ -287,7 +296,7 @@ class RemoteAiRepository(
                     401, 403 -> "${action}鉴权失败，请检查后端服务权限。"
                     422 -> "目的地或日期信息不可用，请修改后重试。"
                     429 -> "AI 调用频率或额度受限，请稍后重试。"
-                    502 -> "${action}失败，请检查后端配置或火山方舟状态。"
+                    502 -> "${action}失败，请检查后端 DeepSeek 或高德配置。"
                     503 -> "${action}服务尚未配置，请检查后端 .env。"
                     504 -> "${action}超时，请稍后重试或缩短行程天数。"
                     else -> "${action}服务异常：HTTP ${throwable.code()}"

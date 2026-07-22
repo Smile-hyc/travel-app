@@ -6,7 +6,6 @@ import math
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from time import perf_counter
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -25,7 +24,7 @@ from app.schemas.routes import RoutePlace
 from app.services.amap_poi_service import AmapPoiService
 from app.services.amap_route_service import AmapRouteService
 from app.services.amap_weather_service import AmapWeatherForecastDay, AmapWeatherService
-from app.services.ark_client import ArkClient
+from app.services.deepseek_client import DeepSeekClient
 
 
 PREFERENCE_CATEGORIES = {
@@ -47,13 +46,13 @@ PACE_PLACE_COUNTS = {"RELAXED": 3, "BALANCED": 4, "INTENSIVE": 5}
 class TravelPlanGenerationService:
     def __init__(
         self,
-        ark_client: ArkClient,
+        model_client: DeepSeekClient,
         poi_service: AmapPoiService,
         route_service: AmapRouteService | None = None,
         weather_service: AmapWeatherService | None = None,
         reveal_delay_seconds: float = 0.0,
     ) -> None:
-        self._ark_client = ark_client
+        self._model_client = model_client
         self._poi_service = poi_service
         self._route_service = route_service
         self._weather_service = weather_service
@@ -64,7 +63,6 @@ class TravelPlanGenerationService:
         request: AiPlanGenerationRequest,
         progress: ProgressCallback | None = None,
     ) -> AiPlanGenerationResponse:
-        generation_started_at = perf_counter()
         self._validate_time_window(request)
         self._notify(progress, 5, "正在理解目的地与旅行约束")
         destination = request.destination.strip()
@@ -253,7 +251,6 @@ class TravelPlanGenerationService:
                 name="ai-plan-deep-optimization",
             )
 
-        route_started_at = perf_counter()
         try:
             fallback = await self._apply_actual_routes(request, fallback, weather_forecast, progress)
         except BaseException:
@@ -261,18 +258,17 @@ class TravelPlanGenerationService:
                 ai_task.cancel()
                 await asyncio.gather(ai_task, return_exceptions=True)
             raise
-        route_elapsed_ms = round((perf_counter() - route_started_at) * 1000)
         visible_fallback = fallback
         await self._publish_draft(progress, fallback)
         self._notify(
             progress,
             73,
-            f"可执行草案已完成；高德逐段路线校验用时 {route_elapsed_ms / 1000:.1f} 秒",
+            "可执行草案已完成；高德逐段路线校验已通过",
             len(fallback),
             partial_days=fallback,
             event=self._event(
                 "ANALYSIS",
-                f"路线与时间草案校验完成，用时 {route_elapsed_ms / 1000:.1f} 秒。",
+                "路线与时间草案校验完成。",
                 evidence=["逐日路线校验与 AI 深度优化已并行执行"],
                 decision="草案立即保持可浏览，AI 返回后只替换并再次校验发生变化的结果。",
             ),
@@ -289,7 +285,7 @@ class TravelPlanGenerationService:
                 active_day_index=buffered_day_index,
             )
         warnings: list[str] = []
-        model_name: str | None = None if request.optimizationMode == "FAST" else self._ark_client.model_name
+        model_name: str | None = None if request.optimizationMode == "FAST" else self._model_client.model_name
         used_fallback = False
         data_sources = ["AMAP"]
         if request.optimizationMode == "FAST":
@@ -312,7 +308,7 @@ class TravelPlanGenerationService:
                 self._notify(
                     progress,
                     74,
-                    "可执行草案已完成，正在等待 AI 深度优化；模型耗时无法按百分比准确估算",
+                    "可执行草案已完成，正在等待 AI 深度优化",
                     len(fallback),
                     partial_days=fallback,
                     event=self._event(
@@ -333,7 +329,7 @@ class TravelPlanGenerationService:
                 self._notify(progress, 86, "AI 编排完成，正在重新校验地点、营业时间与路线", len(fallback))
                 days = self._merge_ai_result(request, ai_payload, candidates, fallback)
                 days = await self._apply_actual_routes(request, days, weather_forecast, progress)
-                data_sources.append("ARK")
+                data_sources.append("DEEPSEEK")
             except (HTTPException, ValueError, json.JSONDecodeError, TypeError, asyncio.TimeoutError) as exc:
                 if request.optimizationMode == "REQUIRED":
                     detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
@@ -360,7 +356,7 @@ class TravelPlanGenerationService:
             partial_days=days,
             event=self._event(
                 "PLAN_REFINED",
-                f"地点、时间和每日主题已完成校验；当前总耗时 {(perf_counter() - generation_started_at):.1f} 秒，正在保存最终版本。",
+                "地点、时间和每日主题已完成校验，正在保存最终版本。",
             ),
             active_day_index=days[-1].dayIndex if days else None,
         )
@@ -636,17 +632,15 @@ class TravelPlanGenerationService:
     ) -> dict[str, Any]:
         task = task or asyncio.create_task(self._generate_with_ai(request, city_name, candidates, fallback, progress))
         loop = asyncio.get_running_loop()
-        started_at = loop.time()
         try:
             while True:
                 done, _ = await asyncio.wait({task}, timeout=5.0)
                 if task in done:
                     return task.result()
-                elapsed_seconds = max(1, round(loop.time() - started_at))
                 self._notify(
                     progress,
                     74,
-                    f"正在等待 AI 深度优化，已等待 {elapsed_seconds} 秒；模型耗时不可按百分比估算",
+                    "正在等待 AI 深度优化，完整内容返回前会持续处理",
                     len(fallback),
                     partial_days=fallback,
                     active_day_index=fallback[-1].dayIndex if fallback else None,
@@ -820,15 +814,15 @@ class TravelPlanGenerationService:
                 line, line_buffer = line_buffer.split("\n", 1)
                 consume_line(line)
 
-        def on_timing(phase: str, elapsed_ms: int) -> None:
+        def on_timing(phase: str, _elapsed_ms: int) -> None:
             if phase == "connected":
-                message = f"已连接 AI 服务（{elapsed_ms / 1000:.1f} 秒），等待模型首批内容"
+                message = "已连接 AI 服务，正在等待模型生成完整方案"
                 evidence = ["前后端连接和请求上传已完成"]
             elif phase == "first_token":
-                message = f"AI 开始流式返回（首批内容等待 {elapsed_ms / 1000:.1f} 秒）"
-                evidence = ["该时间主要包含模型排队与首轮推理"]
+                message = "AI 已开始生成深度优化内容"
+                evidence = ["模型已经开始输出方案"]
             else:
-                message = f"AI 流式输出完成，总用时 {elapsed_ms / 1000:.1f} 秒"
+                message = "AI 深度优化内容已完整接收"
                 evidence = ["模型输出已完整接收，下一步执行硬约束复核"]
             self._notify(
                 progress,
@@ -845,21 +839,20 @@ class TravelPlanGenerationService:
                 active_day_index=fallback[-1].dayIndex if fallback else None,
             )
 
-        if hasattr(self._ark_client, "chat_stream"):
-            raw = await self._ark_client.chat_stream(
+        if hasattr(self._model_client, "chat_stream"):
+            raw = await self._model_client.chat_stream(
                 messages,
                 on_delta=on_delta,
-                max_tokens=min(4200, max(1400, request.dayCount * 420)),
+                max_tokens=min(8000, max(2200, request.dayCount * 700)),
                 temperature=0.25,
                 disable_read_timeout=True,
                 on_timing=on_timing,
-                thinking_type="disabled",
             )
             consume_line(line_buffer)
         else:
-            raw = await self._ark_client.chat(
+            raw = await self._model_client.chat(
                 messages,
-                max_tokens=min(4200, max(1400, request.dayCount * 420)),
+                max_tokens=min(8000, max(2200, request.dayCount * 700)),
                 temperature=0.25,
                 disable_read_timeout=True,
             )

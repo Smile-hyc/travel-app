@@ -13,7 +13,7 @@
 - 计划页：创建旅行计划、本地持久化保存、DAY 分组、待规划地点、地点顺序调整。
 - 智能计划：输入目的地、日期、天数和偏好，结合高德真实 POI 与 Ark 模型生成逐日结构化行程，并自动保存到本地计划。
 - 计划详情：编号 Marker、路线 Polyline、路线距离与耗时、交通方式切换、路线顺序优化预览与确认应用。
-- AI 助手：读取当前旅行计划上下文，调用火山方舟 / 豆包模型进行中文问答，并支持结构化行程建议、用户确认后再修改本地计划。
+- AI 助手：读取当前旅行计划上下文，调用 DeepSeek 模型进行中文问答，并支持结构化行程建议、用户确认后再修改本地计划。
 - 后端：FastAPI 代理高德 Web 服务、路线服务、天气服务和 Ark AI 服务，避免 Android 端保存 Web 服务 Key。
 
 ## 项目结构
@@ -65,7 +65,7 @@ F:\travel-app
 - HTTPX
 - Pytest
 - 高德 Web 服务 API
-- 火山方舟 Ark OpenAI-compatible API
+- DeepSeek OpenAI-compatible API
 
 ## 整体架构
 
@@ -76,7 +76,7 @@ flowchart TD
     C --> D["Retrofit / OkHttp"]
     D --> E["FastAPI Backend"]
     E --> F["高德 Web 服务 API"]
-    E --> G["火山方舟 / 豆包 AI"]
+    E --> G["DeepSeek AI"]
     C --> H["SharedPreferences + Gson 本地计划数据"]
 ```
 
@@ -138,7 +138,7 @@ AI 助手不是孤立的聊天机器人，而是可以读取当前旅行计划�
   - 路线摘要
   - 天气摘要
   - 最近对话历史
-- FastAPI 调用 Ark / 豆包模型生成中文回复。
+- FastAPI 调用 DeepSeek 模型生成中文回复。
 - 支持加载中、错误、重试和快捷追问。
 - 支持结构化建议动作：
   - 移动地点到某个 DAY
@@ -238,12 +238,12 @@ RNOTE_MAX_SOURCES=5
 REVIEW_CACHE_TTL_SECONDS=21600
 REVIEW_EMPTY_CACHE_TTL_SECONDS=300
 
-ARK_API_KEY=
-ARK_MODEL=doubao-seed-2-1-pro-260628
-ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_REQUEST_TIMEOUT_SECONDS=240
-ARK_MAX_OUTPUT_TOKENS=1200
-ARK_TEMPERATURE=0.35
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_REQUEST_TIMEOUT_SECONDS=240
+DEEPSEEK_MAX_OUTPUT_TOKENS=8000
+DEEPSEEK_TEMPERATURE=0.35
 ```
 
 说明：
@@ -253,7 +253,7 @@ ARK_TEMPERATURE=0.35
 - `RNOTE_API_KEY` 是推荐的小红书公开内容服务 Key。配置后优先于 TikHub，后端每个地点只进行一次搜索请求，并把成功结果缓存 6 小时，减少重复扣费。
 - Rnote 来源卡片可展示笔记封面、作者、点赞数和原文链接；Key 只保存在 FastAPI 后端，不进入 Android 安装包。
 - 生产环境接入前应确认内容展示、缓存、跳转和用户隐私符合平台条款；服务端只返回来源标题、作者、短摘要和原文链接，不复制完整笔记。
-- `ARK_API_KEY` 用于后端调用火山方舟 / 豆包模型。
+- `DEEPSEEK_API_KEY` 用于后端调用 DeepSeek 模型；所有 AI 对话与智能规划共用该提供商。
 - README 只保留变量名，不应出现真实 Key。
 
 ### Android `local.properties`
@@ -418,8 +418,8 @@ cd F:\travel-app\android
 
 - 问题尽量具体。
 - 不要一次发送过多地点和过长历史。
-- 检查 `ARK_REQUEST_TIMEOUT_SECONDS`。
-- 检查火山方舟控制台模型和额度状态。
+- 检查 `DEEPSEEK_REQUEST_TIMEOUT_SECONDS`。
+- 检查 DeepSeek 控制台的 API Key 和额度状态。
 
 ### 4. 中文输入异常
 

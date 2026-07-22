@@ -5,6 +5,7 @@ import com.heoclub.aitravel.data.location.CurrentLocationRepository
 import com.heoclub.aitravel.data.remote.RetrofitClient
 import com.heoclub.aitravel.data.repository.DefaultHealthRepository
 import com.heoclub.aitravel.data.repository.AiRepository
+import com.heoclub.aitravel.data.repository.AiConversationHistoryStore
 import com.heoclub.aitravel.data.repository.ExploreRepository
 import com.heoclub.aitravel.data.repository.HealthRepository
 import com.heoclub.aitravel.data.repository.PersistentTravelPlanRepository
@@ -28,6 +29,7 @@ class AppContainer(
     val healthRepository: HealthRepository = DefaultHealthRepository(apiService)
     val currentLocationRepository = CurrentLocationRepository(context)
     val travelPlanRepository: TravelPlanRepository = PersistentTravelPlanRepository(context)
+    val aiConversationHistoryStore = AiConversationHistoryStore(context)
     val exploreRepository: ExploreRepository = RemoteExploreRepository(apiService)
     val routeRepository: RouteRepository = RemoteRouteRepository(apiService)
     val aiRepository: AiRepository = RemoteAiRepository(

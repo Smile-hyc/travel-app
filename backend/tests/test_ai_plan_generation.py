@@ -640,8 +640,8 @@ def test_model_ndjson_stream_emits_auditable_event_before_result() -> None:
     assert events[0].type == "MODEL_REASON"
     assert events[0].evidence == ["天气：雨"]
     assert events[0].decision == "保留博物馆"
-    assert captured_options["thinking_type"] == "disabled"
-    assert captured_options["max_tokens"] == 1400
+    assert "thinking_type" not in captured_options
+    assert captured_options["max_tokens"] == 2200
 
 
 def test_sse_endpoint_streams_progress_and_completion() -> None:
