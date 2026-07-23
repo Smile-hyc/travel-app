@@ -224,6 +224,19 @@ data class AiGeneratedPlace(
     val businessArea: String? = null,
     val openingHoursToday: String? = null,
     val openingHoursWeek: String? = null,
+    val officialScenicGrade: String? = null,
+    val experienceEvidenceCount: Int = 0,
+    val officialReservationRequired: Boolean = false,
+    val officialReservationNote: String? = null,
+    val officialClosedDates: List<String> = emptyList(),
+    val officialClosureWarning: String? = null,
+    val officialOpeningHoursByDate: Map<String, String> = emptyMap(),
+    val officialAccessNote: String? = null,
+    val officialMaxDailyCapacity: Int? = null,
+    val officialCapacityNote: String? = null,
+    val officialTicketNote: String? = null,
+    val crowdRisk: Double = 0.0,
+    val contentUpdatedAt: String? = null,
     val scheduleVerified: Boolean = false,
     val suggestedStart: String,
     val suggestedEnd: String,
@@ -237,9 +250,23 @@ data class AiGeneratedDay(
     val summary: String,
     val places: List<AiGeneratedPlace> = emptyList(),
     val transfers: List<AiGeneratedTransfer> = emptyList(),
+    val alternatives: List<AiPlanAlternative> = emptyList(),
     val weather: String? = null,
     val estimatedDistanceKm: Double = 0.0,
     val intensity: String = "适中",
+)
+
+data class AiPlanAlternative(
+    val id: String,
+    val sourcePoiId: String,
+    val name: String,
+    val category: String,
+    val latitude: Double,
+    val longitude: Double,
+    val districtName: String? = null,
+    val openingHoursWeek: String? = null,
+    val officialReservationRequired: Boolean = false,
+    val reason: String,
 )
 
 data class AiGeneratedTransfer(

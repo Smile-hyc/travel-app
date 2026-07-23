@@ -32,8 +32,6 @@ class CreatePlanViewModel(
     val departureSuggestions: StateFlow<List<PlaceSuggestion>> = _departureSuggestions.asStateFlow()
     private var arrivalSearchJob: Job? = null
     private var departureSearchJob: Job? = null
-    private var transportHubSearchJob: Job? = null
-    private var cachedTransportHubs: List<PlaceSuggestion> = emptyList()
     private val _hotelSuggestions = MutableStateFlow<List<PlaceSuggestion>>(emptyList())
     val hotelSuggestions: StateFlow<List<PlaceSuggestion>> = _hotelSuggestions.asStateFlow()
     private val _hotelSuggestionTarget = MutableStateFlow<String?>(null)
@@ -101,14 +99,11 @@ class CreatePlanViewModel(
         previousJob?.cancel()
         val keyword = query.trim()
         if (keyword.isBlank()) {
-            target.value = cachedTransportHubs
+            target.value = emptyList()
             return
         }
-        val cachedMatches = cachedTransportHubs
-            .filter { it.matchesTransportHubQuery(keyword) }
-            .sortedWith(transportSuggestionComparator(keyword))
-        target.value = cachedMatches
-        if (keyword.length < 2) return
+        target.value = emptyList()
+        if (keyword.length < 2 || adCode.isNullOrBlank()) return
         val job = viewModelScope.launch {
             delay(380)
             val remote = runCatching {
@@ -116,40 +111,16 @@ class CreatePlanViewModel(
                     keyword = keyword,
                     adcode = adCode,
                     category = "transport",
-                    cityLimit = adCode != null,
+                    cityLimit = true,
                 )
             }.getOrDefault(emptyList())
-            target.value = (cachedMatches + remote)
+            target.value = remote
                 .filter { belongsToDestinationCity(it.adCode, adCode) }
                 .distinctBy { it.id }
                 .sortedWith(transportSuggestionComparator(keyword))
                 .take(20)
         }
         if (arrival) arrivalSearchJob = job else departureSearchJob = job
-    }
-
-    fun loadTransportHubs(adCode: String?) {
-        transportHubSearchJob?.cancel()
-        if (adCode.isNullOrBlank()) {
-            cachedTransportHubs = emptyList()
-            return
-        }
-        transportHubSearchJob = viewModelScope.launch {
-            val hubs = runCatching {
-                exploreRepository.getInputTips(
-                    keyword = "火车站|机场",
-                    adcode = adCode,
-                    category = "transport",
-                    cityLimit = true,
-                )
-            }.getOrDefault(emptyList())
-                .filter { belongsToDestinationCity(it.adCode, adCode) }
-                .sortedWith(transportSuggestionComparator(""))
-                .take(30)
-            cachedTransportHubs = hubs
-            _arrivalSuggestions.value = hubs
-            _departureSuggestions.value = hubs
-        }
     }
 
     fun searchHotels(query: String, adCode: String?, targetKey: String) {

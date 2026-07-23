@@ -35,7 +35,7 @@ def test_catalog_resolves_exact_amap_poi_over_similar_name() -> None:
     assert resolved[0][1].sourcePoiId == "right"
 
 
-def test_city_discovery_returns_rating_sorted_places() -> None:
+def test_city_discovery_prioritizes_curated_seed_then_amap_order() -> None:
     service = PopularPoiCatalogService(FakePoiService())
     places = asyncio.run(service.discover_city("北京市", limit=2))
-    assert [place.sourcePoiId for place in places] == ["wrong", "right"]
+    assert [place.sourcePoiId for place in places] == ["right", "wrong"]

@@ -10,6 +10,8 @@
 
 热门 POI 目录有 25 个全国种子，也支持城市首次使用时通过高德自动发现 1～25 个热门景点。已发现地点写入采集目标；已知官方来源直接关联，尚未确认官网的地点进入 `PENDING` 官方目录，便于后续补齐而不是丢失。
 
+城市自动建库默认采用 `12 / 30 / 20 / 8`：每座城市冻结 12 个热门景点，每个景点抓取 30 篇候选，清洗后最多保留 20 条有效证据，详情接口返回最相关的 8 条来源。高德第一页不直接等同于热度榜；系统先读取最多 50 个候选，排除入口、停车场、售票处等辅助 POI，再按评分、资料完整度和去重结果生成带版本号的榜单快照。
+
 UGC 清洗包含：
 
 - 正式 POI 名与常用简称匹配，并用城市/区县消歧；
@@ -55,6 +57,35 @@ cd F:\Projects\travel\backend
 .\.venv\Scripts\python.exe scripts\sync_content.py --limit 10 --include-official
 .\.venv\Scripts\python.exe scripts\sync_content.py --import-mediacrawler search_contents_2026-07-22.jsonl --city 天津市
 ```
+
+自动城市管道：
+
+```powershell
+# 只生成并检查 Top 12 榜单
+.\.venv\Scripts\python.exe scripts\build_city_content.py --city 杭州市 --plan-only
+
+# 首次采集，浏览器需要时显示二维码
+.\.venv\Scripts\python.exe scripts\build_city_content.py --city 杭州市
+
+# 从 UTF-8 文件顺序处理多个城市
+.\.venv\Scripts\python.exe scripts\build_city_content.py --cities-file cities.txt --headless
+
+# 从高德行政区目录顺序处理全国城市。推荐可见浏览器模式，降低无头风控。
+.\scripts\run_all_city_content.ps1
+
+# 验证码中断或进程异常后，直接恢复已落盘 JSONL，不重复抓取
+.\.venv\Scripts\python.exe scripts\build_city_content.py --recover-run <run-id>
+```
+
+每个城市只启动一个 MediaCrawler 进程，12 个 POI 作为同一批关键词顺序执行，评论、图片和视频采集保持关闭。每个运行目录保存 `manifest.json`、JSONL 和日志；清洗器通过清单中的精确查询词绑定高德 POI ID。命令中断后重新运行即可通过已有缓存跳过已完成 POI。
+
+全国脚本遇到高德 `10021 / CUQPS` 时退避 15 秒后重试；只有日配额耗尽时才暂停到次日 00:05。小红书网络故障每 5 分钟重试；验证码出现前已经写入的 JSONL 会先清洗入库，随后暂停全国队列等待人工验证，不尝试绕过验证码。
+
+城市任务状态为 `queued -> crawling -> cleaning -> ready`，失败时保留城市级错误及逐 POI 状态。原始运行目录保留 7 天，业务库长期保存的仍只有匿名化、结构化的短证据。
+
+再次运行同一城市时先检查数据库缓存，只将无证据或已到期的 POI 交给采集器。榜单前 5 名刷新周期为 7 天，其余为 30 天；CLI 的 `--force` 用于明确要求全量重建。
+
+任务会区分 `login_required`、`captcha_required`、`network_unavailable` 和真实空结果，不会把登录、验证或网络异常记作“该景点没有笔记”。处理完浏览器中的平台验证后重新运行全国脚本即可从缓存续跑。
 
 HTTP 管理接口使用 `CONTENT_ADMIN_TOKEN`，并通过 `X-Content-Admin-Token` 请求头传入。令牌只能存放在后端。
 

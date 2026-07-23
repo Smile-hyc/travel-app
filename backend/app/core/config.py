@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     review_author_hash_salt: str = "change-me-in-production"
     content_admin_token: str = ""
     mediacrawler_data_dir: str = "../tools/MediaCrawler/data/xhs/jsonl"
+    mediacrawler_tool_dir: str = "../tools/MediaCrawler"
+    mediacrawler_run_dir: str = "data/mediacrawler-runs"
+    mediacrawler_timeout_seconds: int = 10800
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"

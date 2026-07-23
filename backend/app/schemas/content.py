@@ -54,6 +54,10 @@ class ContentDatabaseStatsResponse(BaseModel):
     runningIngestionCount: int = 0
     officialSourceCount: int = 0
     officialNoticeCount: int = 0
+    rankedCityCount: int = 0
+    rankedPoiCount: int = 0
+    cityCollectionRunCount: int = 0
+    runningCityCollectionCount: int = 0
 
 
 class OfficialSyncRequest(BaseModel):
@@ -135,3 +139,60 @@ class MediaCrawlerImportResponse(BaseModel):
     missingKeywords: list[str]
     fetchedCount: int
     acceptedCount: int
+
+
+class CityContentRunRequest(BaseModel):
+    cityName: str = Field(min_length=2, max_length=40)
+    top: int = Field(default=12, ge=1, le=25)
+    candidateLimit: int = Field(default=30, ge=1, le=60)
+    headless: bool = False
+    forceRefresh: bool = False
+
+
+class CityContentRunItemResponse(BaseModel):
+    sourcePoiId: str
+    placeName: str
+    rank: int
+    queryKeyword: str
+    status: str
+    fetchedCount: int = 0
+    acceptedCount: int = 0
+    error: str | None = None
+
+
+class CityContentRunResponse(BaseModel):
+    runId: str
+    cityAdcode: str
+    cityName: str
+    rankingVersion: str
+    status: str
+    candidateLimit: int
+    retainLimit: int
+    displayLimit: int
+    targetCount: int
+    fetchedCount: int = 0
+    acceptedCount: int = 0
+    failedCount: int = 0
+    outputPath: str | None = None
+    error: str | None = None
+    startedAt: str
+    finishedAt: str | None = None
+    items: list[CityContentRunItemResponse] = Field(default_factory=list)
+
+
+class CityRankingPlaceResponse(BaseModel):
+    rank: int
+    sourcePoiId: str
+    name: str
+    rating: str | None = None
+    districtName: str | None = None
+    crawlerKeyword: str
+
+
+class CityContentPlanResponse(BaseModel):
+    cityAdcode: str
+    cityName: str
+    provinceName: str | None = None
+    rankingVersion: str
+    count: int
+    places: list[CityRankingPlaceResponse]

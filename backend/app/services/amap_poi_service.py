@@ -57,6 +57,53 @@ class AmapPoiService:
         self._city_cache.set(cache_key, results, ttl_seconds=3600)
         return results
 
+    async def list_prefecture_cities(self) -> list[CitySearchResult]:
+        """Return mainland prefecture-level destinations and municipalities.
+
+        The district endpoint is used only to build the collection queue.  A
+        city remains keyed by its AMap adcode, so rerunning this discovery is
+        idempotent even when administrative names change.
+        """
+        cache_key = ("prefecture-cities",)
+        cached = self._city_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        payload = await self._client.get(
+            "/v3/config/district",
+            {
+                "keywords": "中华人民共和国",
+                "subdistrict": 2,
+                "extensions": "base",
+            },
+        )
+        results: list[CitySearchResult] = []
+        roots = payload.get("districts", [])
+        for root in roots if isinstance(roots, list) else []:
+            if not isinstance(root, dict):
+                continue
+            provinces = root.get("districts", [])
+            for province in provinces if isinstance(provinces, list) else []:
+                if not isinstance(province, dict):
+                    continue
+                province_name = _clean_string(province.get("name"))
+                if province_name in DIRECT_MUNICIPALITIES:
+                    city = _parse_city_result({**province, "province": province_name})
+                    if city is not None:
+                        results.append(city)
+                    continue
+                children = province.get("districts", [])
+                for child in children if isinstance(children, list) else []:
+                    if not isinstance(child, dict) or child.get("level") != "city":
+                        continue
+                    city = _parse_city_result({**child, "province": province_name})
+                    if city is not None:
+                        results.append(city)
+
+        results = sorted(_dedupe_cities(results), key=lambda item: (item.adCode, item.name))
+        self._city_cache.set(cache_key, results, ttl_seconds=86400)
+        return results
+
     async def _search_cities_by_district(self, keyword: str, limit: int) -> list[CitySearchResult]:
         payload = await self._client.get(
             "/v3/config/district",
@@ -273,6 +320,81 @@ class AmapPoiService:
         candidates.sort(key=lambda place: _transport_hub_rank(place, keyword))
         return [_place_to_suggestion(place) for place in candidates[:30]]
 
+    async def search_nearby_pois(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        adcode: str,
+        category: str,
+        keyword: str | None = None,
+        radius_meters: int = 2500,
+        page_size: int = 20,
+    ) -> list[PlaceSummary]:
+        category_mapping = get_amap_category(category)
+        if category_mapping is None:
+            raise HTTPException(status_code=422, detail="不支持的地点分类。")
+        radius_meters = min(max(radius_meters, 200), 5000)
+        page_size = min(max(page_size, 1), 25)
+        normalized_adcode = _normalize_amap_city_adcode(adcode)
+        clean_keyword = (keyword or "").strip()[:MAX_KEYWORD_LENGTH]
+        cache_key = (
+            "nearby",
+            round(latitude, 3),
+            round(longitude, 3),
+            normalized_adcode,
+            category,
+            clean_keyword,
+            radius_meters,
+            page_size,
+        )
+        cached = self._places_cache.get(cache_key)
+        if cached is not None:
+            return cached.items
+        params: dict[str, Any] = {
+            "location": f"{longitude:.6f},{latitude:.6f}",
+            "radius": radius_meters,
+            "types": category_mapping.type_codes,
+            "region": normalized_adcode,
+            "city_limit": "true",
+            "sortrule": "distance",
+            "page_size": page_size,
+            "page_num": 1,
+            "show_fields": "business,photos",
+        }
+        if clean_keyword:
+            params["keywords"] = clean_keyword
+        try:
+            payload = await self._client.get("/v5/place/around", params)
+        except HTTPException:
+            payload = await self._client.get(
+                "/v3/place/around",
+                {
+                    "location": params["location"],
+                    "radius": radius_meters,
+                    "types": category_mapping.type_codes,
+                    "city": normalized_adcode,
+                    "keywords": clean_keyword,
+                    "sortrule": "distance",
+                    "offset": page_size,
+                    "page": 1,
+                    "extensions": "all",
+                },
+            )
+        items = [
+            _parse_place(item, category=category, category_code=category_mapping.code)
+            for item in payload.get("pois", [])
+            if isinstance(item, dict)
+        ]
+        response = PaginatedPlaces(
+            items=items,
+            page=1,
+            pageSize=page_size,
+            total=_safe_int(payload.get("count")),
+            hasMore=False,
+        )
+        self._places_cache.set(cache_key, response, ttl_seconds=180)
+        return items
     async def search_pois(
         self,
         *,

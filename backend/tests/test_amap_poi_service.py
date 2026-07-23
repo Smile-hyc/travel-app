@@ -76,6 +76,53 @@ def test_direct_municipality_remains_one_destination() -> None:
     assert cities[0].adCode == "110000"
 
 
+def test_prefecture_city_catalog_includes_municipalities_and_province_children() -> None:
+    class CatalogClient:
+        async def get(self, path, params):
+            assert path == "/v3/config/district"
+            assert params["subdistrict"] == 2
+            return {
+                "districts": [
+                    {
+                        "name": "中华人民共和国",
+                        "level": "country",
+                        "adcode": "100000",
+                        "center": "116.4,39.9",
+                        "districts": [
+                            {
+                                "name": "北京市",
+                                "level": "province",
+                                "adcode": "110000",
+                                "center": "116.4,39.9",
+                                "districts": [],
+                            },
+                            {
+                                "name": "浙江省",
+                                "level": "province",
+                                "adcode": "330000",
+                                "center": "120.1,30.2",
+                                "districts": [
+                                    {
+                                        "name": "杭州市",
+                                        "level": "city",
+                                        "adcode": "330100",
+                                        "center": "120.2,30.3",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+
+    cities = asyncio.run(AmapPoiService(CatalogClient()).list_prefecture_cities())
+
+    assert [(city.name, city.adCode) for city in cities] == [
+        ("北京市", "110000"),
+        ("杭州市", "330100"),
+    ]
+
+
 def test_city_search_derives_its_real_province_from_adcode() -> None:
     service = AmapPoiService(
         FakeAmapClient(
@@ -219,3 +266,57 @@ def test_reverse_geocode_uses_detailed_address_when_no_poi_is_nearby() -> None:
 
     assert point.name == "四川省成都市武侯区天府一街"
     assert point.matchedPoiWithin50m is False
+
+def test_museum_search_uses_indoor_culture_type_codes() -> None:
+    class MuseumClient:
+        async def get(self, path, params):
+            assert path == "/v5/place/text"
+            assert "140100" in params["types"]
+            assert params["keywords"] == "上海博物馆"
+            return {
+                "count": "1",
+                "pois": [
+                    {
+                        "id": "museum-1",
+                        "name": "上海博物馆",
+                        "type": "科教文化服务;博物馆;博物馆",
+                        "typecode": "140100",
+                        "location": "121.475,31.228",
+                        "adcode": "310101",
+                        "cityname": "上海市",
+                    },
+                ],
+            }
+
+    result = asyncio.run(
+        AmapPoiService(MuseumClient()).search_pois(
+            keyword="上海博物馆",
+            adcode="310000",
+            category="museum",
+            page=1,
+            page_size=8,
+            city_limit=True,
+        ),
+    )
+
+    assert result.items[0].name == "上海博物馆"
+    assert result.items[0].category == "museum"
+
+def test_nearby_search_forwards_local_food_keyword() -> None:
+    class NearbyClient:
+        async def get(self, path, params):
+            assert path == "/v5/place/around"
+            assert params["keywords"] == "本帮菜"
+            return {"count": "0", "pois": []}
+
+    result = asyncio.run(
+        AmapPoiService(NearbyClient()).search_nearby_pois(
+            latitude=31.23,
+            longitude=121.47,
+            adcode="310000",
+            category="food",
+            keyword="本帮菜",
+        ),
+    )
+
+    assert result == []
