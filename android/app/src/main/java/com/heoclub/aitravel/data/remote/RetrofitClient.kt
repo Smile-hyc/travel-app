@@ -26,7 +26,9 @@ object RetrofitClient {
 
         val okHttpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(360, TimeUnit.SECONDS)
+            // AI planning uses SSE and may legitimately take several minutes.
+            // Keep reading until the server emits its complete event.
+            .readTimeout(0, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
             .addInterceptor(loggingInterceptor)
             .build()

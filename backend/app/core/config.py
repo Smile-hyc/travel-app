@@ -26,12 +26,12 @@ class Settings(BaseSettings):
     mediacrawler_tool_dir: str = "../tools/MediaCrawler"
     mediacrawler_run_dir: str = "data/mediacrawler-runs"
     mediacrawler_timeout_seconds: int = 10800
-    ark_api_key: str = ""
-    ark_model: str = "doubao-seed-2-1-pro-260628"
-    ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    ark_request_timeout_seconds: float = 240.0
-    ark_max_output_tokens: int = 1200
-    ark_temperature: float = 0.35
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_request_timeout_seconds: float = 240.0
+    deepseek_max_output_tokens: int = 8000
+    deepseek_temperature: float = 0.35
     dev_cors_origins: str = (
         "http://localhost:3000,"
         "http://localhost:5173,"
@@ -58,19 +58,19 @@ class Settings(BaseSettings):
         return bool(self.amap_web_service_key.strip())
 
     @property
-    def ark_api_key_configured(self) -> bool:
-        return bool(self.ark_api_key.strip())
+    def deepseek_api_key_configured(self) -> bool:
+        return bool(self.deepseek_api_key.strip())
 
     @property
-    def ark_base_url_configured(self) -> bool:
-        return bool(self.ark_base_url.strip())
+    def deepseek_base_url_configured(self) -> bool:
+        return bool(self.deepseek_base_url.strip())
 
     @property
-    def ark_configured(self) -> bool:
+    def deepseek_configured(self) -> bool:
         return (
-            self.ark_api_key_configured
-            and bool(self.ark_model.strip())
-            and self.ark_base_url_configured
+            self.deepseek_api_key_configured
+            and bool(self.deepseek_model.strip())
+            and self.deepseek_base_url_configured
         )
 
     @property

@@ -10,39 +10,6 @@ import com.heoclub.aitravel.data.model.PlaceSuggestion
 
 class AiPlanGenerationRulesTest {
     @Test
-    fun `current plan action stays hidden before thirty seconds`() {
-        assertFalse(
-            canUseCurrentPlan(
-                waitingForAi = true,
-                waitingSeconds = CURRENT_PLAN_FALLBACK_DELAY_SECONDS - 1,
-                partialDayCount = 3,
-                completedDays = 3,
-                totalDays = 3,
-            ),
-        )
-    }
-
-    @Test
-    fun `current plan action appears at thirty seconds`() {
-        assertTrue(
-            canUseCurrentPlan(
-                waitingForAi = true,
-                waitingSeconds = CURRENT_PLAN_FALLBACK_DELAY_SECONDS,
-                partialDayCount = 3,
-                completedDays = 3,
-                totalDays = 3,
-            ),
-        )
-    }
-
-    @Test
-    fun `current plan action requires a complete visible plan`() {
-        assertFalse(canUseCurrentPlan(true, 60, 0, 3, 3))
-        assertFalse(canUseCurrentPlan(true, 60, 2, 2, 3))
-        assertFalse(canUseCurrentPlan(false, 60, 3, 3, 3))
-    }
-
-    @Test
     fun `province query asks user to choose a child city`() {
         val suggestions = listOf(
             ExploreCity("chengdu", "成都市", "成都市", "四川省", "510100", 30.57, 104.06, 13.2f),

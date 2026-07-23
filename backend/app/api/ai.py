@@ -29,10 +29,10 @@ router = APIRouter(prefix="/api", tags=["ai"])
 @router.get("/health/ai", response_model=AiHealthResponse)
 def ai_health_check(settings: Settings = Depends(get_settings)) -> AiHealthResponse:
     return AiHealthResponse(
-        configured=settings.ark_configured,
-        apiKeyConfigured=settings.ark_api_key_configured,
-        model=settings.ark_model if settings.ark_model.strip() else None,
-        baseUrlConfigured=settings.ark_base_url_configured,
+        configured=settings.deepseek_configured,
+        apiKeyConfigured=settings.deepseek_api_key_configured,
+        model=settings.deepseek_model if settings.deepseek_model.strip() else None,
+        baseUrlConfigured=settings.deepseek_base_url_configured,
     )
 
 

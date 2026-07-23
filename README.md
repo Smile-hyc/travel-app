@@ -11,10 +11,10 @@
 - Android 端：Jetpack Compose 三个一级页面“计划 / 探索 / 我的”。
 - 探索页：真实高德地图、城市切换、分类 POI、地点搜索、输入提示、真实天气、地点卡片、地点图片和加入计划入口。
 - 计划页：创建旅行计划、本地持久化保存、DAY 分组、待规划地点、地点顺序调整。
-- 智能计划：输入目的地、日期、天数和偏好，结合高德真实 POI 与 Ark 模型生成逐日结构化行程，并自动保存到本地计划。
+- 智能计划：输入目的地、日期、天数和偏好，结合高德真实 POI 与 DeepSeek 模型生成逐日结构化行程，并自动保存到本地计划。
 - 计划详情：编号 Marker、路线 Polyline、路线距离与耗时、交通方式切换、路线顺序优化预览与确认应用。
-- AI 助手：读取当前旅行计划上下文，调用火山方舟 / 豆包模型进行中文问答，并支持结构化行程建议、用户确认后再修改本地计划。
-- 后端：FastAPI 代理高德 Web 服务、路线服务、天气服务和 Ark AI 服务，避免 Android 端保存 Web 服务 Key。
+- AI 助手：读取当前旅行计划上下文，调用 DeepSeek 模型进行中文问答，并支持结构化行程建议、用户确认后再修改本地计划。
+- 后端：FastAPI 代理高德 Web 服务、路线服务、天气服务、内容管道和 DeepSeek AI 服务，避免 Android 端保存服务端 Key。
 
 ## 项目结构
 
@@ -31,7 +31,7 @@ F:\travel-app
 │   │   ├── core/            # 配置读取
 │   │   ├── schemas/         # 请求与响应模型
 │   │   ├── services/        # 高德、路线、天气、AI 服务封装
-│   │   └── scripts/         # Ark Key 验证脚本等
+│   │   └── scripts/         # DeepSeek Key 验证脚本等
 │   ├── tests/
 │   ├── .env.example
 │   └── requirements.txt
@@ -65,7 +65,7 @@ F:\travel-app
 - HTTPX
 - Pytest
 - 高德 Web 服务 API
-- 火山方舟 Ark OpenAI-compatible API
+- DeepSeek OpenAI-compatible API
 
 ## 整体架构
 
@@ -76,11 +76,11 @@ flowchart TD
     C --> D["Retrofit / OkHttp"]
     D --> E["FastAPI Backend"]
     E --> F["高德 Web 服务 API"]
-    E --> G["火山方舟 / 豆包 AI"]
+    E --> G["DeepSeek AI"]
     C --> H["SharedPreferences + Gson 本地计划数据"]
 ```
 
-Android 端只保存 Android 地图 SDK Key，用于地图渲染；高德 Web 服务 Key 和 Ark API Key 只放在 FastAPI 后端 `.env` 中。
+Android 端只保存 Android 地图 SDK Key，用于地图渲染；高德 Web 服务 Key 和 DeepSeek API Key 只放在 FastAPI 后端 `.env` 中。
 
 ## 功能说明
 
@@ -138,7 +138,7 @@ AI 助手不是孤立的聊天机器人，而是可以读取当前旅行计划�
   - 路线摘要
   - 天气摘要
   - 最近对话历史
-- FastAPI 调用 Ark / 豆包模型生成中文回复。
+- FastAPI 调用 DeepSeek 模型生成中文回复。
 - 支持加载中、错误、重试和快捷追问。
 - 支持结构化建议动作：
   - 移动地点到某个 DAY
@@ -171,7 +171,7 @@ AI 行为边界：
 - “故宫必须去”“第 2 天故宫 10:00 预约”“不要去王府井”等补充要求会先解析为独立地点约束：必去点单独向高德召回，最终真实路线完成后再次检查是否保留。
 - 官方节假日开放调整优先于常规周营业时间；接驳停运、限定入口和交通管制只形成访问提示，不会误判为整座景区闭园。
 - 官方最大日承载量、票价和预约规则会进入地点说明与 AI 只读上下文；带明确生效日期的“预约已满、售罄、达到最大承载量或停止售票”公告会将该景点标记为当日不可用，无日期的历史票务信息只作为提示。
-- 高德逐段路线核验完成后才调用 Ark。模型只能返回候选 `sourcePoiId` 的局部补丁，不能创建地点或重写整份行程。
+- 高德逐段路线核验完成后才调用 DeepSeek。模型只能返回候选 `sourcePoiId` 的局部补丁，不能创建地点或重写整份行程。
 - AI 补丁必须重新通过闭馆、餐期、锚点、路线完整性、通勤和强度校验，综合目标至少提升 3% 才会采纳。
 - AI 优化期间持续发布等待心跳，不设置额外的服务层硬截止；模型返回后再验收局部补丁，格式不合格或没有量化收益时保留约束草案。
 - 车站、机场和酒店仅在用户明确选择时加入；选择目的城市不会预取或展示到达/离开点，只有用户实际输入至少 2 个字符后才请求城市内联想。
@@ -197,7 +197,7 @@ http://127.0.0.1:8000/docs
 | 健康 | GET | `/api/health` | 后端基础健康检查 |
 | 健康 | GET | `/api/health/amap` | 高德 Web 服务 Key 配置状态 |
 | 健康 | GET | `/api/health/reviews` | 授权 UGC 提供方、授权开关与配置状态 |
-| 健康 | GET | `/api/health/ai` | Ark AI 配置状态 |
+| 健康 | GET | `/api/health/ai` | DeepSeek AI 配置状态 |
 | 探索 | GET | `/api/explore/cities/search` | 城市搜索 |
 | 探索 | GET | `/api/explore/input-tips` | 地点输入提示 |
 | 探索 | GET | `/api/explore/pois/search` | 城市分类 POI / 关键词地点搜索 |
@@ -268,24 +268,22 @@ MEDIACRAWLER_TOOL_DIR=../tools/MediaCrawler
 MEDIACRAWLER_RUN_DIR=data/mediacrawler-runs
 MEDIACRAWLER_TIMEOUT_SECONDS=10800
 
-ARK_API_KEY=
-ARK_MODEL=doubao-seed-2-1-pro-260628
-ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_REQUEST_TIMEOUT_SECONDS=240
-ARK_MAX_OUTPUT_TOKENS=1200
-ARK_TEMPERATURE=0.35
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_REQUEST_TIMEOUT_SECONDS=240
+DEEPSEEK_MAX_OUTPUT_TOKENS=8000
+DEEPSEEK_TEMPERATURE=0.35
 ```
 
 说明：
 
 - `AMAP_WEB_SERVICE_KEY` 用于后端调用高德 Web 服务，包括 POI、输入提示、天气和路线。
-- `UGC_PROVIDER_AUTHORIZED` 默认关闭。它只是“项目已取得相应授权”的显式确认；配置第三方 Key 本身不代表获得小红书内容的商业使用授权。
-- TikHub 目前只是可替换的 UGC 适配器。生产环境应替换为平台合作、内容采购或其他有书面授权的数据源；未授权时只展示高德事实与景区官方信息。
-- `CONTENT_ADMIN_TOKEN` 只用于后台采集管理接口，必须通过 `X-Content-Admin-Token` 请求头传入，不能打包到 Android App。
-- 后端不保存 UGC 图片、视频、原文或原作者标识，只保存来源笔记 ID/链接、匿名作者哈希、短摘要、标签、证据 ID、更新时间和软删除状态。
-- 1 条可追溯体验即可作为参考展示，并在界面标注样本量和“仅供参考”；3 条及以上显示为交叉参考。排队信息 7 天过期，其他体验信息 30 天过期，高德事实信息按 1 天核验周期管理。
-- 第一版景区官方连接器已支持故宫、九寨沟、黄山、秦始皇帝陵博物院和成都大熊猫繁育研究基地：读取官网公告、预约规则、官方票价、开放时间、承载量等公开信息，保留原始官方链接与核验时间；它们是受域名白名单约束的网页监测适配器，不伪装成官方开放 API。
-- `ARK_API_KEY` 用于后端调用火山方舟 / 豆包模型。
+- `TIKHUB_API_KEY` 只用于已经取得相应数据使用授权的内容适配器；还必须显式设置 `UGC_PROVIDER_AUTHORIZED=true` 才会启用。
+- 未启用授权 UGC 或上游不可用时，页面继续展示高德地点事实与官方内容，不会伪造真实评价。
+- `REVIEW_DATABASE_PATH`、`REVIEW_AUTHOR_HASH_SALT` 和 `CONTENT_ADMIN_TOKEN` 用于 PR #11 引入的内容清洗、匿名化、缓存和管理接口。
+- 生产环境接入前应确认内容展示、缓存、跳转和用户隐私符合平台条款；服务端只返回来源标题、作者、短摘要和原文链接，不复制完整笔记。
+- `DEEPSEEK_API_KEY` 用于后端调用 DeepSeek 模型；所有 AI 对话与智能规划共用该提供商。
 - README 只保留变量名，不应出现真实 Key。
 
 ### Android `local.properties`
@@ -454,11 +452,11 @@ cd F:\travel-app\backend
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Ark 配置低成本验证：
+DeepSeek 配置低成本验证：
 
 ```powershell
 cd F:\travel-app\backend
-.\.venv\Scripts\python.exe -m app.scripts.verify_ark
+.\.venv\Scripts\python.exe -m app.scripts.verify_deepseek
 ```
 
 Android 构建：
@@ -474,7 +472,7 @@ cd F:\travel-app\android
 - 卸载 App 会清除本地计划数据。
 - 当前不做账号登录、云端同步和多设备同步。
 - 路线结果不长期持久化，进入计划详情时会重新向后端请求计算。
-- 高德 Web 服务 Key 和 Ark API Key 只应保存在 `backend/.env`。
+- 高德 Web 服务 Key 和 DeepSeek API Key 只应保存在 `backend/.env`。
 - Android 端只保存高德 Android 地图 SDK Key。
 - `.gitignore` 已忽略 `.env`、`local.properties`、虚拟环境、构建产物、APK、签名文件和常见系统文件。
 
@@ -507,8 +505,8 @@ cd F:\travel-app\android
 
 - 问题尽量具体。
 - 不要一次发送过多地点和过长历史。
-- 检查 `ARK_REQUEST_TIMEOUT_SECONDS`。
-- 检查火山方舟控制台模型和额度状态。
+- 检查 `DEEPSEEK_REQUEST_TIMEOUT_SECONDS`。
+- 检查 DeepSeek 控制台的 API Key 和额度状态。
 
 ### 4. 中文输入异常
 

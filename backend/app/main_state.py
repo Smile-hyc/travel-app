@@ -5,7 +5,7 @@ from app.services.amap_client import AmapClient
 from app.services.amap_poi_service import AmapPoiService
 from app.services.amap_route_service import AmapRouteService
 from app.services.amap_weather_service import AmapWeatherService
-from app.services.ark_client import ArkClient
+from app.services.deepseek_client import DeepSeekClient
 from app.services.travel_ai_service import TravelAiService
 from app.services.ai_plan_job_manager import AiPlanJobManager
 from app.services.travel_plan_generation_service import TravelPlanGenerationService
@@ -33,7 +33,7 @@ amap_client = AmapClient(settings)
 amap_poi_service = AmapPoiService(amap_client)
 amap_route_service = AmapRouteService(amap_client)
 amap_weather_service = AmapWeatherService(amap_client)
-ark_client = ArkClient(settings)
+deepseek_client = DeepSeekClient(settings)
 tikhub_review_client = TikhubReviewClient(settings)
 review_store = ReviewStore(settings.review_database_path)
 initialize_official_directory(review_store)
@@ -44,9 +44,9 @@ place_detail_service = PlaceDetailService(
     cache_ttl_seconds=settings.review_cache_ttl_seconds,
     empty_cache_ttl_seconds=settings.review_empty_cache_ttl_seconds,
 )
-travel_ai_service = TravelAiService(ark_client)
+travel_ai_service = TravelAiService(deepseek_client, amap_poi_service)
 travel_plan_generation_service = TravelPlanGenerationService(
-    ark_client,
+    deepseek_client,
     amap_poi_service,
     amap_route_service,
     amap_weather_service,

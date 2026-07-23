@@ -1,6 +1,5 @@
 package com.heoclub.aitravel.ui.createplan
 
-import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,7 +29,6 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -40,7 +38,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -68,24 +65,7 @@ import com.heoclub.aitravel.ui.components.PlaceCoverImage
 import com.heoclub.aitravel.ui.explore.ExploreMap
 import com.heoclub.aitravel.ui.explore.MapCameraCommand
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.delay
 import androidx.compose.foundation.rememberScrollState
-
-internal const val CURRENT_PLAN_FALLBACK_DELAY_SECONDS = 30
-
-internal fun canUseCurrentPlan(
-    waitingForAi: Boolean,
-    waitingSeconds: Int,
-    partialDayCount: Int,
-    completedDays: Int,
-    totalDays: Int,
-): Boolean {
-    return waitingForAi &&
-        waitingSeconds >= CURRENT_PLAN_FALLBACK_DELAY_SECONDS &&
-        partialDayCount > 0 &&
-        totalDays > 0 &&
-        completedDays >= totalDays
-}
 
 @Composable
 fun AiPlanGenerationScreen(
@@ -212,7 +192,6 @@ fun AiPlanGenerationScreen(
                         followActiveDay = false
                     },
                     onOpenPlace = onOpenPlace,
-                    onUseCurrentDraft = { viewModel.useCurrentDraftWithoutAi() },
                     onCancel = {
                         viewModel.cancel()
                         onBack()
@@ -294,7 +273,6 @@ private fun LoadingPlanContent(
     selectedDayIndex: Int,
     onSelectDay: (Int) -> Unit,
     onOpenPlace: (String) -> Unit,
-    onUseCurrentDraft: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val selectedDay = partialDays.firstOrNull { it.dayIndex == selectedDayIndex }
@@ -306,35 +284,10 @@ private fun LoadingPlanContent(
     }
     val waitingForAi = (progress == 74 && completedDays >= totalDays) ||
         stage.contains("等待 AI") || stage.contains("AI 深度优化")
-    var aiWaitingSeconds by rememberSaveable { mutableIntStateOf(0) }
-    var aiWaitingStartedAtMillis by rememberSaveable { mutableStateOf(0L) }
-    var showUseDraftDialog by rememberSaveable { mutableStateOf(false) }
-    val canUseCurrentPlan = canUseCurrentPlan(
-        waitingForAi = waitingForAi,
-        waitingSeconds = aiWaitingSeconds,
-        partialDayCount = partialDays.size,
-        completedDays = completedDays,
-        totalDays = totalDays,
-    )
-    LaunchedEffect(waitingForAi) {
-        if (!waitingForAi) {
-            aiWaitingSeconds = 0
-            aiWaitingStartedAtMillis = 0L
-            return@LaunchedEffect
-        }
-        if (aiWaitingStartedAtMillis == 0L) {
-            aiWaitingStartedAtMillis = SystemClock.elapsedRealtime()
-        }
-        while (true) {
-            val elapsedMillis = (SystemClock.elapsedRealtime() - aiWaitingStartedAtMillis).coerceAtLeast(0L)
-            aiWaitingSeconds = (elapsedMillis / 1_000L).toInt()
-            delay(1_000L - (elapsedMillis % 1_000L))
-        }
-    }
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp)) {
         Text("正在规划行程", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
-            planningStageText(progress, completedDays, totalDays, waitingForAi, aiWaitingSeconds),
+            planningStageText(progress, completedDays, totalDays, waitingForAi),
             modifier = Modifier
                 .padding(top = 8.dp)
                 .semantics { liveRegion = LiveRegionMode.Polite },
@@ -462,42 +415,13 @@ private fun LoadingPlanContent(
         ) {
             OutlinedButton(
                 onClick = onCancel,
-                modifier = Modifier.weight(if (canUseCurrentPlan) 0.42f else 1f).height(52.dp),
+                modifier = Modifier.weight(1f).height(52.dp),
                 shape = RoundedCornerShape(18.dp),
             ) {
                 Icon(Icons.Outlined.Close, contentDescription = null)
                 Text("取消规划", modifier = Modifier.padding(start = 8.dp))
             }
-            if (canUseCurrentPlan) {
-                Button(
-                    onClick = { showUseDraftDialog = true },
-                    modifier = Modifier.weight(0.58f).height(52.dp),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Text("使用当前方案")
-                }
-            }
         }
-    }
-    if (showUseDraftDialog) {
-        AlertDialog(
-            onDismissRequest = { showUseDraftDialog = false },
-            title = { Text("使用当前方案？") },
-            text = {
-                Text("将结束本次智能优化，并保存已结合天气、开放时间与实际路线安排的当前方案。")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showUseDraftDialog = false
-                        onUseCurrentDraft()
-                    },
-                ) { Text("确认使用") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUseDraftDialog = false }) { Text("继续优化") }
-            },
-        )
     }
 }
 
@@ -791,10 +715,9 @@ private fun planningStageText(
     completedDays: Int,
     totalDays: Int,
     waitingForAi: Boolean,
-    waitingSeconds: Int,
 ): String {
     return when {
-        waitingForAi -> "正在优化行程节奏与每日主题 · ${waitingSeconds} 秒"
+        waitingForAi -> "正在优化行程节奏与每日主题"
         progress < 20 -> "正在确认目的地与出行日期"
         progress < 45 -> "正在结合天气和偏好筛选地点"
         progress < 74 -> "正在安排每日景点、用餐与住宿衔接"
