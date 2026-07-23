@@ -52,6 +52,8 @@ data class AiPlanContext(
     val dateRange: String? = null,
     val revision: Long? = null,
     val updatedAt: Long? = null,
+    val currentDate: String? = null,
+    val todayDayIndex: Int? = null,
     val days: List<AiDayContext> = emptyList(),
     val unplannedPlaces: List<AiPlaceContext> = emptyList(),
     val weather: AiWeatherContext? = null,
@@ -64,6 +66,7 @@ data class AiChatRequest(
     val message: String,
     val history: List<AiHistoryMessage> = emptyList(),
     val context: AiPlanContext? = null,
+    val planContexts: List<AiPlanContext> = emptyList(),
 )
 
 data class AiChatResponse(

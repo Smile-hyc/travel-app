@@ -37,6 +37,24 @@ interface TravelPlanRepository {
 
     fun deletePlan(planId: String): Boolean
 
+    fun updatePlanTitle(planId: String, title: String)
+
+    fun updatePlanDateRange(planId: String, dateRange: String, dayCount: Int)
+
+    fun updateDayTitle(planId: String, dayIndex: Int, title: String)
+
+    fun updatePlanItemVisitTime(
+        planId: String,
+        dayIndex: Int,
+        itemId: String,
+        suggestedStart: String?,
+        suggestedEnd: String?,
+    )
+
+    fun movePlanItemToDay(planId: String, itemId: String, toDayIndex: Int)
+
+    fun removePlanItem(planId: String, itemId: String)
+
     fun addPlaceToPlan(
         planId: String,
         place: PlaceSummary,
@@ -241,6 +259,104 @@ open class InMemoryTravelPlanRepository(
             persistCurrentPlans()
         }
         return deleted
+    }
+
+    override fun updatePlanTitle(planId: String, title: String) {
+        val cleanTitle = title.trim().take(60)
+        if (cleanTitle.isBlank()) return
+        updatePlan(planId) { plan ->
+            plan.takeIf { it.title == cleanTitle } ?: plan.copy(title = cleanTitle).nextRevision()
+        }
+    }
+
+    override fun updatePlanDateRange(planId: String, dateRange: String, dayCount: Int) {
+        val cleanRange = dateRange.trim().take(40)
+        val safeDayCount = dayCount.coerceIn(1, 15)
+        if (cleanRange.isBlank()) return
+        updatePlan(planId) { plan ->
+            val existingDays = ensureDays(plan).sortedBy { it.dayIndex }
+            val resizedDays = List(safeDayCount) { index ->
+                existingDays.getOrNull(index)?.copy(dayIndex = index + 1)
+                    ?: PlanDay(
+                        id = "${plan.id}-day-${index + 1}",
+                        dayIndex = index + 1,
+                        title = "DAY ${index + 1}",
+                    )
+            }
+            val removedDayItems = existingDays.drop(safeDayCount).flatMap { it.items }
+            val updatedUnplanned = normalizeOrders(plan.unplannedItems + removedDayItems).map { item ->
+                item.copy(dayId = UNPLANNED_DAY_ID, dayIndex = UNPLANNED_DAY_INDEX)
+            }
+            if (plan.dateRange == cleanRange && plan.dayCount == safeDayCount) {
+                plan
+            } else {
+                plan.copy(
+                    dateRange = cleanRange,
+                    dayCount = safeDayCount,
+                    days = resizedDays,
+                    unplannedItems = updatedUnplanned,
+                ).nextRevision()
+            }
+        }
+    }
+
+    override fun updateDayTitle(planId: String, dayIndex: Int, title: String) {
+        val cleanTitle = title.trim().take(40)
+        if (cleanTitle.isBlank()) return
+        updatePlan(planId) { plan ->
+            val updatedDays = ensureDays(plan).map { day ->
+                if (day.dayIndex == dayIndex) day.copy(title = cleanTitle) else day
+            }
+            if (updatedDays == plan.days) plan else plan.copy(days = updatedDays).nextRevision()
+        }
+    }
+
+    override fun updatePlanItemVisitTime(
+        planId: String,
+        dayIndex: Int,
+        itemId: String,
+        suggestedStart: String?,
+        suggestedEnd: String?,
+    ) {
+        val cleanStart = suggestedStart?.trim()?.takeIf(String::isNotBlank)
+        val cleanEnd = suggestedEnd?.trim()?.takeIf(String::isNotBlank)
+        updatePlan(planId) { plan ->
+            val updatedDays = ensureDays(plan).map { day ->
+                if (day.dayIndex != dayIndex) return@map day
+                day.copy(
+                    items = day.items.map { item ->
+                        if (item.id == itemId) {
+                            item.copy(suggestedStart = cleanStart, suggestedEnd = cleanEnd)
+                        } else {
+                            item
+                        }
+                    },
+                )
+            }
+            if (updatedDays == plan.days) plan else plan.copy(days = updatedDays).nextRevision()
+        }
+    }
+
+    override fun movePlanItemToDay(planId: String, itemId: String, toDayIndex: Int) {
+        updatePlan(planId) { plan ->
+            val located = plan.findItem(itemId) ?: return@updatePlan plan
+            if (located.dayIndex == toDayIndex) return@updatePlan plan
+            val targetDay = ensureDays(plan).firstOrNull { it.dayIndex == toDayIndex }
+                ?: return@updatePlan plan
+            plan.removeItem(itemId)
+                .insertIntoDay(
+                    item = located.item.copy(dayId = targetDay.id, dayIndex = targetDay.dayIndex),
+                    dayIndex = targetDay.dayIndex,
+                    position = Int.MAX_VALUE,
+                )
+                .nextRevision()
+        }
+    }
+
+    override fun removePlanItem(planId: String, itemId: String) {
+        updatePlan(planId) { plan ->
+            if (plan.findItem(itemId) == null) plan else plan.removeItem(itemId).nextRevision()
+        }
     }
 
     override fun addPlaceToPlan(
@@ -587,6 +703,19 @@ open class InMemoryTravelPlanRepository(
             plan = sanitizePlans(listOf(workingPlan)).first(),
             affectedDayIndexes = affectedDays.toList(),
         )
+    }
+
+    private fun updatePlan(planId: String, transform: (TravelPlan) -> TravelPlan) {
+        var changed = false
+        _plans.update { current ->
+            current.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updated = transform(plan)
+                if (updated != plan) changed = true
+                updated
+            }
+        }
+        if (changed) persistCurrentPlans()
     }
 
     private fun persistCurrentPlans() {

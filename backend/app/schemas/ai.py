@@ -66,6 +66,8 @@ class AiPlanContext(BaseModel):
     dateRange: str | None = None
     revision: int | None = None
     updatedAt: int | None = None
+    currentDate: str | None = None
+    todayDayIndex: int | None = None
     days: list[AiDayContext] = Field(default_factory=list)
     unplannedPlaces: list[AiPlaceContext] = Field(default_factory=list)
     weather: AiWeatherContext | None = None
@@ -78,6 +80,7 @@ class AiChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[AiHistoryMessage] = Field(default_factory=list, max_length=12)
     context: AiPlanContext | None = None
+    planContexts: list[AiPlanContext] = Field(default_factory=list)
 
 
 AiSuggestedActionType = Literal[

@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from pydantic import ValidationError
 
@@ -43,7 +43,21 @@ class TravelAiService:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._system_prompt()},
         ]
-        if context_text:
+        if request.planContexts:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "以下是用户计划页面中的全部旅行计划和每日行程。"
+                        "你必须把这些内容作为每轮对话的长期计划记忆。"
+                        "用户询问今天时，使用 todayDayIndex 不为空的计划；"
+                        "用户询问某个目的地、日期或计划名称时，从全部计划中匹配，不能声称没有绑定计划。"
+                        f"当前用于调整操作的计划 ID：{request.planId or '无'}。\n"
+                        f"{self._format_all_plan_contexts(request.planContexts)}"
+                    ),
+                },
+            )
+        elif context_text:
             messages.append(
                 {
                     "role": "system",
@@ -92,6 +106,15 @@ class TravelAiService:
         messages.append({"role": "user", "content": request.message.strip()[:800]})
         return messages
 
+    def _format_all_plan_contexts(self, contexts: list[AiPlanContext]) -> str:
+        sections: list[str] = []
+        for index, context in enumerate(contexts, start=1):
+            sections.append(
+                f"===== 计划页计划 {index}/{len(contexts)} =====\n"
+                f"{self._format_plan_context(context)}"
+            )
+        return "\n".join(sections)
+
     async def chat_stream(self, request: AiChatRequest) -> AsyncGenerator[str, None]:
         """流式对话：逐 chunk yield SSE 事件字符串。"""
         conversation_id = request.conversationId or str(uuid.uuid4())
@@ -107,7 +130,11 @@ class TravelAiService:
         parsed_reply, raw_actions, raw_cards, parse_warnings = self._parse_ai_reply(full_text)
         actions, validation_warnings = self._validate_actions(raw_actions, request.context)
         cards, card_warnings = self._validate_cards(raw_cards, request.context, actions)
-        visible_reply = self._linkify_places(parsed_reply or full_text, retrieved_places)
+        visible_reply = self._linkify_places(
+            parsed_reply or full_text,
+            retrieved_places,
+            request.planContexts,
+        )
         all_warnings = parse_warnings + validation_warnings + card_warnings
         recommended_places = self._to_recommended_places(retrieved_places)
 
@@ -141,7 +168,11 @@ class TravelAiService:
         parsed_reply, raw_actions, raw_cards, parse_warnings = self._parse_ai_reply(raw_reply)
         actions, validation_warnings = self._validate_actions(raw_actions, request.context)
         cards, card_warnings = self._validate_cards(raw_cards, request.context, actions)
-        visible_reply = self._linkify_places(parsed_reply or raw_reply, retrieved_places)
+        visible_reply = self._linkify_places(
+            parsed_reply or raw_reply,
+            retrieved_places,
+            request.planContexts,
+        )
         recommended_places = self._to_recommended_places(retrieved_places)
 
         return AiChatResponse(
@@ -273,36 +304,128 @@ class TravelAiService:
             + "\n".join(context_lines)
         )[:1400]
 
-    def _linkify_places(self, reply: str, places: list[PlaceSummary]) -> str:
+    def _linkify_places(
+        self,
+        reply: str,
+        places: list[PlaceSummary],
+        plan_contexts: list[AiPlanContext] | None = None,
+    ) -> str:
         # Models sometimes wrap a complete Markdown link in **bold**. That
         # creates overlapping spans in lightweight mobile Markdown renderers
         # and can expose both the raw URL and a duplicate blue label. Internal
         # place links own their visual emphasis, so remove the outer wrapper.
         linked = re.sub(
-            r"\*\*(\[[^\]\n]+\]\(aitravel://place/[^)\s]+\))\*\*",
+            r"\*\*([^\n]*?\[[^\]\n]+\]\(aitravel://place/[^)\s]+\)[^\n]*?)\*\*",
             r"\1",
             reply,
         )
         linked = re.sub(
-            r"__(\[[^\]\n]+\]\(aitravel://place/[^)\s]+\))__",
+            r"__([^\n]*?\[[^\]\n]+\]\(aitravel://place/[^)\s]+\)[^\n]*?)__",
             r"\1",
             linked,
         )
-        for place in sorted(places, key=lambda value: len(value.name), reverse=True):
-            if not place.name or place.name not in linked:
+        link_targets: list[tuple[str, str]] = [
+            (place.name, place.id) for place in places if place.name and place.id
+        ]
+        for context in plan_contexts or []:
+            for day in context.days:
+                link_targets.extend(
+                    (place.name, place.itemId)
+                    for place in day.places
+                    if place.name and place.itemId
+                )
+            link_targets.extend(
+                (place.name, place.itemId)
+                for place in context.unplannedPlaces
+                if place.name and place.itemId
+            )
+        link_targets = list(dict.fromkeys(link_targets))
+        allowed_place_ids = {place_id for _, place_id in link_targets}
+
+        internal_link_pattern = re.compile(
+            r"\[([^\]\n]+)\]\(aitravel://place/([^)\s]+)\)"
+        )
+        linked = internal_link_pattern.sub(
+            lambda match: (
+                match.group(0)
+                if unquote(match.group(2)) in allowed_place_ids
+                else match.group(1)
+            ),
+            linked,
+        )
+
+        for place_name, place_id in sorted(link_targets, key=lambda value: len(value[0]), reverse=True):
+            if place_name not in linked:
                 continue
-            internal_url = f"aitravel://place/{quote(place.id, safe=':')}"
-            markdown = f"[{place.name}]({internal_url})"
+            internal_url = f"aitravel://place/{quote(place_id, safe=':')}"
+            markdown = f"[{place_name}]({internal_url})"
             if markdown in linked:
                 continue
             # DeepSeek often bolds landmark names. Remove the outer emphasis so
             # Android's lightweight Markdown renderer sees one unambiguous link.
-            linked = linked.replace(f"**{place.name}**", markdown)
-            linked = linked.replace(f"__{place.name}__", markdown)
+            linked = linked.replace(f"**{place_name}**", markdown)
+            linked = linked.replace(f"__{place_name}__", markdown)
             if markdown in linked:
+                pass
+            else:
+                linked = linked.replace(place_name, markdown)
+
+            # Keep a single clickable label when the model emits the same
+            # place as adjacent plain text and Markdown, or repeats the link.
+            escaped_name = re.escape(place_name)
+            escaped_markdown = re.escape(markdown)
+            linked = re.sub(
+                rf"(?:{escaped_name}\s*)?{escaped_markdown}(?:\s*{escaped_name})?",
+                markdown,
+                linked,
+            )
+            linked = re.sub(
+                rf"{escaped_markdown}(?:\s*{escaped_markdown})+",
+                markdown,
+                linked,
+            )
+        return self._dedupe_internal_place_links(linked)
+
+    def _dedupe_internal_place_links(self, reply: str) -> str:
+        link_pattern = re.compile(
+            r"\[([^\]\n]+)\]\((aitravel://place/[^)\s]+)\)"
+        )
+        normalized_lines: list[str] = []
+        for line in reply.split("\n"):
+            unique_links = list(dict.fromkeys(match.group(0) for match in link_pattern.finditer(line)))
+            if not unique_links:
+                normalized_lines.append(line)
                 continue
-            linked = linked.replace(place.name, markdown)
-        return linked
+
+            normalized = line
+            link_details: list[tuple[str, str, str, str]] = []
+            for index, markdown in enumerate(unique_links):
+                match = link_pattern.fullmatch(markdown)
+                if match is None:
+                    continue
+                label, url = match.groups()
+                token = f"\ue000PLACE_LINK_{index}\ue001"
+                normalized = normalized.replace(markdown, token)
+                link_details.append((markdown, label, url, token))
+
+            for _, label, url, token in link_details:
+                normalized = normalized.replace(f"**{label}**", "")
+                normalized = normalized.replace(f"__{label}__", "")
+                normalized = normalized.replace(label, "")
+                normalized = re.sub(rf"\(?{re.escape(url)}\)?", "", normalized)
+                first_token = normalized.find(token)
+                if first_token >= 0:
+                    after_first = first_token + len(token)
+                    normalized = (
+                        normalized[:after_first]
+                        + normalized[after_first:].replace(token, "")
+                    )
+
+            for markdown, _, _, token in link_details:
+                normalized = normalized.replace(token, markdown)
+            normalized_lines.append(normalized.strip())
+
+        return "\n".join(normalized_lines)
 
     def _to_recommended_places(self, places: list[PlaceSummary]) -> list[AiRecommendedPlace]:
         recommendations: list[AiRecommendedPlace] = []
@@ -627,7 +750,15 @@ class TravelAiService:
             f"计划：{context.title or '未命名计划'}",
             f"目的地：{context.destination or '未知'}",
             f"日期：{context.dateRange or '未设置'}",
+            f"当前日期：{context.currentDate or '未知'}",
         ]
+        if context.todayDayIndex is not None:
+            lines.append(
+                f"今天对应计划中的 DAY {context.todayDayIndex}。"
+                "用户询问今天的行程时，只介绍这一天的真实安排，不要说没有绑定计划。"
+            )
+        else:
+            lines.append("当前日期不在该计划日期范围内。")
         if context.weather and context.weather.text:
             lines.append(f"天气：{context.weather.text}（{context.weather.reportTime or '无报告时间'}）")
         else:

@@ -1,6 +1,6 @@
 import asyncio
 
-from app.schemas.ai import AiChatRequest, AiHistoryMessage
+from app.schemas.ai import AiChatRequest, AiDayContext, AiHistoryMessage, AiPlaceContext, AiPlanContext
 from app.schemas.explore import CitySearchResult, PaginatedPlaces, PlaceSummary
 from app.services.travel_ai_service import TravelAiService
 
@@ -140,3 +140,91 @@ def test_followup_uses_previous_city_when_current_question_only_names_business_a
     assert "current_user: 推荐西北角附近的美食店铺" in planner_input
     assert "[耳朵眼会馆](aitravel://place/amap:B001)" in response.message
     assert response.recommendedPlaces[0].coverImageUrl == "https://example.com/place.jpg"
+
+
+def test_linkify_keeps_one_link_when_bold_line_or_plain_name_duplicates_it() -> None:
+    service = TravelAiService(FakeModelClient(), FakePoiService())
+    target = PlaceSummary(
+        id="amap:B001",
+        sourcePoiId="B001",
+        name="耳朵眼会馆",
+        category="food",
+        categoryCode="food",
+        latitude=39.14,
+        longitude=117.18,
+    )
+    markdown = "[耳朵眼会馆](aitravel://place/amap:B001)"
+
+    result = service._linkify_places(
+        f"**1. {markdown}**\n**耳朵眼会馆** (aitravel://place/amap:B001) {markdown}\n{markdown} {markdown}",
+        [target],
+    )
+
+    assert result == f"1. {markdown}\n{markdown}\n{markdown}"
+
+
+def test_every_chat_request_includes_all_plan_page_contexts() -> None:
+    service = TravelAiService(FakeModelClient(), None)
+    plans = [
+        AiPlanContext(
+            id="shanghai-plan",
+            title="上海一日游",
+            destination="上海",
+            dateRange="07.23 - 07.23",
+            currentDate="2026-07-23",
+            todayDayIndex=1,
+            days=[
+                AiDayContext(
+                    dayIndex=1,
+                    title="上海城市漫步",
+                    places=[AiPlaceContext(itemId="p1", name="外滩", visitOrder=1)],
+                )
+            ],
+        ),
+        AiPlanContext(
+            id="tianjin-plan",
+            title="天津周末游",
+            destination="天津",
+            dateRange="07.26 - 07.27",
+            currentDate="2026-07-23",
+            days=[AiDayContext(dayIndex=1, title="天津古文化街")],
+        ),
+    ]
+
+    messages = service._build_messages(
+        AiChatRequest(
+            message="我的计划里有哪些行程？",
+            planId="shanghai-plan",
+            context=plans[0],
+            planContexts=plans,
+        )
+    )
+    all_plans_prompt = messages[1]["content"]
+
+    assert "计划页面中的全部旅行计划" in all_plans_prompt
+    assert "上海一日游" in all_plans_prompt
+    assert "外滩" in all_plans_prompt
+    assert "天津周末游" in all_plans_prompt
+    assert "天津古文化街" in all_plans_prompt
+
+
+def test_plan_places_become_valid_links_and_unknown_links_are_not_clickable() -> None:
+    service = TravelAiService(FakeModelClient(), None)
+    context = AiPlanContext(
+        id="shanghai-plan",
+        title="上海一日游",
+        days=[
+            AiDayContext(
+                dayIndex=1,
+                places=[AiPlaceContext(itemId="amap:PLAN001", name="外滩")],
+            )
+        ],
+    )
+
+    result = service._linkify_places(
+        "外滩和[不存在地点](aitravel://place/amap:UNKNOWN)",
+        [],
+        [context],
+    )
+
+    assert result == "[外滩](aitravel://place/amap:PLAN001)和不存在地点"
