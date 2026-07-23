@@ -22,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -56,7 +57,6 @@ import com.heoclub.aitravel.ui.detail.PlanDetailViewModel
 import com.heoclub.aitravel.ui.discover.DiscoverScreen
 import com.heoclub.aitravel.ui.explore.ExploreViewModel
 import com.heoclub.aitravel.ui.explore.rememberExploreMapViewHolder
-import com.heoclub.aitravel.ui.home.HomeViewModel
 import com.heoclub.aitravel.ui.journey.JourneyJournalEditorScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalDetailScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalScreen
@@ -66,6 +66,7 @@ import com.heoclub.aitravel.ui.plan.PlanHomeScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeViewModel
 import com.heoclub.aitravel.ui.place.PlaceDetailScreen
 import com.heoclub.aitravel.ui.place.PlaceDetailViewModel
+import com.heoclub.aitravel.ui.auth.AuthScreen
 import com.heoclub.aitravel.ui.profile.ProfileScreen
 
 private object Routes {
@@ -216,6 +217,20 @@ private data class ExplorePlanContext(
 fun AiTravelNavHost() {
     val navController = rememberNavController()
     val application = LocalContext.current.applicationContext as AiTravelApplication
+    val authRepository = application.container.authRepository
+    var isLoggedIn by remember { mutableStateOf(authRepository.isLoggedIn) }
+    var authEntryCount by remember { mutableIntStateOf(0) }
+
+    if (!isLoggedIn) {
+        AuthScreen(
+            authRepository = authRepository,
+            healthRepository = application.container.healthRepository,
+            viewModelKey = authEntryCount,
+            onAuthSuccess = { isLoggedIn = true },
+        )
+        return
+    }
+
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val currentRoute = currentDestination?.route
@@ -362,10 +377,19 @@ fun AiTravelNavHost() {
                 )
             }
             composable(AppDestination.Profile.route) {
-                val homeViewModel: HomeViewModel = viewModel(
-                    factory = HomeViewModel.Factory(application.container.healthRepository),
+                val profileViewModel: com.heoclub.aitravel.ui.profile.ProfileViewModel = viewModel(
+                    factory = com.heoclub.aitravel.ui.profile.ProfileViewModel.Factory(
+                        authRepository = application.container.authRepository,
+                        healthRepository = application.container.healthRepository,
+                    ),
                 )
-                ProfileScreen(viewModel = homeViewModel)
+                ProfileScreen(
+                    viewModel = profileViewModel,
+                    onLoggedOut = {
+                        authEntryCount++
+                        isLoggedIn = false
+                    },
+                )
             }
             composable(Routes.journeyJournal) {
                 JourneyJournalScreen(

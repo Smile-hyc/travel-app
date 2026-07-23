@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     review_author_hash_salt: str = "change-me-in-production"
     content_admin_token: str = ""
     mediacrawler_data_dir: str = "../tools/MediaCrawler/data/xhs/jsonl"
+    user_database_path: str = "data/users.sqlite3"
+    jwt_secret: str = "change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
+    captcha_ttl_seconds: int = 300
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
@@ -87,6 +93,10 @@ class Settings(BaseSettings):
     @property
     def content_admin_configured(self) -> bool:
         return len(self.content_admin_token.strip()) >= 16
+
+    @property
+    def user_database_url(self) -> str:
+        return f"sqlite+aiosqlite:///{self.user_database_path}"
 
 
 @lru_cache

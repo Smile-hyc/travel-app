@@ -20,11 +20,18 @@ import com.heoclub.aitravel.data.model.PlaceEnrichmentBatchResponse
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.RouteSegment
 import com.heoclub.aitravel.data.model.RouteSegmentRequest
+import com.heoclub.aitravel.data.model.CaptchaResponse
+import com.heoclub.aitravel.data.model.LoginRequest
+import com.heoclub.aitravel.data.model.RegisterRequest
+import com.heoclub.aitravel.data.model.TokenResponse
+import com.heoclub.aitravel.data.model.User
+import com.heoclub.aitravel.data.model.UserUpdateRequest
 import com.heoclub.aitravel.data.model.ReverseGeocodePoint
 import okhttp3.ResponseBody
-import retrofit2.http.GET
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Streaming
@@ -130,4 +137,26 @@ interface ApiService {
     suspend fun cancelTravelPlanJob(
         @Path("jobId") jobId: String,
     ): AiPlanJobStatusResponse
+
+    // ── Auth ──
+
+    @GET("api/auth/captcha")
+    suspend fun getCaptcha(): CaptchaResponse
+
+    @POST("api/auth/register")
+    suspend fun register(@Body request: RegisterRequest): TokenResponse
+
+    @POST("api/auth/login")
+    suspend fun login(@Body request: LoginRequest): TokenResponse
+
+    @POST("api/auth/refresh")
+    suspend fun refreshToken(@Body body: Map<String, String>): TokenResponse
+
+    // ── User ──
+
+    @GET("api/user/me")
+    suspend fun getCurrentUser(): User
+
+    @PUT("api/user/me")
+    suspend fun updateCurrentUser(@Body request: UserUpdateRequest): User
 }
