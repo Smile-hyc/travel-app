@@ -89,6 +89,78 @@ class PlaceDetailService:
         item = batch.items[0]
         return item.detail or self._build_detail(place, item.status, batch.batchId)
 
+    def get_planning_signals(
+        self,
+        place: PlaceSummary,
+        trip_dates: list[datetime],
+    ) -> dict[str, object]:
+        """Return local official/experience signals without starting UGC collection."""
+        self.ensure_place_profile(place)
+        official_source = self._store.get_official_source_by_poi(place.sourcePoiId) or {}
+        aggregate = self._store.get_aggregate(place.sourcePoiId) or {}
+        evidence_count = int(aggregate.get("evidence_count") or 0)
+        insights = _json_value(aggregate.get("insights"), [])
+        queue_mentions = sum(
+            int(item.get("mentionCount") or item.get("mention_count") or 0)
+            for item in insights
+            if isinstance(item, dict) and item.get("tag") == "QUEUE"
+        )
+        crowd_risk = min(1.0, queue_mentions / max(evidence_count, 1))
+
+        closed_dates: list[str] = []
+        reservation_notes: list[str] = []
+        undated_closures: list[str] = []
+        opening_hours_by_date: dict[str, str] = {}
+        access_notes: list[str] = []
+        capacity_notes: list[str] = []
+        ticket_notes: list[str] = []
+        for trip_date in trip_dates:
+            notices = self._store.list_official_notices(place.sourcePoiId, at=trip_date)
+            for notice in notices:
+                notice_type = str(notice.get("notice_type") or "")
+                summary = str(notice.get("summary") or notice.get("title") or "").strip()
+                if notice_type == "CLOSURE":
+                    if _is_access_restriction_notice(summary):
+                        access_notes.append(summary)
+                        continue
+                    # An old closure article with no validity interval must not
+                    # silently close a place forever. It remains a warning.
+                    if notice.get("effective_from") or notice.get("effective_to"):
+                        closed_dates.append(trip_date.date().isoformat())
+                    elif summary:
+                        undated_closures.append(summary)
+                elif notice_type == "RESERVATION" and summary:
+                    reservation_notes.append(summary)
+                elif notice_type == "HOLIDAY_HOURS" and summary:
+                    opening_hours_by_date[trip_date.date().isoformat()] = summary
+                elif notice_type == "NOTICE" and summary and _is_access_restriction_notice(summary):
+                    access_notes.append(summary)
+                elif notice_type == "CAPACITY" and summary:
+                    capacity_notes.append(summary)
+                    if (
+                        any(word in summary for word in ("预约已满", "售罄", "达到最大承载", "停止售票"))
+                        and (notice.get("effective_from") or notice.get("effective_to"))
+                    ):
+                        closed_dates.append(trip_date.date().isoformat())
+                elif notice_type == "TICKET" and summary:
+                    ticket_notes.append(summary)
+
+        return {
+            "officialScenicGrade": official_source.get("scenic_grade"),
+            "experienceEvidenceCount": evidence_count,
+            "officialReservationRequired": bool(reservation_notes),
+            "officialReservationNote": next(iter(dict.fromkeys(reservation_notes)), None),
+            "officialClosedDates": list(dict.fromkeys(closed_dates)),
+            "officialClosureWarning": next(iter(dict.fromkeys(undated_closures)), None),
+            "officialOpeningHoursByDate": opening_hours_by_date,
+            "officialAccessNote": next(iter(dict.fromkeys(access_notes)), None),
+            "officialMaxDailyCapacity": official_source.get("max_daily_capacity"),
+            "officialCapacityNote": next(iter(dict.fromkeys(capacity_notes)), None),
+            "officialTicketNote": next(iter(dict.fromkeys(ticket_notes)), None),
+            "crowdRisk": crowd_risk,
+            "contentUpdatedAt": aggregate.get("updated_at"),
+        }
+
     def ensure_place_profile(self, place: PlaceSummary) -> dict:
         """Persist AMap facts so official/UGC workers share one POI identity."""
         return self._store.upsert_place_profile(self._profile_mapping(place))
@@ -344,6 +416,8 @@ class PlaceDetailService:
                 },
             )
 
+        self._store.prune_active_evidence(place.sourcePoiId, keep=20)
+
         status = self._save_aggregate_from_evidence(place, now=now)
         return status, len(cleaned_sources)
 
@@ -412,7 +486,7 @@ class PlaceDetailService:
                 tags=_json_value(item.get("tags"), []),
                 deleted=bool(item.get("deleted", False)),
             )
-            for item in evidence[:12]
+            for item in evidence[:8]
         ]
         positives = [
             ReviewHighlight(title=item.title, description=item.summary)
@@ -914,6 +988,15 @@ def _has_negative_experience(summary: str) -> bool:
     return any(
         marker in summary
         for marker in ("不感兴趣", "略过", "商业化", "破坏", "不值得", "踩雷", "人巨多")
+    )
+
+
+def _is_access_restriction_notice(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    transport_terms = ("接驳", "索道", "缆车", "轮渡", "道路", "停车", "入口", "出入口", "交通管制")
+    whole_place_terms = ("景区闭园", "景区闭馆", "全园闭园", "暂停开放", "停止开放")
+    return any(term in compact for term in transport_terms) and not any(
+        term in compact for term in whole_place_terms
     )
 
 

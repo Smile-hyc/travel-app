@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 
 from app.review_store import ReviewStore
 from app.schemas.explore import PlaceSummary, ReviewSource
@@ -131,6 +132,103 @@ def test_unconfigured_provider_returns_facts_without_queue() -> None:
     assert batch.pendingCount == 0
     assert batch.items[0].status == "UNAVAILABLE"
     assert batch.items[0].detail.factLayer.openingHours
+
+
+def test_planning_signals_distinguish_access_restriction_from_whole_place_closure() -> None:
+    class DisabledProvider:
+        configured = False
+
+        async def search_place(self, place):
+            raise AssertionError("disabled provider must not be called")
+
+    store = ReviewStore(":memory:")
+    store.upsert_place_profile(_place())
+    store.upsert_official_source(
+        {
+            "sourceId": "palace",
+            "poiId": "B001",
+            "officialName": "故宫博物院",
+            "cityName": "北京市",
+            "scenicGrade": "5A",
+            "maxDailyCapacity": 80000,
+        },
+    )
+    store.upsert_official_notice(
+        {
+            "noticeId": "sold-out",
+            "poiId": "B001",
+            "noticeType": "CAPACITY",
+            "title": "预约已满",
+            "summary": "10月1日门票预约已满，停止售票。",
+            "sourceUrl": "https://example.org/sold-out",
+            "effectiveFrom": "2026-10-01T00:00:00+00:00",
+            "effectiveTo": "2026-10-01T23:59:59+00:00",
+        },
+    )
+    store.upsert_official_notice(
+        {
+            "noticeId": "ticket",
+            "poiId": "B001",
+            "noticeType": "TICKET",
+            "title": "官方票价",
+            "summary": "成人票60元。",
+            "sourceUrl": "https://example.org/ticket",
+        },
+    )
+    store.upsert_official_notice(
+        {
+            "noticeId": "access",
+            "poiId": "B001",
+            "noticeType": "CLOSURE",
+            "title": "接驳调整",
+            "summary": "景区东门接驳车临时停运，请从南门进入。",
+            "sourceUrl": "https://example.org/access",
+            "effectiveFrom": "2026-10-01T00:00:00+00:00",
+            "effectiveTo": "2026-10-01T23:59:59+00:00",
+        },
+    )
+    store.upsert_official_notice(
+        {
+            "noticeId": "holiday",
+            "poiId": "B001",
+            "noticeType": "HOLIDAY_HOURS",
+            "title": "国庆开放调整",
+            "summary": "国庆开放时间调整为 08:00-20:00。",
+            "sourceUrl": "https://example.org/hours",
+            "effectiveFrom": "2026-10-01T00:00:00+00:00",
+            "effectiveTo": "2026-10-01T23:59:59+00:00",
+        },
+    )
+    store.upsert_official_notice(
+        {
+            "noticeId": "closed",
+            "poiId": "B001",
+            "noticeType": "CLOSURE",
+            "title": "临时闭园",
+            "summary": "景区闭园一天。",
+            "sourceUrl": "https://example.org/closed",
+            "effectiveFrom": "2026-10-02T00:00:00+00:00",
+            "effectiveTo": "2026-10-02T23:59:59+00:00",
+        },
+    )
+    service = PlaceDetailService(DisabledProvider(), store=store)
+
+    signals = service.get_planning_signals(
+        _place(),
+        [
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 2, tzinfo=timezone.utc),
+        ],
+    )
+
+    assert signals["officialScenicGrade"] == "5A"
+    assert signals["officialMaxDailyCapacity"] == 80000
+    assert signals["officialTicketNote"] == "成人票60元。"
+    assert "预约已满" in signals["officialCapacityNote"]
+    assert signals["officialOpeningHoursByDate"]["2026-10-01"] == "国庆开放时间调整为 08:00-20:00。"
+    assert "接驳车临时停运" in signals["officialAccessNote"]
+    assert signals["officialClosedDates"] == ["2026-10-01", "2026-10-02"]
+    store.close()
 
 
 def test_expired_cache_is_returned_immediately_and_queued_for_refresh() -> None:

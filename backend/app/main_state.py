@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.core.config import get_settings
 from app.services.amap_client import AmapClient
 from app.services.amap_poi_service import AmapPoiService
@@ -15,8 +17,18 @@ from app.services.popular_poi_catalog import PopularPoiCatalogService
 from app.services.official_content_service import OfficialContentService
 from app.services.official_source_catalog import initialize_official_directory
 from app.services.mediacrawler_import_service import MediaCrawlerImportService
+from app.services.mediacrawler_runner import MediaCrawlerRunner
+from app.services.city_content_pipeline import CityContentPipelineService
 
 settings = get_settings()
+backend_root = Path(__file__).resolve().parents[1]
+
+
+def _setting_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (backend_root / path).resolve()
+
+
 amap_client = AmapClient(settings)
 amap_poi_service = AmapPoiService(amap_client)
 amap_route_service = AmapRouteService(amap_client)
@@ -52,7 +64,20 @@ content_ingestion_service = ContentIngestionService(
 mediacrawler_import_service = MediaCrawlerImportService(
     popular_poi_catalog_service,
     place_detail_service,
-    data_root=settings.mediacrawler_data_dir,
+    data_root=_setting_path(settings.mediacrawler_data_dir),
+    run_root=_setting_path(settings.mediacrawler_run_dir),
+)
+mediacrawler_runner = MediaCrawlerRunner(
+    tool_root=_setting_path(settings.mediacrawler_tool_dir),
+    run_root=_setting_path(settings.mediacrawler_run_dir),
+    timeout_seconds=settings.mediacrawler_timeout_seconds,
+)
+city_content_pipeline_service = CityContentPipelineService(
+    popular_poi_catalog_service,
+    place_detail_service,
+    mediacrawler_import_service,
+    mediacrawler_runner,
+    review_store,
 )
 ai_plan_job_manager = AiPlanJobManager(travel_plan_generation_service)
 
@@ -79,6 +104,10 @@ def get_content_ingestion_service() -> ContentIngestionService:
 
 def get_mediacrawler_import_service() -> MediaCrawlerImportService:
     return mediacrawler_import_service
+
+
+def get_city_content_pipeline_service() -> CityContentPipelineService:
+    return city_content_pipeline_service
 
 
 def get_travel_ai_service() -> TravelAiService:

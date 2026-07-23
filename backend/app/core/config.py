@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     review_author_hash_salt: str = "change-me-in-production"
     content_admin_token: str = ""
     mediacrawler_data_dir: str = "../tools/MediaCrawler/data/xhs/jsonl"
+    mediacrawler_tool_dir: str = "../tools/MediaCrawler"
+    mediacrawler_run_dir: str = "data/mediacrawler-runs"
+    mediacrawler_timeout_seconds: int = 10800
     ark_api_key: str = ""
     ark_model: str = "doubao-seed-2-1-pro-260628"
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"

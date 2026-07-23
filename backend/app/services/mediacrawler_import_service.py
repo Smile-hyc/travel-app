@@ -24,11 +24,13 @@ class MediaCrawlerImportService:
         detail_service: PlaceDetailService,
         *,
         data_root: str | Path,
+        run_root: str | Path | None = None,
         max_file_bytes: int = 20_000_000,
     ) -> None:
         self._catalog = catalog
         self._detail_service = detail_service
         self._data_root = Path(data_root).expanduser().resolve()
+        self._run_root = Path(run_root).expanduser().resolve() if run_root else None
         self._max_file_bytes = max_file_bytes
 
     def list_exports(self) -> list[dict[str, object]]:
@@ -100,6 +102,67 @@ class MediaCrawlerImportService:
             "keywordCount": len(grouped),
             "imported": imported,
             "missingKeywords": missing,
+            "fetchedCount": sum(int(item["fetchedCount"]) for item in imported),
+            "acceptedCount": sum(int(item["acceptedCount"]) for item in imported),
+        }
+
+    def import_manifest_export(
+        self,
+        *,
+        export_path: str | Path,
+        places_by_keyword: dict[str, Any],
+        candidate_limit: int = 30,
+    ) -> dict[str, Any]:
+        """Import one isolated crawler run using an explicit query-to-POI map."""
+        path = Path(export_path).expanduser().resolve()
+        if self._run_root is None or not path.is_relative_to(self._run_root):
+            raise MediaCrawlerImportError("crawler export is outside the configured run directory")
+        if not path.is_file() or path.suffix.lower() != ".jsonl":
+            raise MediaCrawlerImportError("crawler export does not exist")
+        if path.stat().st_size > self._max_file_bytes:
+            raise MediaCrawlerImportError("MediaCrawler export exceeds size limit")
+
+        rows = self._load_rows(path)
+        by_poi: dict[str, dict[str, Any]] = {}
+        unmatched = 0
+        limit = max(1, min(candidate_limit, 60))
+        for row in rows:
+            keyword = str(row.get("source_keyword") or "").strip()
+            place = places_by_keyword.get(keyword)
+            if place is None:
+                unmatched += 1
+                continue
+            bucket = by_poi.setdefault(
+                place.sourcePoiId,
+                {"place": place, "rows": [], "keywords": set()},
+            )
+            bucket["keywords"].add(keyword)
+            if len(bucket["rows"]) < limit:
+                bucket["rows"].append(row)
+
+        imported: list[dict[str, object]] = []
+        for bucket in by_poi.values():
+            place = bucket["place"]
+            sources = [
+                _to_review_source(item)
+                for item in bucket["rows"]
+                if item.get("note_id")
+            ]
+            result = self._detail_service.import_review_sources(place, sources)
+            imported.append(
+                {
+                    key: value
+                    for key, value in result.items()
+                    if key != "detail"
+                }
+                | {"keywords": sorted(bucket["keywords"])},
+            )
+
+        return {
+            "fileName": path.name,
+            "rowCount": len(rows),
+            "unmatchedRowCount": unmatched,
+            "imported": imported,
             "fetchedCount": sum(int(item["fetchedCount"]) for item in imported),
             "acceptedCount": sum(int(item["acceptedCount"]) for item in imported),
         }

@@ -222,6 +222,72 @@ class ReviewStore:
             ON ingestion_runs(started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ingestion_runs_status
             ON ingestion_runs(status, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS city_poi_rankings (
+            city_adcode TEXT NOT NULL,
+            city_name TEXT NOT NULL,
+            province_name TEXT,
+            ranking_version TEXT NOT NULL,
+            rank INTEGER NOT NULL CHECK (rank BETWEEN 1 AND 25),
+            poi_id TEXT NOT NULL,
+            crawler_keyword TEXT NOT NULL,
+            selected_at TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (city_adcode, ranking_version, poi_id),
+            UNIQUE (city_adcode, ranking_version, rank),
+            FOREIGN KEY (poi_id) REFERENCES place_profiles(poi_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_city_poi_rankings_active
+            ON city_poi_rankings(city_adcode, active, rank);
+
+        CREATE TABLE IF NOT EXISTS city_collection_runs (
+            run_id TEXT PRIMARY KEY,
+            city_adcode TEXT NOT NULL,
+            city_name TEXT NOT NULL,
+            ranking_version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            candidate_limit INTEGER NOT NULL DEFAULT 30 CHECK (candidate_limit BETWEEN 1 AND 60),
+            retain_limit INTEGER NOT NULL DEFAULT 20 CHECK (retain_limit BETWEEN 1 AND 50),
+            display_limit INTEGER NOT NULL DEFAULT 8 CHECK (display_limit BETWEEN 1 AND 20),
+            target_count INTEGER NOT NULL DEFAULT 0 CHECK (target_count >= 0),
+            fetched_count INTEGER NOT NULL DEFAULT 0 CHECK (fetched_count >= 0),
+            accepted_count INTEGER NOT NULL DEFAULT 0 CHECK (accepted_count >= 0),
+            failed_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+            output_path TEXT,
+            error TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_city_collection_runs_recent
+            ON city_collection_runs(started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_city_collection_runs_status
+            ON city_collection_runs(status, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS city_collection_items (
+            run_id TEXT NOT NULL,
+            poi_id TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            query_keyword TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            fetched_count INTEGER NOT NULL DEFAULT 0 CHECK (fetched_count >= 0),
+            accepted_count INTEGER NOT NULL DEFAULT 0 CHECK (accepted_count >= 0),
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, poi_id),
+            UNIQUE (run_id, query_keyword),
+            FOREIGN KEY (run_id) REFERENCES city_collection_runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY (poi_id) REFERENCES place_profiles(poi_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_city_collection_items_status
+            ON city_collection_items(run_id, status, rank);
         """
         with self._transaction():
             self._connection.executescript(schema)
@@ -609,6 +675,28 @@ class ReviewStore:
             )
         return cursor.rowcount > 0
 
+    def prune_active_evidence(self, poi_id: str, *, keep: int = 20) -> int:
+        """Soft-delete lower ranked evidence while retaining its audit row."""
+        if keep < 1 or keep > 50:
+            raise ValueError("keep must be between 1 and 50")
+        rows = self._fetchall(
+            "SELECT evidence_id FROM ugc_evidence "
+            "WHERE poi_id = ? AND deleted = 0 "
+            "ORDER BY relevance_score DESC, published_at DESC, updated_at DESC, evidence_id",
+            (poi_id,),
+        )
+        stale_ids = [row["evidence_id"] for row in rows[keep:]]
+        if not stale_ids:
+            return 0
+        now = _utc_now()
+        with self._transaction():
+            cursor = self._connection.execute(
+                f"UPDATE ugc_evidence SET deleted = 1, updated_at = ? "
+                f"WHERE evidence_id IN ({_placeholders(stale_ids)})",
+                (now, *stale_ids),
+            )
+        return cursor.rowcount
+
     def save_aggregate(self, aggregate: JsonObject | Any) -> dict[str, Any]:
         item = _as_mapping(aggregate)
         now = _utc_now()
@@ -710,6 +798,257 @@ class ReviewStore:
             for row in rows
         )
         return {item["poi_id"]: item for item in decoded if item is not None}
+
+    def save_city_ranking(
+        self,
+        *,
+        city_adcode: str,
+        city_name: str,
+        province_name: str | None,
+        ranking_version: str,
+        places: Iterable[JsonObject | Any],
+    ) -> list[dict[str, Any]]:
+        now = _utc_now()
+        values = []
+        for index, raw in enumerate(places, 1):
+            item = _as_mapping(raw)
+            values.append(
+                {
+                    "city_adcode": city_adcode,
+                    "city_name": city_name,
+                    "province_name": province_name,
+                    "ranking_version": ranking_version,
+                    "rank": index,
+                    "poi_id": _required(item, "poi_id", "poiId", "sourcePoiId"),
+                    "crawler_keyword": _required(item, "crawler_keyword", "crawlerKeyword"),
+                    "selected_at": now,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE city_poi_rankings SET active = 0, updated_at = ? "
+                "WHERE city_adcode = ? AND active = 1",
+                (now, city_adcode),
+            )
+            self._connection.executemany(
+                """
+                INSERT INTO city_poi_rankings (
+                    city_adcode, city_name, province_name, ranking_version,
+                    rank, poi_id, crawler_keyword, selected_at, active,
+                    created_at, updated_at
+                ) VALUES (
+                    :city_adcode, :city_name, :province_name, :ranking_version,
+                    :rank, :poi_id, :crawler_keyword, :selected_at, 1,
+                    :created_at, :updated_at
+                )
+                ON CONFLICT(city_adcode, ranking_version, poi_id) DO UPDATE SET
+                    rank = excluded.rank,
+                    crawler_keyword = excluded.crawler_keyword,
+                    selected_at = excluded.selected_at,
+                    active = 1,
+                    updated_at = excluded.updated_at
+                """,
+                values,
+            )
+        return self.get_city_ranking(city_adcode, ranking_version=ranking_version)
+
+    def get_city_ranking(
+        self,
+        city_adcode: str,
+        *,
+        ranking_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if ranking_version:
+            rows = self._fetchall(
+                "SELECT ranking.*, place.name AS place_name, place.rating, "
+                "place.district_name FROM city_poi_rankings ranking "
+                "JOIN place_profiles place ON place.poi_id = ranking.poi_id "
+                "WHERE ranking.city_adcode = ? AND ranking.ranking_version = ? "
+                "ORDER BY ranking.rank",
+                (city_adcode, ranking_version),
+            )
+        else:
+            rows = self._fetchall(
+                "SELECT ranking.*, place.name AS place_name, place.rating, "
+                "place.district_name FROM city_poi_rankings ranking "
+                "JOIN place_profiles place ON place.poi_id = ranking.poi_id "
+                "WHERE ranking.city_adcode = ? AND ranking.active = 1 "
+                "ORDER BY ranking.rank",
+                (city_adcode,),
+            )
+        return [_decode_row(row) for row in rows]  # type: ignore[misc]
+
+    def start_city_collection_run(
+        self,
+        run: JsonObject | Any,
+        items: Iterable[JsonObject | Any],
+    ) -> dict[str, Any]:
+        raw = _as_mapping(run)
+        now = _utc_now()
+        values = {
+            "run_id": _required(raw, "run_id", "runId"),
+            "city_adcode": _required(raw, "city_adcode", "cityAdcode"),
+            "city_name": _required(raw, "city_name", "cityName"),
+            "ranking_version": _required(raw, "ranking_version", "rankingVersion"),
+            "status": _value(raw, "status") or "queued",
+            "candidate_limit": int(_value(raw, "candidate_limit", "candidateLimit") or 30),
+            "retain_limit": int(_value(raw, "retain_limit", "retainLimit") or 20),
+            "display_limit": int(_value(raw, "display_limit", "displayLimit") or 8),
+            "target_count": int(_value(raw, "target_count", "targetCount") or 0),
+            "started_at": _iso(_value(raw, "started_at", "startedAt") or now),
+            "created_at": now,
+            "updated_at": now,
+        }
+        item_values = []
+        for item_raw in items:
+            item = _as_mapping(item_raw)
+            item_values.append(
+                {
+                    "run_id": values["run_id"],
+                    "poi_id": _required(item, "poi_id", "poiId", "sourcePoiId"),
+                    "rank": int(_required(item, "rank")),
+                    "query_keyword": _required(item, "query_keyword", "queryKeyword"),
+                    "status": _value(item, "status") or "queued",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        values["target_count"] = len(item_values)
+        with self._transaction():
+            self._connection.execute(
+                """
+                INSERT INTO city_collection_runs (
+                    run_id, city_adcode, city_name, ranking_version, status,
+                    candidate_limit, retain_limit, display_limit, target_count,
+                    started_at, created_at, updated_at
+                ) VALUES (
+                    :run_id, :city_adcode, :city_name, :ranking_version, :status,
+                    :candidate_limit, :retain_limit, :display_limit, :target_count,
+                    :started_at, :created_at, :updated_at
+                )
+                """,
+                values,
+            )
+            self._connection.executemany(
+                """
+                INSERT INTO city_collection_items (
+                    run_id, poi_id, rank, query_keyword, status, created_at, updated_at
+                ) VALUES (
+                    :run_id, :poi_id, :rank, :query_keyword, :status, :created_at, :updated_at
+                )
+                """,
+                item_values,
+            )
+        return self.get_city_collection_run(values["run_id"])  # type: ignore[return-value]
+
+    def update_city_collection_run(self, run_id: str, **fields: Any) -> dict[str, Any] | None:
+        aliases = {
+            "status": "status", "fetched_count": "fetched_count",
+            "accepted_count": "accepted_count", "failed_count": "failed_count",
+            "output_path": "output_path", "error": "error", "finished_at": "finished_at",
+        }
+        return self._update_named_row(
+            "city_collection_runs", "run_id", run_id, fields, aliases,
+            integer_columns={"fetched_count", "accepted_count", "failed_count"},
+            datetime_columns={"finished_at"},
+            getter=self.get_city_collection_run,
+        )
+
+    def update_city_collection_item(
+        self,
+        run_id: str,
+        poi_id: str,
+        **fields: Any,
+    ) -> dict[str, Any] | None:
+        aliases = {
+            "status": "status", "fetched_count": "fetched_count",
+            "accepted_count": "accepted_count", "error": "error",
+        }
+        unknown = sorted(set(fields) - set(aliases))
+        if unknown:
+            raise ValueError(f"unsupported city collection item fields: {', '.join(unknown)}")
+        normalized = {
+            aliases[name]: int(value) if aliases[name].endswith("_count") else value
+            for name, value in fields.items()
+        }
+        normalized["updated_at"] = _utc_now()
+        assignments = ", ".join(f"{column} = ?" for column in normalized)
+        with self._transaction():
+            cursor = self._connection.execute(
+                f"UPDATE city_collection_items SET {assignments} WHERE run_id = ? AND poi_id = ?",
+                (*normalized.values(), run_id, poi_id),
+            )
+        if not cursor.rowcount:
+            return None
+        return self.get_city_collection_item(run_id, poi_id)
+
+    def get_city_collection_item(self, run_id: str, poi_id: str) -> dict[str, Any] | None:
+        row = self._fetchone(
+            "SELECT item.*, place.name AS place_name FROM city_collection_items item "
+            "JOIN place_profiles place ON place.poi_id = item.poi_id "
+            "WHERE item.run_id = ? AND item.poi_id = ?",
+            (run_id, poi_id),
+        )
+        return _decode_row(row)
+
+    def get_city_collection_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self._fetchone("SELECT * FROM city_collection_runs WHERE run_id = ?", (run_id,))
+        run = _decode_row(row)
+        if run is not None:
+            run["items"] = self.list_city_collection_items(run_id)
+        return run
+
+    def list_city_collection_items(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self._fetchall(
+            "SELECT item.*, place.name AS place_name FROM city_collection_items item "
+            "JOIN place_profiles place ON place.poi_id = item.poi_id "
+            "WHERE item.run_id = ? ORDER BY item.rank",
+            (run_id,),
+        )
+        return [_decode_row(row) for row in rows]  # type: ignore[misc]
+
+    def list_city_collection_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._fetchall(
+            "SELECT * FROM city_collection_runs ORDER BY started_at DESC LIMIT ?",
+            (max(1, min(limit, 100)),),
+        )
+        return [_decode_row(row) for row in rows]  # type: ignore[misc]
+
+    def _update_named_row(
+        self,
+        table: str,
+        key_column: str,
+        key: str,
+        fields: Mapping[str, Any],
+        aliases: Mapping[str, str],
+        *,
+        integer_columns: set[str],
+        datetime_columns: set[str],
+        getter,
+    ):
+        unknown = sorted(set(fields) - set(aliases))
+        if unknown:
+            raise ValueError(f"unsupported {table} fields: {', '.join(unknown)}")
+        if not fields:
+            return getter(key)
+        normalized: dict[str, Any] = {}
+        for name, value in fields.items():
+            column = aliases[name]
+            if column in integer_columns:
+                value = int(value)
+            elif column in datetime_columns:
+                value = _iso_or_none(value)
+            normalized[column] = value
+        normalized["updated_at"] = _utc_now()
+        assignments = ", ".join(f"{column} = ?" for column in normalized)
+        with self._transaction():
+            cursor = self._connection.execute(
+                f"UPDATE {table} SET {assignments} WHERE {key_column} = ?",
+                (*normalized.values(), key),
+            )
+        return getter(key) if cursor.rowcount else None
 
     def upsert_collection_target(self, target: JsonObject | Any) -> dict[str, Any]:
         """Create or update a POI collection schedule.
@@ -986,6 +1325,17 @@ class ReviewStore:
             ),
             "official_notice_count": (
                 "SELECT COUNT(*) FROM official_notices WHERE deleted = 0"
+            ),
+            "ranked_city_count": (
+                "SELECT COUNT(DISTINCT city_adcode) FROM city_poi_rankings WHERE active = 1"
+            ),
+            "ranked_poi_count": (
+                "SELECT COUNT(*) FROM city_poi_rankings WHERE active = 1"
+            ),
+            "city_collection_run_count": "SELECT COUNT(*) FROM city_collection_runs",
+            "running_city_collection_count": (
+                "SELECT COUNT(*) FROM city_collection_runs "
+                "WHERE status IN ('queued', 'crawling', 'cleaning')"
             ),
         }
         now = _utc_now()

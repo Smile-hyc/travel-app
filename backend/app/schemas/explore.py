@@ -50,6 +50,19 @@ class PlaceSummary(BaseModel):
     businessArea: str | None = None
     openingHoursToday: str | None = None
     openingHoursWeek: str | None = None
+    officialScenicGrade: str | None = None
+    experienceEvidenceCount: int = Field(default=0, ge=0)
+    officialReservationRequired: bool = False
+    officialReservationNote: str | None = None
+    officialClosedDates: list[str] = Field(default_factory=list)
+    officialClosureWarning: str | None = None
+    officialOpeningHoursByDate: dict[str, str] = Field(default_factory=dict)
+    officialAccessNote: str | None = None
+    officialMaxDailyCapacity: int | None = Field(default=None, ge=1)
+    officialCapacityNote: str | None = None
+    officialTicketNote: str | None = None
+    crowdRisk: float = Field(default=0.0, ge=0, le=1)
+    contentUpdatedAt: str | None = None
 
 
 class ReviewHighlight(BaseModel):
