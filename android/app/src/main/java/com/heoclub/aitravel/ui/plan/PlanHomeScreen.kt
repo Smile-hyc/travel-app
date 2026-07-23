@@ -53,8 +53,10 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import com.heoclub.aitravel.R
 import com.heoclub.aitravel.data.location.CurrentLocationUiState
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.data.model.findPlanForDate
 import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
 import com.heoclub.aitravel.ui.components.PlaceCoverImage
+import java.time.LocalDate
 
 @Composable
 fun PlanHomeScreen(
@@ -63,7 +65,7 @@ fun PlanHomeScreen(
     onLocate: () -> Unit,
     onCreatePlan: () -> Unit,
     onOpenPlan: (String) -> Unit,
-    onAskAi: (String) -> Unit,
+    onAskAi: (String, String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val plans by viewModel.plans.collectAsState()
@@ -90,7 +92,11 @@ fun PlanHomeScreen(
             WelcomeSection(
                 locationState = locationState,
                 onLocate = onLocate,
-                onAskAi = onAskAi,
+                onAskToday = {
+                    val todayPlan = findPlanForDate(plans, LocalDate.now())
+                    onAskAi("帮我介绍今天的行程", todayPlan?.plan?.id)
+                },
+                onAskAi = { question -> onAskAi(question, null) },
             )
         }
         item {
@@ -169,12 +175,22 @@ private fun PlanHeader(
 private fun WelcomeSection(
     locationState: CurrentLocationUiState,
     onLocate: () -> Unit,
+    onAskToday: () -> Unit,
     onAskAi: (String) -> Unit,
 ) {
     val cityText = locationState.location?.cityName ?: when {
         locationState.isLocating -> "定位中…"
         locationState.errorMessage != null -> "点击获取定位"
         else -> "等待定位"
+    }
+    val foodCity = locationState.location?.cityName
+        ?.trim()
+        ?.removeSuffix("市")
+        ?.takeIf { it.isNotBlank() }
+    val foodQuestion = if (foodCity != null) {
+        "介绍一下${foodCity}知名的特色美食"
+    } else {
+        "介绍一下当地知名的特色美食"
     }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
@@ -206,15 +222,15 @@ private fun WelcomeSection(
         Column {
             AiActionRow(
                 text = "介绍一下今天的行程",
-                onClick = { onAskAi("帮我介绍今天的行程") },
+                onClick = onAskToday,
             )
             HorizontalDivider(
                 modifier = Modifier.padding(start = 48.dp),
                 color = Color(0xFFDDE5EE),
             )
             AiActionRow(
-                text = "发现目的地值得去的地方",
-                onClick = { onAskAi("目的地有哪些值得去的地方？") },
+                text = foodQuestion,
+                onClick = { onAskAi(foodQuestion) },
             )
         }
     }
