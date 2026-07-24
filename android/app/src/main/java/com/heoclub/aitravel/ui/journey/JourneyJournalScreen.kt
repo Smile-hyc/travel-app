@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.time.LocalDate
@@ -81,6 +82,7 @@ internal fun JourneyJournalScreen(
     onWriteJourney: () -> Unit,
     onAddEntry: (JournalEntry) -> Unit,
     onOpenEntry: (String) -> Unit,
+    onShareEntry: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -149,7 +151,12 @@ internal fun JourneyJournalScreen(
                         onWrite = onWriteJourney,
                         onSnap = { cameraLauncher.launch(null) },
                         onPublish = {
-                            Toast.makeText(context, "分享发布入口待定", Toast.LENGTH_SHORT).show()
+                            val entryId = selectedIds.firstOrNull() ?: filteredEntries.firstOrNull()?.id
+                            if (entryId == null) {
+                                Toast.makeText(context, "还没有可分享的旅记", Toast.LENGTH_SHORT).show()
+                            } else {
+                                onShareEntry(entryId)
+                            }
                         },
                     )
                 }
@@ -446,8 +453,9 @@ private fun JournalEntryCard(
                     Text(
                         text = entry.title,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color(0xFF10243D),
+                        fontWeight = if (entry.titleStyle.bold) FontWeight.ExtraBold else FontWeight.SemiBold,
+                        textDecoration = if (entry.titleStyle.underline) TextDecoration.Underline else TextDecoration.None,
+                        color = entry.titleStyle.textColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -469,7 +477,9 @@ private fun JournalEntryCard(
                     Text(
                         text = entry.body,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF5E6C7C),
+                        fontWeight = if (entry.bodyStyle.bold) FontWeight.Bold else FontWeight.Normal,
+                        textDecoration = if (entry.bodyStyle.underline) TextDecoration.Underline else TextDecoration.None,
+                        color = entry.bodyStyle.textColor,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )

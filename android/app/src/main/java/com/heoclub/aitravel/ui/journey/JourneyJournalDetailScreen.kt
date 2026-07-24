@@ -22,11 +22,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.LocationOn
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import java.time.format.DateTimeFormatter
 
@@ -43,6 +46,7 @@ import java.time.format.DateTimeFormatter
 internal fun JourneyJournalDetailScreen(
     entry: JournalEntry,
     onBack: () -> Unit,
+    onShare: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -76,7 +80,16 @@ internal fun JourneyJournalDetailScreen(
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.ExtraBold,
                     color = Color(0xFF081F3A),
+                    modifier = Modifier.weight(1f),
                 )
+                TextButton(onClick = onShare) {
+                    Icon(
+                        imageVector = Icons.Outlined.Share,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text("分享")
+                }
             }
         }
 
@@ -94,8 +107,12 @@ internal fun JourneyJournalDetailScreen(
                     Text(
                         text = entry.title,
                         style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color(0xFF081F3A),
+                        fontWeight = if (entry.titleStyle.bold) FontWeight.ExtraBold else FontWeight.SemiBold,
+                        textDecoration = if (entry.titleStyle.underline) TextDecoration.Underline else TextDecoration.None,
+                        color = entry.titleStyle.textColor,
+                        modifier = Modifier
+                            .background(if (entry.titleStyle.highlighted) entry.titleStyle.highlightColor else Color.Transparent)
+                            .padding(horizontal = if (entry.titleStyle.highlighted) 4.dp else 0.dp),
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -115,7 +132,12 @@ internal fun JourneyJournalDetailScreen(
                         Text(
                             text = entry.body,
                             style = MaterialTheme.typography.bodyLarge,
-                            color = Color(0xFF26384D),
+                            fontWeight = if (entry.bodyStyle.bold) FontWeight.Bold else FontWeight.Normal,
+                            textDecoration = if (entry.bodyStyle.underline) TextDecoration.Underline else TextDecoration.None,
+                            color = entry.bodyStyle.textColor,
+                            modifier = Modifier
+                                .background(if (entry.bodyStyle.highlighted) entry.bodyStyle.highlightColor else Color.Transparent)
+                                .padding(horizontal = if (entry.bodyStyle.highlighted) 4.dp else 0.dp),
                         )
                     }
                 }
