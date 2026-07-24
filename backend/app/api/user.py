@@ -6,8 +6,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
-from app.schemas.user import UserResponse, UserUpdateRequest
-from app.services.auth_service import get_user, update_user
+from app.schemas.user import (
+    UserFootprintCreateRequest,
+    UserFootprintResponse,
+    UserPlanCreateRequest,
+    UserPlanResponse,
+    UserPreferenceResponse,
+    UserPreferenceUpdateRequest,
+    UserResponse,
+    UserUpdateRequest,
+)
+from app.services.auth_service import (
+    add_user_footprint,
+    create_user_plan,
+    get_user,
+    get_user_footprints,
+    get_user_plans,
+    get_user_preferences,
+    update_user,
+    update_user_preferences,
+)
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
@@ -15,7 +33,6 @@ router = APIRouter(prefix="/api/user", tags=["user"])
 @router.get("/me", response_model=UserResponse)
 async def read_current_user(current_user: User = Depends(get_current_user)):
     """Get current authenticated user's profile."""
-    # current_user is already fetched by get_current_user dependency
     return UserResponse(
         id=current_user.id,
         phone=_mask(current_user.phone),
@@ -42,3 +59,72 @@ def _mask(phone: str) -> str:
     if len(phone) >= 7:
         return phone[:3] + "****" + phone[-4:]
     return phone
+
+
+# ── User Plans ──
+
+@router.get("/plans", response_model=list[UserPlanResponse])
+async def list_user_plans(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all plans for the current user."""
+    return await get_user_plans(db, current_user.id)
+
+
+@router.post("/plans", response_model=UserPlanResponse, status_code=201)
+async def create_plan(
+    request: UserPlanCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a travel plan to the current user's account."""
+    try:
+        return await create_user_plan(db, current_user.id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ── User Footprints ──
+
+@router.get("/footprints", response_model=list[UserFootprintResponse])
+async def list_user_footprints(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all footprint records for the current user."""
+    return await get_user_footprints(db, current_user.id)
+
+
+@router.post("/footprints", response_model=UserFootprintResponse, status_code=201)
+async def add_footprint(
+    request: UserFootprintCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a city to the user's travel footprint."""
+    try:
+        return await add_user_footprint(db, current_user.id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ── User Preferences ──
+
+@router.get("/preferences", response_model=UserPreferenceResponse)
+async def read_preferences(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current user's preferences (auto-creates defaults if absent)."""
+    return await get_user_preferences(db, current_user.id)
+
+
+@router.put("/preferences", response_model=UserPreferenceResponse)
+async def update_preferences(
+    request: UserPreferenceUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update current user's preferences."""
+    return await update_user_preferences(db, current_user.id, request)

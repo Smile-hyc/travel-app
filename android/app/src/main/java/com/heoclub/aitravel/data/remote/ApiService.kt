@@ -25,6 +25,8 @@ import com.heoclub.aitravel.data.model.LoginRequest
 import com.heoclub.aitravel.data.model.RegisterRequest
 import com.heoclub.aitravel.data.model.TokenResponse
 import com.heoclub.aitravel.data.model.User
+import com.heoclub.aitravel.data.model.UserPreference
+import com.heoclub.aitravel.data.model.UserPreferenceUpdateRequest
 import com.heoclub.aitravel.data.model.UserUpdateRequest
 import com.heoclub.aitravel.data.model.ReverseGeocodePoint
 import okhttp3.ResponseBody
@@ -159,4 +161,10 @@ interface ApiService {
 
     @PUT("api/user/me")
     suspend fun updateCurrentUser(@Body request: UserUpdateRequest): User
+
+    @GET("api/user/preferences")
+    suspend fun getUserPreferences(): UserPreference
+
+    @PUT("api/user/preferences")
+    suspend fun updateUserPreferences(@Body request: UserPreferenceUpdateRequest): UserPreference
 }

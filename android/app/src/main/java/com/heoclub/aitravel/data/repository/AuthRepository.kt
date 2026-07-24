@@ -6,6 +6,8 @@ import com.heoclub.aitravel.data.model.LoginRequest
 import com.heoclub.aitravel.data.model.RegisterRequest
 import com.heoclub.aitravel.data.model.TokenResponse
 import com.heoclub.aitravel.data.model.User
+import com.heoclub.aitravel.data.model.UserPreference
+import com.heoclub.aitravel.data.model.UserPreferenceUpdateRequest
 import com.heoclub.aitravel.data.model.UserUpdateRequest
 import com.heoclub.aitravel.data.remote.ApiService
 import kotlinx.coroutines.flow.Flow
@@ -73,14 +75,30 @@ class AuthRepository(
         user
     }
 
+    suspend fun fetchUserPreferences(): Result<UserPreference> = runCatching {
+        apiService.getUserPreferences()
+    }
+
+    suspend fun updateUserPreferences(request: UserPreferenceUpdateRequest): Result<UserPreference> = runCatching {
+        apiService.updateUserPreferences(request)
+    }
+
     fun logout() {
         tokenStore.clearTokens()
         _currentUser.value = null
     }
 
-    /** Call on app startup to restore session */
-    suspend fun restoreSession(): Boolean {
+    /** Call on app startup to restore session. Tries access token first;
+     *  if it is expired, attempts a silent refresh. */
+    suspend fun restoreOrRefreshSession(): Boolean {
         if (!tokenStore.isLoggedIn) return false
-        return fetchCurrentUser().isSuccess
+        // 1. Try current access token
+        if (fetchCurrentUser().isSuccess) return true
+        // 2. Access token expired — try refresh token
+        val refreshed = refreshToken()
+        if (refreshed.isSuccess) return true
+        // 3. Both failed
+        logout()
+        return false
     }
 }

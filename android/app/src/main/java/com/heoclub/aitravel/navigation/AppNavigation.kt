@@ -218,10 +218,20 @@ fun AiTravelNavHost() {
     val navController = rememberNavController()
     val application = LocalContext.current.applicationContext as AiTravelApplication
     val authRepository = application.container.authRepository
-    var isLoggedIn by remember { mutableStateOf(authRepository.isLoggedIn) }
+    var isLoggedIn by remember { mutableStateOf<Boolean?>(if (authRepository.isLoggedIn) null else false) }
     var authEntryCount by remember { mutableIntStateOf(0) }
 
-    if (!isLoggedIn) {
+    // On startup, verify stored token is still valid before showing the main UI.
+    LaunchedEffect(Unit) {
+        if (isLoggedIn == null) {
+            isLoggedIn = authRepository.restoreOrRefreshSession()
+        }
+    }
+
+    // Still checking stored token — wait.
+    if (isLoggedIn == null) return
+
+    if (isLoggedIn == false) {
         AuthScreen(
             authRepository = authRepository,
             healthRepository = application.container.healthRepository,

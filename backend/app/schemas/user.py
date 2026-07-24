@@ -43,3 +43,70 @@ class TokenResponse(BaseModel):
 class UserUpdateRequest(BaseModel):
     nickname: str | None = Field(default=None, max_length=60)
     avatar_url: str | None = Field(default=None, max_length=500)
+
+
+# ── UserPlan ──
+
+class UserPlanCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    destination: str = Field(min_length=1, max_length=100)
+    date_range: str = Field(default="", max_length=60)
+    day_count: int = Field(default=1, ge=1, le=30)
+    preferences: str = Field(default="[]", max_length=2000)
+    plan_data: str = Field(default="{}", max_length=100000)
+
+
+class UserPlanResponse(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    destination: str
+    date_range: str
+    day_count: int
+    preferences: str
+    plan_data: str
+    created_at: str
+    updated_at: str
+
+
+# ── UserFootprint ──
+
+class UserFootprintCreateRequest(BaseModel):
+    city_name: str = Field(min_length=1, max_length=60)
+    province_name: str = Field(default="", max_length=60)
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class UserFootprintResponse(BaseModel):
+    id: str
+    user_id: str
+    city_name: str
+    province_name: str
+    latitude: float | None
+    longitude: float | None
+    visit_count: int
+    first_visited_at: str
+    last_visited_at: str
+
+
+# ── UserPreference ──
+
+class UserPreferenceUpdateRequest(BaseModel):
+    language: str | None = Field(default=None, max_length=10)
+    theme: str | None = Field(default=None, max_length=20)
+    travel_style: str | None = Field(default=None, max_length=2000)
+    budget_level: str | None = Field(default=None, max_length=20)
+    notification_enabled: int | None = Field(default=None, ge=0, le=1)
+
+
+class UserPreferenceResponse(BaseModel):
+    id: str
+    user_id: str
+    language: str
+    theme: str
+    travel_style: str
+    budget_level: str
+    notification_enabled: int
+    created_at: str
+    updated_at: str

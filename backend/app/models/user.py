@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, Integer, String, Text, ForeignKey
+from sqlalchemy import Column, Float, Integer, String, Text, ForeignKey
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -32,3 +32,46 @@ class RefreshToken(Base):
     expires_at = Column(String(30), nullable=False)
     revoked = Column(Integer, default=0)
     created_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class UserPlan(Base):
+    __tablename__ = "user_plans"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(100), nullable=False, default="")
+    destination = Column(String(100), nullable=False, default="")
+    date_range = Column(String(60), default="")
+    day_count = Column(Integer, default=1)
+    preferences = Column(Text, default="[]")
+    plan_data = Column(Text, default="{}")
+    created_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class UserFootprint(Base):
+    __tablename__ = "user_footprints"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    city_name = Column(String(60), nullable=False)
+    province_name = Column(String(60), default="")
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    visit_count = Column(Integer, default=1)
+    first_visited_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+    last_visited_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    language = Column(String(10), default="zh-CN")
+    theme = Column(String(20), default="system")
+    travel_style = Column(Text, default="[]")
+    budget_level = Column(String(20), default="medium")
+    notification_enabled = Column(Integer, default=1)
+    created_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())

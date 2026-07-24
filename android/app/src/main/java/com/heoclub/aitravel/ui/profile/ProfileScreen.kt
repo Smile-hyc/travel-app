@@ -1,7 +1,13 @@
 package com.heoclub.aitravel.ui.profile
 
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,12 +25,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.TravelExplore
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,7 +43,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.heoclub.aitravel.ui.home.HomeUiState
@@ -44,6 +57,7 @@ fun ProfileScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
@@ -65,6 +79,37 @@ fun ProfileScreen(
                 viewModel.logout()
                 onLoggedOut()
             },
+            onToggleNicknameEdit = viewModel::toggleNicknameEdit,
+        )
+
+        AnimatedVisibility(
+            visible = state.showNicknameEdit,
+            enter = expandVertically(),
+            exit = shrinkVertically(),
+        ) {
+            NicknameEditPanel(
+                editingNickname = state.editingNickname,
+                isSaving = state.isSavingNickname,
+                errorMessage = state.errorMessage,
+                successMessage = state.successMessage,
+                onNicknameChanged = viewModel::onDebugNicknameChanged,
+                onSave = viewModel::saveNickname,
+            )
+        }
+
+        TravelFootprintEntryCard(
+            onClick = {
+                Toast.makeText(context, "旅行足迹地图即将上线", Toast.LENGTH_SHORT).show()
+            },
+        )
+
+        // ── 调试：用户偏好（底部小按钮 + 展开面板）──
+        DebugPrefsSection(
+            showDebugPrefs = state.showDebugPrefs,
+            userPreference = state.userPreference,
+            isLoadingPreferences = state.isLoadingPreferences,
+            errorMessage = state.errorMessage,
+            onToggle = viewModel::toggleDebugPrefs,
         )
 
         BackendStatusCard(
@@ -78,6 +123,7 @@ fun ProfileScreen(
 private fun UserInfoCard(
     user: com.heoclub.aitravel.data.model.User?,
     onLogout: () -> Unit,
+    onToggleNicknameEdit: () -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -100,7 +146,7 @@ private fun UserInfoCard(
                         tint = MaterialTheme.colorScheme.primary,
                     )
                 }
-                Column(modifier = Modifier.padding(start = 14.dp)) {
+                Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
                     Text(
                         text = user?.nickname?.takeIf { it.isNotBlank() } ?: "旅行者",
                         fontWeight = FontWeight.Bold,
@@ -110,6 +156,14 @@ private fun UserInfoCard(
                         text = user?.phone ?: "",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                IconButton(onClick = onToggleNicknameEdit) {
+                    Icon(
+                        imageVector = Icons.Outlined.Settings,
+                        contentDescription = "修改昵称",
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -166,5 +220,214 @@ private fun BackendStatusCard(
                 Text("重新检测", modifier = Modifier.padding(start = 8.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun TravelFootprintEntryCard(
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(120.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFFE8F4FD),
+                            Color(0xFFF0E6F6),
+                            Color(0xFFFFF3E0),
+                        ),
+                    ),
+                ),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    color = Color.White.copy(alpha = 0.9f),
+                    shape = CircleShape,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.TravelExplore,
+                        contentDescription = null,
+                        modifier = Modifier.padding(14.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 16.dp),
+                ) {
+                    Text(
+                        text = "旅行足迹",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "探索你走过的城市和山川",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                Text(
+                    text = "→",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+// ── 昵称编辑面板（齿轮按钮触发）──
+
+@Composable
+private fun NicknameEditPanel(
+    editingNickname: String,
+    isSaving: Boolean,
+    errorMessage: String?,
+    successMessage: String?,
+    onNicknameChanged: (String) -> Unit,
+    onSave: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("修改昵称", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+
+            OutlinedTextField(
+                value = editingNickname,
+                onValueChange = onNicknameChanged,
+                label = { Text("昵称") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isSaving,
+            )
+
+            if (errorMessage != null) {
+                Text(errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+            if (successMessage != null) {
+                Text(successMessage, color = Color(0xFF21A67A), style = MaterialTheme.typography.bodySmall)
+            }
+
+            Button(
+                onClick = onSave,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isSaving && editingNickname.isNotBlank(),
+                shape = RoundedCornerShape(50),
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(if (isSaving) "保存中…" else "保存修改")
+            }
+        }
+    }
+}
+
+// ── 调试：用户偏好（底部小按钮 + 展开面板）──
+
+@Composable
+private fun DebugPrefsSection(
+    showDebugPrefs: Boolean,
+    userPreference: com.heoclub.aitravel.data.model.UserPreference?,
+    isLoadingPreferences: Boolean,
+    errorMessage: String?,
+    onToggle: () -> Unit,
+) {
+    // 小文字按钮
+    Text(
+        text = if (showDebugPrefs) "▾ 隐藏调试信息" else "▸ 调试信息",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier
+            .clickable(onClick = onToggle)
+            .padding(vertical = 4.dp),
+    )
+
+    AnimatedVisibility(
+        visible = showDebugPrefs,
+        enter = expandVertically(),
+        exit = shrinkVertically(),
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            shape = RoundedCornerShape(22.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "用户偏好（调试）",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+
+                if (isLoadingPreferences) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("加载中…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else if (userPreference != null) {
+                    val p = userPreference
+                    PreferenceRow("语言", p.language)
+                    PreferenceRow("主题", p.theme)
+                    PreferenceRow("旅行风格", p.travelStyle)
+                    PreferenceRow("预算", p.budgetLevel)
+                    PreferenceRow("通知", if (p.notificationEnabled == 1) "开启" else "关闭")
+                    PreferenceRow("更新于", p.updatedAt)
+                } else {
+                    Text("未加载", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                if (errorMessage != null) {
+                    Text(errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreferenceRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.width(72.dp),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }

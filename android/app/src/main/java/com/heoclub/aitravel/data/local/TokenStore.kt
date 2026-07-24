@@ -13,7 +13,7 @@ class TokenStore(context: Context) {
         prefs.edit()
             .putString(KEY_ACCESS, accessToken)
             .putString(KEY_REFRESH, refreshToken)
-            .apply()
+            .commit()
     }
 
     fun getAccessToken(): String? = prefs.getString(KEY_ACCESS, null)

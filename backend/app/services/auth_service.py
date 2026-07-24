@@ -13,11 +13,17 @@ from app.core.security import (
     decode_token,
     hash_token,
 )
-from app.models.user import RefreshToken, User
+from app.models.user import RefreshToken, User, UserPlan, UserFootprint, UserPreference
 from app.schemas.user import (
     LoginRequest,
     RegisterRequest,
     TokenResponse,
+    UserPlanCreateRequest,
+    UserPlanResponse,
+    UserFootprintCreateRequest,
+    UserFootprintResponse,
+    UserPreferenceUpdateRequest,
+    UserPreferenceResponse,
     UserResponse,
     UserUpdateRequest,
 )
@@ -163,4 +169,159 @@ async def _create_token_pair(db: AsyncSession, user: User) -> TokenResponse:
         refresh_token=refresh_token,
         token_type="bearer",
         user=_user_to_response(user),
+    )
+
+
+# ── UserPlan CRUD ──
+
+async def get_user_plans(db: AsyncSession, user_id: str) -> list[UserPlanResponse]:
+    result = await db.execute(
+        select(UserPlan).where(UserPlan.user_id == user_id).order_by(UserPlan.updated_at.desc())
+    )
+    plans = result.scalars().all()
+    return [_plan_to_response(p) for p in plans]
+
+
+async def create_user_plan(db: AsyncSession, user_id: str, request: UserPlanCreateRequest) -> UserPlanResponse:
+    now = datetime.now(timezone.utc).isoformat()
+    plan = UserPlan(
+        user_id=user_id,
+        title=request.title.strip(),
+        destination=request.destination.strip(),
+        date_range=request.date_range.strip(),
+        day_count=request.day_count,
+        preferences=request.preferences,
+        plan_data=request.plan_data,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(plan)
+    await db.commit()
+    return _plan_to_response(plan)
+
+
+def _plan_to_response(plan: UserPlan) -> UserPlanResponse:
+    return UserPlanResponse(
+        id=plan.id,
+        user_id=plan.user_id,
+        title=plan.title,
+        destination=plan.destination,
+        date_range=plan.date_range,
+        day_count=plan.day_count,
+        preferences=plan.preferences,
+        plan_data=plan.plan_data,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+    )
+
+
+# ── UserFootprint CRUD ──
+
+async def get_user_footprints(db: AsyncSession, user_id: str) -> list[UserFootprintResponse]:
+    result = await db.execute(
+        select(UserFootprint).where(UserFootprint.user_id == user_id).order_by(UserFootprint.last_visited_at.desc())
+    )
+    footprints = result.scalars().all()
+    return [_footprint_to_response(f) for f in footprints]
+
+
+async def add_user_footprint(db: AsyncSession, user_id: str, request: UserFootprintCreateRequest) -> UserFootprintResponse:
+    # Check if city already exists for this user — if so, bump visit count
+    result = await db.execute(
+        select(UserFootprint).where(
+            UserFootprint.user_id == user_id,
+            UserFootprint.city_name == request.city_name.strip(),
+        )
+    )
+    existing = result.scalar_one_or_none()
+    now = datetime.now(timezone.utc).isoformat()
+    if existing is not None:
+        existing.visit_count += 1
+        existing.last_visited_at = now
+        await db.commit()
+        return _footprint_to_response(existing)
+
+    footprint = UserFootprint(
+        user_id=user_id,
+        city_name=request.city_name.strip(),
+        province_name=request.province_name.strip(),
+        latitude=request.latitude,
+        longitude=request.longitude,
+        visit_count=1,
+        first_visited_at=now,
+        last_visited_at=now,
+    )
+    db.add(footprint)
+    await db.commit()
+    return _footprint_to_response(footprint)
+
+
+def _footprint_to_response(fp: UserFootprint) -> UserFootprintResponse:
+    return UserFootprintResponse(
+        id=fp.id,
+        user_id=fp.user_id,
+        city_name=fp.city_name,
+        province_name=fp.province_name,
+        latitude=fp.latitude,
+        longitude=fp.longitude,
+        visit_count=fp.visit_count,
+        first_visited_at=fp.first_visited_at,
+        last_visited_at=fp.last_visited_at,
+    )
+
+
+# ── UserPreference CRUD ──
+
+async def get_user_preferences(db: AsyncSession, user_id: str) -> UserPreferenceResponse:
+    result = await db.execute(
+        select(UserPreference).where(UserPreference.user_id == user_id)
+    )
+    pref = result.scalar_one_or_none()
+    if pref is None:
+        # Auto-create defaults
+        now = datetime.now(timezone.utc).isoformat()
+        pref = UserPreference(user_id=user_id, created_at=now, updated_at=now)
+        db.add(pref)
+        await db.commit()
+    return _pref_to_response(pref)
+
+
+async def update_user_preferences(
+    db: AsyncSession, user_id: str, request: UserPreferenceUpdateRequest,
+) -> UserPreferenceResponse:
+    result = await db.execute(
+        select(UserPreference).where(UserPreference.user_id == user_id)
+    )
+    pref = result.scalar_one_or_none()
+    now = datetime.now(timezone.utc).isoformat()
+    if pref is None:
+        pref = UserPreference(user_id=user_id, created_at=now, updated_at=now)
+        db.add(pref)
+
+    if request.language is not None:
+        pref.language = request.language
+    if request.theme is not None:
+        pref.theme = request.theme
+    if request.travel_style is not None:
+        pref.travel_style = request.travel_style
+    if request.budget_level is not None:
+        pref.budget_level = request.budget_level
+    if request.notification_enabled is not None:
+        pref.notification_enabled = request.notification_enabled
+    pref.updated_at = now
+    await db.commit()
+    return _pref_to_response(pref)
+
+
+def _pref_to_response(pref: UserPreference) -> UserPreferenceResponse:
+    return UserPreferenceResponse(
+        id=pref.id,
+        user_id=pref.user_id,
+        language=pref.language,
+        theme=pref.theme,
+        travel_style=pref.travel_style,
+        budget_level=pref.budget_level,
+        notification_enabled=pref.notification_enabled,
+        created_at=pref.created_at,
+        updated_at=pref.updated_at,
     )
