@@ -25,4 +25,22 @@ class MarkdownInternalLinkTest {
             normalizeInternalPlaceLinks(source),
         )
     }
+
+    @Test
+    fun removesWholeLineBoldWrapperAroundNumberedInternalLink() {
+        val source = "**1. [庄氏隆兴·非遗蟹点(上海首店)](aitravel://place/amap:B001)**"
+
+        assertEquals(
+            "1. [庄氏隆兴·非遗蟹点(上海首店)](aitravel://place/amap:B001)",
+            normalizeInternalPlaceLinks(source),
+        )
+    }
+
+    @Test
+    fun removesDuplicateBoldNameRawUrlAndRepeatedLink() {
+        val link = "[耳朵眼会馆](aitravel://place/amap:B001)"
+        val source = "**耳朵眼会馆** (aitravel://place/amap:B001) $link 耳朵眼会馆 $link"
+
+        assertEquals(link, normalizeInternalPlaceLinks(source))
+    }
 }

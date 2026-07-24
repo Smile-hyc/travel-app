@@ -36,11 +36,14 @@ private val BOLD_PATTERN = Regex("""\*\*(.+?)\*\*""")
 private val ITALIC_PATTERN = Regex("""(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)""")
 private val CODE_PATTERN = Regex("""`(.+?)`""")
 private val LINK_PATTERN = Regex("""\[(.+?)]\((.+?)\)""")
-private val BOLD_INTERNAL_LINK_PATTERN = Regex(
-    """\*\*(\[[^\]\n]+]\(aitravel://place/[^)\s]+\))\*\*""",
+private val BOLD_CONTAINING_INTERNAL_LINK_PATTERN = Regex(
+    """\*\*([^\n]*?\[[^\]\n]+]\(aitravel://place/[^)\s]+\)[^\n]*?)\*\*""",
 )
-private val UNDERSCORE_INTERNAL_LINK_PATTERN = Regex(
-    """__(\[[^\]\n]+]\(aitravel://place/[^)\s]+\))__""",
+private val UNDERSCORE_CONTAINING_INTERNAL_LINK_PATTERN = Regex(
+    """__([^\n]*?\[[^\]\n]+]\(aitravel://place/[^)\s]+\)[^\n]*?)__""",
+)
+private val INTERNAL_PLACE_LINK_PATTERN = Regex(
+    """\[([^\]\n]+)]\((aitravel://place/[^)\s]+)\)""",
 )
 private const val INTERNAL_PLACE_PREFIX = "aitravel://place/"
 
@@ -53,10 +56,47 @@ internal fun internalPlaceId(url: String): String? {
 }
 
 internal fun normalizeInternalPlaceLinks(text: String): String {
-    return UNDERSCORE_INTERNAL_LINK_PATTERN.replace(
-        BOLD_INTERNAL_LINK_PATTERN.replace(text, "$1"),
+    val withoutOuterEmphasis = UNDERSCORE_CONTAINING_INTERNAL_LINK_PATTERN.replace(
+        BOLD_CONTAINING_INTERNAL_LINK_PATTERN.replace(text, "$1"),
         "$1",
     )
+    return withoutOuterEmphasis.lines().joinToString("\n", transform = ::dedupeInternalLinksOnLine)
+}
+
+private fun dedupeInternalLinksOnLine(line: String): String {
+    val links = INTERNAL_PLACE_LINK_PATTERN.findAll(line)
+        .map { match -> Triple(match.value, match.groupValues[1], match.groupValues[2]) }
+        .distinctBy { it.first }
+        .toList()
+    if (links.isEmpty()) return line
+
+    var normalized = line
+    val tokens = links.mapIndexed { index, (markdown, _, _) ->
+        val token = "\uE000PLACE_LINK_$index\uE001"
+        normalized = normalized.replace(markdown, token)
+        token
+    }
+
+    links.forEachIndexed { index, (_, label, url) ->
+        normalized = normalized
+            .replace("**$label**", "")
+            .replace("__${label}__", "")
+            .replace(label, "")
+        normalized = Regex("""\(?${Regex.escape(url)}\)?""").replace(normalized, "")
+
+        val token = tokens[index]
+        val firstToken = normalized.indexOf(token)
+        if (firstToken >= 0) {
+            val afterFirst = firstToken + token.length
+            normalized = normalized.substring(0, afterFirst) +
+                normalized.substring(afterFirst).replace(token, "")
+        }
+    }
+
+    tokens.forEachIndexed { index, token ->
+        normalized = normalized.replace(token, links[index].first)
+    }
+    return normalized.trim()
 }
 
 @Composable

@@ -23,7 +23,7 @@ import java.io.IOException
 
 data class PlanDetailUiState(
     val plan: TravelPlan? = null,
-    val selectedDayIndex: Int = 0,
+    val selectedDayIndex: Int = 1,
     val routeMode: String = RouteModes.MIXED,
     val route: DayRoutePlan? = null,
     val isLoadingRoute: Boolean = false,
@@ -90,6 +90,41 @@ class PlanDetailViewModel(
 
     fun retryRoute() {
         loadRoute()
+    }
+
+    fun updatePlanTitle(title: String) {
+        travelPlanRepository.updatePlanTitle(planId, title)
+    }
+
+    fun updatePlanDateRange(dateRange: String, dayCount: Int) {
+        travelPlanRepository.updatePlanDateRange(planId, dateRange, dayCount)
+    }
+
+    fun updateDayTitle(dayIndex: Int, title: String) {
+        travelPlanRepository.updateDayTitle(planId, dayIndex, title)
+    }
+
+    fun updateItemSchedule(
+        itemId: String,
+        currentDayIndex: Int,
+        suggestedStart: String?,
+        suggestedEnd: String?,
+        targetDayIndex: Int,
+    ) {
+        travelPlanRepository.updatePlanItemVisitTime(
+            planId = planId,
+            dayIndex = currentDayIndex,
+            itemId = itemId,
+            suggestedStart = suggestedStart,
+            suggestedEnd = suggestedEnd,
+        )
+        if (targetDayIndex != currentDayIndex) {
+            travelPlanRepository.movePlanItemToDay(planId, itemId, targetDayIndex)
+        }
+    }
+
+    fun removeItem(itemId: String) {
+        travelPlanRepository.removePlanItem(planId, itemId)
     }
 
     fun reorderItems(orderedItemIds: List<String>) {

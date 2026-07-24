@@ -333,7 +333,9 @@ fun AiTravelNavHost() {
                     onLocate = requestCurrentLocation,
                     onCreatePlan = { navController.navigate(Routes.createPlan) },
                     onOpenPlan = { planId -> navController.navigate(Routes.planDetail(planId)) },
-                    onAskAi = { question -> navController.navigate(Routes.assistant(question = question)) },
+                    onAskAi = { question, planId ->
+                        navController.navigate(Routes.assistant(question = question, planId = planId))
+                    },
                 )
             }
             composable(AppDestination.Explore.route) {
