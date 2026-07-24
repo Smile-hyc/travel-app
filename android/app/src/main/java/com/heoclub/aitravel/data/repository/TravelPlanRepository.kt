@@ -12,10 +12,15 @@ import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.RoutePlace
 import com.heoclub.aitravel.data.model.RouteModes
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.data.model.UserPlanCreateRequest
+import com.heoclub.aitravel.data.model.UserPlanResponse
+import com.heoclub.aitravel.data.model.UserPlanUpdateRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 private const val UNPLANNED_DAY_ID = "unplanned"
@@ -36,6 +41,9 @@ interface TravelPlanRepository {
     fun getPlan(planId: String): TravelPlan?
 
     fun deletePlan(planId: String): Boolean
+
+    /** Clear all locally stored plans (e.g. on logout). */
+    fun clearAllPlans()
 
     fun updatePlanTitle(planId: String, title: String)
 
@@ -135,7 +143,7 @@ open class InMemoryTravelPlanRepository(
 ) : TravelPlanRepository {
     private var lastAiUndoSnapshot: AiUndoSnapshot? = null
 
-    private val _plans = MutableStateFlow(
+    protected val _plans = MutableStateFlow(
         sanitizePlans(initialPlans).let { plans ->
             if (plans.isEmpty() && seedDefaultPlanWhenEmpty) listOf(defaultInitialPlan()) else plans
         },
@@ -259,6 +267,12 @@ open class InMemoryTravelPlanRepository(
             persistCurrentPlans()
         }
         return deleted
+    }
+
+    override fun clearAllPlans() {
+        _plans.value = emptyList()
+        lastAiUndoSnapshot = null
+        persistCurrentPlans()
     }
 
     override fun updatePlanTitle(planId: String, title: String) {
@@ -819,9 +833,7 @@ private class TravelPlanLocalStore(
         return runCatching {
             val plans = gson.fromJson<List<TravelPlan>>(json, planListType).orEmpty()
             sanitizePlans(plans)
-        }.getOrElse {
-            emptyList()
-        }
+        }.getOrElse { emptyList() }
     }
 
     fun savePlans(plans: List<TravelPlan>) {
@@ -835,6 +847,119 @@ private class TravelPlanLocalStore(
         const val KEY_PLANS = "plans_json"
     }
 }
+
+private class TravelPlanCloudSync(
+    private val apiService: com.heoclub.aitravel.data.remote.ApiService,
+    private val scope: CoroutineScope,
+    private val localStore: TravelPlanLocalStore,
+) {
+    private val gson = Gson()
+
+    fun persist(plans: List<TravelPlan>) {
+        localStore.savePlans(plans)
+        plans.forEach { plan ->
+            scope.launch {
+                val update = runCatching {
+                    apiService.updateUserPlan(plan.id, plan.toUpdateRequest(gson))
+                }
+                if (update.isFailure) {
+                    runCatching { apiService.createUserPlan(plan.toCreateRequest(gson)) }
+                }
+            }
+        }
+    }
+
+    fun delete(planId: String) {
+        scope.launch { runCatching { apiService.deleteUserPlan(planId) } }
+    }
+}
+
+// ── Cloud-backed repository with the develop branch's local persistence as fallback. ──
+
+class CloudTravelPlanRepository private constructor(
+    private val apiService: com.heoclub.aitravel.data.remote.ApiService,
+    private val scope: CoroutineScope,
+    private val localStore: TravelPlanLocalStore,
+    private val cloudSync: TravelPlanCloudSync,
+) : InMemoryTravelPlanRepository(
+    initialPlans = localStore.loadPlans(),
+    onPlansChanged = cloudSync::persist,
+    seedDefaultPlanWhenEmpty = !localStore.hasSavedPlans(),
+) {
+    private val gson = Gson()
+
+    constructor(
+        context: Context,
+        apiService: com.heoclub.aitravel.data.remote.ApiService,
+        scope: CoroutineScope,
+    ) : this(
+        apiService = apiService,
+        scope = scope,
+        localStore = TravelPlanLocalStore(context.applicationContext),
+        cloudSync = TravelPlanCloudSync(
+            apiService = apiService,
+            scope = scope,
+            localStore = TravelPlanLocalStore(context.applicationContext),
+        ),
+    )
+
+    /** Fetch plans from the cloud and replace the in-memory list. */
+    suspend fun loadFromCloud() {
+        runCatching {
+            apiService.getUserPlans().map { it.toTravelPlan(gson) }
+        }.onSuccess { cloudPlans ->
+            val merged = (cloudPlans + plans.value)
+                .distinctBy { it.id }
+            _plans.value = sanitizePlans(merged)
+            cloudSync.persist(_plans.value)
+        }
+    }
+
+    /** Push the current in-memory state of a single plan to the cloud. */
+    suspend fun syncPlan(planId: String) {
+        val plan = getPlan(planId) ?: return
+        val request = plan.toUpdateRequest(gson)
+        runCatching {
+            apiService.updateUserPlan(planId, request)
+        }
+    }
+
+    override fun deletePlan(planId: String): Boolean {
+        val deleted = super.deletePlan(planId)
+        if (deleted) cloudSync.delete(planId)
+        return deleted
+    }
+
+    override fun clearAllPlans() {
+        super.clearAllPlans()
+    }
+}
+
+// ── Conversion helpers ──
+
+private fun TravelPlan.toCreateRequest(gson: Gson) =
+    UserPlanCreateRequest(
+        id = id,
+        title = title,
+        destination = destination,
+        dateRange = dateRange,
+        dayCount = dayCount,
+        preferences = gson.toJson(preferences),
+        planData = gson.toJson(this),
+    )
+
+private fun TravelPlan.toUpdateRequest(gson: Gson) =
+    UserPlanUpdateRequest(
+        title = title,
+        destination = destination,
+        dateRange = dateRange,
+        dayCount = dayCount,
+        preferences = gson.toJson(preferences),
+        planData = gson.toJson(this),
+    )
+
+private fun UserPlanResponse.toTravelPlan(gson: Gson): TravelPlan =
+    gson.fromJson<TravelPlan>(planData, TravelPlan::class.java).copy(id = id)
 
 fun PlanItem.toRoutePlace(): RoutePlace? {
     val lat = latitude ?: return null

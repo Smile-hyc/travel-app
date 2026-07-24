@@ -26,7 +26,7 @@ fun localConfigValue(key: String, fallback: String = ""): String {
         ?: fallback
 }
 
-val debugApiBaseUrl = localConfigValue(
+val apiBaseUrl = localConfigValue(
     key = "API_BASE_URL",
     fallback = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
         .orElse("http://127.0.0.1:8000/")
@@ -58,11 +58,11 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "API_BASE_URL", "\"$debugApiBaseUrl\"")
+            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
         }
         release {
             isMinifyEnabled = false
-            buildConfigField("String", "API_BASE_URL", "\"https://example.invalid/\"")
+            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

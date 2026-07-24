@@ -85,6 +85,7 @@ internal fun JourneyJournalEditorScreen(
     var body by remember { mutableStateOf("") }
     var bodyStyle by remember { mutableStateOf(JournalTextStyle()) }
     var activeTarget by remember { mutableStateOf(EditorTextTarget.Body) }
+    val draftId = remember { "entry-${System.nanoTime()}" }
     val photos = remember { mutableStateListOf<JournalPhoto>() }
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents(),
@@ -129,6 +130,7 @@ internal fun JourneyJournalEditorScreen(
                 onShare = {
                     onShareDraft(
                         buildJournalEntry(
+                            id = draftId,
                             title = title,
                             titleColor = titleColor,
                             titleStyle = titleStyle.copy(textColor = titleColor),
@@ -142,6 +144,7 @@ internal fun JourneyJournalEditorScreen(
                 onSave = {
                     onSave(
                         buildJournalEntry(
+                            id = draftId,
                             title = title,
                             titleColor = titleColor,
                             titleStyle = titleStyle.copy(textColor = titleColor),
@@ -267,6 +270,7 @@ internal fun JourneyJournalEditorScreen(
 }
 
 private fun buildJournalEntry(
+    id: String,
     title: String,
     titleColor: Color,
     titleStyle: JournalTextStyle,
@@ -276,7 +280,7 @@ private fun buildJournalEntry(
     photos: List<JournalPhoto>,
 ): JournalEntry {
     return JournalEntry(
-        id = "entry-${System.nanoTime()}",
+        id = id,
         date = LocalDate.now(),
         title = title.ifBlank { "未命名旅记" },
         titleColor = titleColor,

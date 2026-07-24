@@ -20,11 +20,27 @@ import com.heoclub.aitravel.data.model.PlaceEnrichmentBatchResponse
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.RouteSegment
 import com.heoclub.aitravel.data.model.RouteSegmentRequest
+import com.heoclub.aitravel.data.model.CaptchaResponse
+import com.heoclub.aitravel.data.model.LoginRequest
+import com.heoclub.aitravel.data.model.RegisterRequest
+import com.heoclub.aitravel.data.model.TokenResponse
+import com.heoclub.aitravel.data.model.User
+import com.heoclub.aitravel.data.model.UserFootprintCreateRequest
+import com.heoclub.aitravel.data.model.UserFootprintResponse
+import com.heoclub.aitravel.data.model.UserJournalCreateRequest
+import com.heoclub.aitravel.data.model.UserJournalResponse
+import com.heoclub.aitravel.data.model.UserJournalUpdateRequest
+import com.heoclub.aitravel.data.model.UserPlanCreateRequest
+import com.heoclub.aitravel.data.model.UserPlanResponse
+import com.heoclub.aitravel.data.model.UserPlanUpdateRequest
+import com.heoclub.aitravel.data.model.UserUpdateRequest
 import com.heoclub.aitravel.data.model.ReverseGeocodePoint
 import okhttp3.ResponseBody
-import retrofit2.http.GET
 import retrofit2.http.Body
+import retrofit2.http.DELETE
+import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Streaming
@@ -130,4 +146,59 @@ interface ApiService {
     suspend fun cancelTravelPlanJob(
         @Path("jobId") jobId: String,
     ): AiPlanJobStatusResponse
+
+    // ── Auth ──
+
+    @GET("api/auth/captcha")
+    suspend fun getCaptcha(): CaptchaResponse
+
+    @POST("api/auth/register")
+    suspend fun register(@Body request: RegisterRequest): TokenResponse
+
+    @POST("api/auth/login")
+    suspend fun login(@Body request: LoginRequest): TokenResponse
+
+    @POST("api/auth/refresh")
+    suspend fun refreshToken(@Body body: Map<String, String>): TokenResponse
+
+    // ── User ──
+
+    @GET("api/user/me")
+    suspend fun getCurrentUser(): User
+
+    @PUT("api/user/me")
+    suspend fun updateCurrentUser(@Body request: UserUpdateRequest): User
+
+    // ── Plans ──
+    @GET("api/user/plans")
+    suspend fun getUserPlans(): List<UserPlanResponse>
+
+    @POST("api/user/plans")
+    suspend fun createUserPlan(@Body request: UserPlanCreateRequest): UserPlanResponse
+
+    @PUT("api/user/plans/{planId}")
+    suspend fun updateUserPlan(@retrofit2.http.Path("planId") planId: String, @Body request: UserPlanUpdateRequest): UserPlanResponse
+
+    @DELETE("api/user/plans/{planId}")
+    suspend fun deleteUserPlan(@retrofit2.http.Path("planId") planId: String)
+
+    // ── Footprints ──
+    @GET("api/user/footprints")
+    suspend fun getUserFootprints(): List<UserFootprintResponse>
+
+    @POST("api/user/footprints")
+    suspend fun addUserFootprint(@Body request: UserFootprintCreateRequest): UserFootprintResponse
+
+    // ── Journals ──
+    @GET("api/user/journals")
+    suspend fun getUserJournals(): List<UserJournalResponse>
+
+    @POST("api/user/journals")
+    suspend fun createUserJournal(@Body request: UserJournalCreateRequest): UserJournalResponse
+
+    @PUT("api/user/journals/{journalId}")
+    suspend fun updateUserJournal(@retrofit2.http.Path("journalId") journalId: String, @Body request: UserJournalUpdateRequest): UserJournalResponse
+
+    @DELETE("api/user/journals/{journalId}")
+    suspend fun deleteUserJournal(@retrofit2.http.Path("journalId") journalId: String)
 }

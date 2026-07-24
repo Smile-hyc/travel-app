@@ -22,8 +22,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -41,6 +43,10 @@ import com.heoclub.aitravel.AiTravelApplication
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.repository.AddPlaceResult
+import com.heoclub.aitravel.data.repository.CloudTravelPlanRepository
+import kotlinx.coroutines.launch
+import com.heoclub.aitravel.data.repository.toJournalEntry
+import com.heoclub.aitravel.data.repository.toCreateRequest
 import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
 import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
 import com.heoclub.aitravel.ui.assistant.AiAssistantViewModel
@@ -56,17 +62,17 @@ import com.heoclub.aitravel.ui.detail.PlanDetailViewModel
 import com.heoclub.aitravel.ui.discover.DiscoverScreen
 import com.heoclub.aitravel.ui.explore.ExploreViewModel
 import com.heoclub.aitravel.ui.explore.rememberExploreMapViewHolder
-import com.heoclub.aitravel.ui.home.HomeViewModel
 import com.heoclub.aitravel.ui.journey.JourneyJournalEditorScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalDetailScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalScreen
+import com.heoclub.aitravel.ui.journey.JournalEntry
 import com.heoclub.aitravel.ui.journey.JourneyJournalShareScreen
 import com.heoclub.aitravel.ui.journey.JourneyScreen
-import com.heoclub.aitravel.ui.journey.seedJournalEntries
 import com.heoclub.aitravel.ui.plan.PlanHomeScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeViewModel
 import com.heoclub.aitravel.ui.place.PlaceDetailScreen
 import com.heoclub.aitravel.ui.place.PlaceDetailViewModel
+import com.heoclub.aitravel.ui.auth.AuthScreen
 import com.heoclub.aitravel.ui.profile.ProfileScreen
 
 private object Routes {
@@ -219,6 +225,40 @@ private data class ExplorePlanContext(
 fun AiTravelNavHost() {
     val navController = rememberNavController()
     val application = LocalContext.current.applicationContext as AiTravelApplication
+    val authRepository = application.container.authRepository
+    var isLoggedIn by remember { mutableStateOf<Boolean?>(if (authRepository.isLoggedIn) null else false) }
+    var authEntryCount by remember { mutableIntStateOf(0) }
+
+    // On startup, verify stored token is still valid before showing the main UI.
+    LaunchedEffect(Unit) {
+        if (isLoggedIn == null) {
+            isLoggedIn = authRepository.restoreOrRefreshSession()
+            if (isLoggedIn == false) {
+                application.container.travelPlanRepository.clearAllPlans()
+            }
+        }
+    }
+
+    // Load cloud plans whenever the user becomes authenticated.
+    LaunchedEffect(isLoggedIn) {
+        if (isLoggedIn == true) {
+            (application.container.travelPlanRepository as? CloudTravelPlanRepository)?.loadFromCloud()
+        }
+    }
+
+    // Still checking stored token — wait.
+    if (isLoggedIn == null) return
+
+    if (isLoggedIn == false) {
+        AuthScreen(
+            authRepository = authRepository,
+            healthRepository = application.container.healthRepository,
+            viewModelKey = authEntryCount,
+            onAuthSuccess = { isLoggedIn = true },
+        )
+        return
+    }
+
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val currentRoute = currentDestination?.route
@@ -230,7 +270,20 @@ fun AiTravelNavHost() {
     val exploreMapViewHolder = rememberExploreMapViewHolder()
     var pendingPlaceToAdd by remember { mutableStateOf<PlaceSummary?>(null) }
     var explorePlanContext by remember { mutableStateOf<ExplorePlanContext?>(null) }
-    val journalEntries = remember { mutableStateListOf(*seedJournalEntries.toTypedArray()) }
+    val journalEntries = remember { mutableStateListOf<JournalEntry>() }
+    var pendingShareDraft by remember { mutableStateOf<JournalEntry?>(null) }
+
+    // Load journals from cloud when authenticated.
+    LaunchedEffect(isLoggedIn) {
+        if (isLoggedIn == true) {
+            application.container.journalRepository.getJournals()
+                .onSuccess { responses ->
+                    journalEntries.clear()
+                    journalEntries.addAll(responses.map { it.toJournalEntry() }.sortedByDescending { it.date })
+                }
+        }
+    }
+
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
@@ -367,30 +420,60 @@ fun AiTravelNavHost() {
                 )
             }
             composable(AppDestination.Profile.route) {
-                val homeViewModel: HomeViewModel = viewModel(
-                    factory = HomeViewModel.Factory(application.container.healthRepository),
+                val profileViewModel: com.heoclub.aitravel.ui.profile.ProfileViewModel = viewModel(
+                    factory = com.heoclub.aitravel.ui.profile.ProfileViewModel.Factory(
+                        authRepository = application.container.authRepository,
+                        healthRepository = application.container.healthRepository,
+                    ),
                 )
-                ProfileScreen(viewModel = homeViewModel)
+                ProfileScreen(
+                    viewModel = profileViewModel,
+                    onLoggedOut = {
+                        application.container.travelPlanRepository.clearAllPlans()
+                        authEntryCount++
+                        isLoggedIn = false
+                    },
+                    onOpenJournal = { navController.navigate(Routes.journeyJournal) },
+                )
             }
             composable(Routes.journeyJournal) {
+                val scope = rememberCoroutineScope()
                 JourneyJournalScreen(
                     entries = journalEntries,
                     onBack = { navController.popBackStack() },
                     onWriteJourney = { navController.navigate(Routes.journeyJournalEditor) },
-                    onAddEntry = { entry -> journalEntries.add(0, entry) },
+                    onAddEntry = { entry ->
+                        journalEntries.add(0, entry)
+                        scope.launch {
+                            application.container.journalRepository.createJournal(entry.toCreateRequest())
+                        }
+                    },
                     onOpenEntry = { entryId -> navController.navigate(Routes.journeyJournalDetail(entryId)) },
                     onShareEntry = { entryId -> navController.navigate(Routes.journeyJournalShare(entryId)) },
                 )
             }
             composable(Routes.journeyJournalEditor) {
+                val scope = rememberCoroutineScope()
                 JourneyJournalEditorScreen(
-                    onBack = { navController.popBackStack() },
-                    onSave = { entry ->
-                        journalEntries.add(0, entry)
+                    onBack = {
+                        pendingShareDraft = null
                         navController.popBackStack()
                     },
+                    onSave = { entry ->
+                        val existingIndex = journalEntries.indexOfFirst { it.id == entry.id }
+                        if (existingIndex >= 0) {
+                            journalEntries[existingIndex] = entry
+                        } else {
+                            journalEntries.add(0, entry)
+                        }
+                        pendingShareDraft = null
+                        navController.popBackStack()
+                        scope.launch {
+                            application.container.journalRepository.createJournal(entry.toCreateRequest())
+                        }
+                    },
                     onShareDraft = { entry ->
-                        journalEntries.add(0, entry)
+                        pendingShareDraft = entry
                         navController.navigate(Routes.journeyJournalShare(entry.id))
                     },
                 )
@@ -401,6 +484,7 @@ fun AiTravelNavHost() {
             ) { backStackEntry ->
                 val entryId = backStackEntry.arguments?.getString("entryId").orEmpty()
                 val entry = journalEntries.firstOrNull { it.id == entryId }
+                    ?: pendingShareDraft?.takeIf { it.id == entryId }
                 if (entry != null) {
                     JourneyJournalDetailScreen(
                         entry = entry,
@@ -415,6 +499,7 @@ fun AiTravelNavHost() {
             ) { backStackEntry ->
                 val entryId = backStackEntry.arguments?.getString("entryId").orEmpty()
                 val entry = journalEntries.firstOrNull { it.id == entryId }
+                    ?: pendingShareDraft?.takeIf { it.id == entryId }
                 if (entry != null) {
                     JourneyJournalShareScreen(
                         entry = entry,
