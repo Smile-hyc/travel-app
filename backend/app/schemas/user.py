@@ -88,25 +88,3 @@ class UserFootprintResponse(BaseModel):
     visit_count: int
     first_visited_at: str
     last_visited_at: str
-
-
-# ── UserPreference ──
-
-class UserPreferenceUpdateRequest(BaseModel):
-    language: str | None = Field(default=None, max_length=10)
-    theme: str | None = Field(default=None, max_length=20)
-    travel_style: str | None = Field(default=None, max_length=2000)
-    budget_level: str | None = Field(default=None, max_length=20)
-    notification_enabled: int | None = Field(default=None, ge=0, le=1)
-
-
-class UserPreferenceResponse(BaseModel):
-    id: str
-    user_id: str
-    language: str
-    theme: str
-    travel_style: str
-    budget_level: str
-    notification_enabled: int
-    created_at: str
-    updated_at: str

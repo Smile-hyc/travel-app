@@ -225,6 +225,10 @@ fun AiTravelNavHost() {
     LaunchedEffect(Unit) {
         if (isLoggedIn == null) {
             isLoggedIn = authRepository.restoreOrRefreshSession()
+            if (isLoggedIn == false) {
+                // Stale session beyond recovery — clear local data.
+                application.container.travelPlanRepository.clearAllPlans()
+            }
         }
     }
 
@@ -396,9 +400,11 @@ fun AiTravelNavHost() {
                 ProfileScreen(
                     viewModel = profileViewModel,
                     onLoggedOut = {
+                        application.container.travelPlanRepository.clearAllPlans()
                         authEntryCount++
                         isLoggedIn = false
                     },
+                    onOpenJournal = { navController.navigate(Routes.journeyJournal) },
                 )
             }
             composable(Routes.journeyJournal) {

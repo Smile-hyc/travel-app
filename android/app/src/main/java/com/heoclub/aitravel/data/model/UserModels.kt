@@ -39,23 +39,3 @@ data class UserUpdateRequest(
     val nickname: String? = null,
     @SerializedName("avatar_url") val avatarUrl: String? = null,
 )
-
-data class UserPreference(
-    val id: String,
-    @SerializedName("user_id") val userId: String,
-    val language: String,
-    val theme: String,
-    @SerializedName("travel_style") val travelStyle: String,
-    @SerializedName("budget_level") val budgetLevel: String,
-    @SerializedName("notification_enabled") val notificationEnabled: Int,
-    @SerializedName("created_at") val createdAt: String,
-    @SerializedName("updated_at") val updatedAt: String,
-)
-
-data class UserPreferenceUpdateRequest(
-    val language: String? = null,
-    val theme: String? = null,
-    @SerializedName("travel_style") val travelStyle: String? = null,
-    @SerializedName("budget_level") val budgetLevel: String? = null,
-    @SerializedName("notification_enabled") val notificationEnabled: Int? = null,
-)

@@ -1,6 +1,5 @@
 package com.heoclub.aitravel.ui.profile
 
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -26,7 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.TravelExplore
+import androidx.compose.material.icons.outlined.Create
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -45,7 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.heoclub.aitravel.ui.home.HomeUiState
@@ -54,10 +52,10 @@ import com.heoclub.aitravel.ui.home.HomeUiState
 fun ProfileScreen(
     viewModel: ProfileViewModel,
     onLoggedOut: () -> Unit,
+    onOpenJournal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
-    val context = LocalContext.current
 
     Column(
         modifier = modifier
@@ -97,19 +95,8 @@ fun ProfileScreen(
             )
         }
 
-        TravelFootprintEntryCard(
-            onClick = {
-                Toast.makeText(context, "旅行足迹地图即将上线", Toast.LENGTH_SHORT).show()
-            },
-        )
-
-        // ── 调试：用户偏好（底部小按钮 + 展开面板）──
-        DebugPrefsSection(
-            showDebugPrefs = state.showDebugPrefs,
-            userPreference = state.userPreference,
-            isLoadingPreferences = state.isLoadingPreferences,
-            errorMessage = state.errorMessage,
-            onToggle = viewModel::toggleDebugPrefs,
+        TravelJournalEntryCard(
+            onClick = onOpenJournal,
         )
 
         BackendStatusCard(
@@ -224,7 +211,7 @@ private fun BackendStatusCard(
 }
 
 @Composable
-private fun TravelFootprintEntryCard(
+private fun TravelJournalEntryCard(
     onClick: () -> Unit,
 ) {
     Card(
@@ -260,7 +247,7 @@ private fun TravelFootprintEntryCard(
                     shape = CircleShape,
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.TravelExplore,
+                        imageVector = Icons.Outlined.Create,
                         contentDescription = null,
                         modifier = Modifier.padding(14.dp),
                         tint = MaterialTheme.colorScheme.primary,
@@ -272,12 +259,12 @@ private fun TravelFootprintEntryCard(
                         .padding(start = 16.dp),
                 ) {
                     Text(
-                        text = "旅行足迹",
+                        text = "旅行日记",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = "探索你走过的城市和山川",
+                        text = "记录旅途中的美好时光",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(top = 4.dp),
@@ -349,85 +336,3 @@ private fun NicknameEditPanel(
     }
 }
 
-// ── 调试：用户偏好（底部小按钮 + 展开面板）──
-
-@Composable
-private fun DebugPrefsSection(
-    showDebugPrefs: Boolean,
-    userPreference: com.heoclub.aitravel.data.model.UserPreference?,
-    isLoadingPreferences: Boolean,
-    errorMessage: String?,
-    onToggle: () -> Unit,
-) {
-    // 小文字按钮
-    Text(
-        text = if (showDebugPrefs) "▾ 隐藏调试信息" else "▸ 调试信息",
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.labelMedium,
-        modifier = Modifier
-            .clickable(onClick = onToggle)
-            .padding(vertical = 4.dp),
-    )
-
-    AnimatedVisibility(
-        visible = showDebugPrefs,
-        enter = expandVertically(),
-        exit = shrinkVertically(),
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            shape = RoundedCornerShape(22.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(
-                    text = "用户偏好（调试）",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-
-                if (isLoadingPreferences) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("加载中…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else if (userPreference != null) {
-                    val p = userPreference
-                    PreferenceRow("语言", p.language)
-                    PreferenceRow("主题", p.theme)
-                    PreferenceRow("旅行风格", p.travelStyle)
-                    PreferenceRow("预算", p.budgetLevel)
-                    PreferenceRow("通知", if (p.notificationEnabled == 1) "开启" else "关闭")
-                    PreferenceRow("更新于", p.updatedAt)
-                } else {
-                    Text("未加载", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-
-                if (errorMessage != null) {
-                    Text(errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PreferenceRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.width(72.dp),
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium,
-        )
-    }
-}

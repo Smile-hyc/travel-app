@@ -11,8 +11,6 @@ from app.schemas.user import (
     UserFootprintResponse,
     UserPlanCreateRequest,
     UserPlanResponse,
-    UserPreferenceResponse,
-    UserPreferenceUpdateRequest,
     UserResponse,
     UserUpdateRequest,
 )
@@ -22,9 +20,7 @@ from app.services.auth_service import (
     get_user,
     get_user_footprints,
     get_user_plans,
-    get_user_preferences,
     update_user,
-    update_user_preferences,
 )
 
 router = APIRouter(prefix="/api/user", tags=["user"])
@@ -107,24 +103,3 @@ async def add_footprint(
         return await add_user_footprint(db, current_user.id, request)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-# ── User Preferences ──
-
-@router.get("/preferences", response_model=UserPreferenceResponse)
-async def read_preferences(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get current user's preferences (auto-creates defaults if absent)."""
-    return await get_user_preferences(db, current_user.id)
-
-
-@router.put("/preferences", response_model=UserPreferenceResponse)
-async def update_preferences(
-    request: UserPreferenceUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Update current user's preferences."""
-    return await update_user_preferences(db, current_user.id, request)

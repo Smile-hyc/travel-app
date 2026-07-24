@@ -37,6 +37,9 @@ interface TravelPlanRepository {
 
     fun deletePlan(planId: String): Boolean
 
+    /** Clear all locally stored plans (e.g. on logout). */
+    fun clearAllPlans()
+
     fun addPlaceToPlan(
         planId: String,
         place: PlaceSummary,
@@ -241,6 +244,12 @@ open class InMemoryTravelPlanRepository(
             persistCurrentPlans()
         }
         return deleted
+    }
+
+    override fun clearAllPlans() {
+        _plans.value = emptyList()
+        lastAiUndoSnapshot = null
+        persistCurrentPlans()
     }
 
     override fun addPlaceToPlan(

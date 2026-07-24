@@ -6,8 +6,6 @@ import com.heoclub.aitravel.data.model.LoginRequest
 import com.heoclub.aitravel.data.model.RegisterRequest
 import com.heoclub.aitravel.data.model.TokenResponse
 import com.heoclub.aitravel.data.model.User
-import com.heoclub.aitravel.data.model.UserPreference
-import com.heoclub.aitravel.data.model.UserPreferenceUpdateRequest
 import com.heoclub.aitravel.data.model.UserUpdateRequest
 import com.heoclub.aitravel.data.remote.ApiService
 import kotlinx.coroutines.flow.Flow
@@ -73,14 +71,6 @@ class AuthRepository(
         val user = apiService.updateCurrentUser(UserUpdateRequest(nickname = nickname, avatarUrl = avatarUrl))
         _currentUser.value = user
         user
-    }
-
-    suspend fun fetchUserPreferences(): Result<UserPreference> = runCatching {
-        apiService.getUserPreferences()
-    }
-
-    suspend fun updateUserPreferences(request: UserPreferenceUpdateRequest): Result<UserPreference> = runCatching {
-        apiService.updateUserPreferences(request)
     }
 
     fun logout() {

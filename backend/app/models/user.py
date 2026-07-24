@@ -61,17 +61,3 @@ class UserFootprint(Base):
     visit_count = Column(Integer, default=1)
     first_visited_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
     last_visited_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
-
-
-class UserPreference(Base):
-    __tablename__ = "user_preferences"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
-    language = Column(String(10), default="zh-CN")
-    theme = Column(String(20), default="system")
-    travel_style = Column(Text, default="[]")
-    budget_level = Column(String(20), default="medium")
-    notification_enabled = Column(Integer, default=1)
-    created_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())

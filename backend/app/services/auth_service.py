@@ -13,7 +13,7 @@ from app.core.security import (
     decode_token,
     hash_token,
 )
-from app.models.user import RefreshToken, User, UserPlan, UserFootprint, UserPreference
+from app.models.user import RefreshToken, User, UserPlan, UserFootprint
 from app.schemas.user import (
     LoginRequest,
     RegisterRequest,
@@ -22,8 +22,6 @@ from app.schemas.user import (
     UserPlanResponse,
     UserFootprintCreateRequest,
     UserFootprintResponse,
-    UserPreferenceUpdateRequest,
-    UserPreferenceResponse,
     UserResponse,
     UserUpdateRequest,
 )
@@ -267,61 +265,4 @@ def _footprint_to_response(fp: UserFootprint) -> UserFootprintResponse:
         visit_count=fp.visit_count,
         first_visited_at=fp.first_visited_at,
         last_visited_at=fp.last_visited_at,
-    )
-
-
-# ── UserPreference CRUD ──
-
-async def get_user_preferences(db: AsyncSession, user_id: str) -> UserPreferenceResponse:
-    result = await db.execute(
-        select(UserPreference).where(UserPreference.user_id == user_id)
-    )
-    pref = result.scalar_one_or_none()
-    if pref is None:
-        # Auto-create defaults
-        now = datetime.now(timezone.utc).isoformat()
-        pref = UserPreference(user_id=user_id, created_at=now, updated_at=now)
-        db.add(pref)
-        await db.commit()
-    return _pref_to_response(pref)
-
-
-async def update_user_preferences(
-    db: AsyncSession, user_id: str, request: UserPreferenceUpdateRequest,
-) -> UserPreferenceResponse:
-    result = await db.execute(
-        select(UserPreference).where(UserPreference.user_id == user_id)
-    )
-    pref = result.scalar_one_or_none()
-    now = datetime.now(timezone.utc).isoformat()
-    if pref is None:
-        pref = UserPreference(user_id=user_id, created_at=now, updated_at=now)
-        db.add(pref)
-
-    if request.language is not None:
-        pref.language = request.language
-    if request.theme is not None:
-        pref.theme = request.theme
-    if request.travel_style is not None:
-        pref.travel_style = request.travel_style
-    if request.budget_level is not None:
-        pref.budget_level = request.budget_level
-    if request.notification_enabled is not None:
-        pref.notification_enabled = request.notification_enabled
-    pref.updated_at = now
-    await db.commit()
-    return _pref_to_response(pref)
-
-
-def _pref_to_response(pref: UserPreference) -> UserPreferenceResponse:
-    return UserPreferenceResponse(
-        id=pref.id,
-        user_id=pref.user_id,
-        language=pref.language,
-        theme=pref.theme,
-        travel_style=pref.travel_style,
-        budget_level=pref.budget_level,
-        notification_enabled=pref.notification_enabled,
-        created_at=pref.created_at,
-        updated_at=pref.updated_at,
     )

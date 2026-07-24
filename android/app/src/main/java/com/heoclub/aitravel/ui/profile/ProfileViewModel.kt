@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.heoclub.aitravel.data.model.User
-import com.heoclub.aitravel.data.model.UserPreference
 import com.heoclub.aitravel.data.repository.AuthRepository
 import com.heoclub.aitravel.data.repository.HealthRepository
 import com.heoclub.aitravel.ui.home.HomeUiState
@@ -33,10 +32,6 @@ data class ProfileUiState(
     val showNicknameEdit: Boolean = false,
     val editingNickname: String = "",
     val isSavingNickname: Boolean = false,
-    // Debug preferences panel (server-side user_preferences)
-    val showDebugPrefs: Boolean = false,
-    val userPreference: UserPreference? = null,
-    val isLoadingPreferences: Boolean = false,
 )
 
 class ProfileViewModel(
@@ -49,6 +44,13 @@ class ProfileViewModel(
 
     init {
         checkHealth()
+        // Stay in sync with the AuthRepository so uiState.user always
+        // reflects the real database user (via GET /api/user/me).
+        viewModelScope.launch {
+            authRepository.currentUser.collect { user ->
+                _uiState.update { it.copy(user = user) }
+            }
+        }
     }
 
     fun toggleForm() {
@@ -223,34 +225,9 @@ class ProfileViewModel(
             val next = !it.showNicknameEdit
             it.copy(
                 showNicknameEdit = next,
-                showDebugPrefs = false,
                 editingNickname = if (next && it.editingNickname.isBlank()) it.user?.nickname.orEmpty() else it.editingNickname,
                 errorMessage = null,
             )
-        }
-    }
-
-    fun toggleDebugPrefs() {
-        _uiState.update {
-            val next = !it.showDebugPrefs
-            it.copy(
-                showDebugPrefs = next,
-                showNicknameEdit = false,
-                errorMessage = null,
-            )
-        }
-        if (!_uiState.value.showDebugPrefs) return
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingPreferences = true) }
-            authRepository.fetchUserPreferences()
-                .onSuccess { prefs ->
-                    _uiState.update { it.copy(userPreference = prefs, isLoadingPreferences = false) }
-                }
-                .onFailure { e ->
-                    _uiState.update {
-                        it.copy(isLoadingPreferences = false, errorMessage = "偏好加载失败: ${extractErrorMessage(e)}")
-                    }
-                }
         }
     }
 
