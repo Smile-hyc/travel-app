@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.heoclub.aitravel.data.model.PlaceDetail
 import com.heoclub.aitravel.data.model.ExperienceInsight
+import com.heoclub.aitravel.data.model.ExperienceInsightPoint
 import com.heoclub.aitravel.data.model.ReviewSource
 import com.heoclub.aitravel.data.model.TravelPlan
 import com.heoclub.aitravel.data.repository.AddPlaceResult
@@ -362,7 +363,13 @@ private fun ReviewSection(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 insights.sortedByDescending { it.mentionCount }.forEach { insight ->
-                    ExperienceInsightCard(insight)
+                    ExperienceInsightCard(
+                        insight = insight,
+                        sourcesByEvidenceId = detail.reviewSources
+                            .filter { !it.evidenceId.isNullOrBlank() }
+                            .associateBy { it.evidenceId.orEmpty() },
+                        onOpen = onOpen,
+                    )
                 }
             }
         } else {
@@ -417,13 +424,25 @@ private fun ReviewSection(
 }
 
 @Composable
-private fun ExperienceInsightCard(insight: ExperienceInsight) {
+private fun ExperienceInsightCard(
+    insight: ExperienceInsight,
+    sourcesByEvidenceId: Map<String, ReviewSource>,
+    onOpen: (ReviewSource) -> Unit,
+) {
     val sampleLabel = when {
-        insight.mentionCount >= 3 -> "${insight.mentionCount} 条交叉参考"
-        insight.mentionCount == 2 -> "2 条样本"
-        else -> "1 条个体体验"
+        insight.mentionCount >= 2 -> "综合 ${insight.mentionCount} 篇相关笔记"
+        else -> "参考 1 篇相关笔记"
     }
-    val points = remember(insight.summary) { insightSummaryPoints(insight.summary) }
+    val points = remember(insight.summary, insight.points) {
+        insight.points.ifEmpty {
+            insightSummaryPoints(insight.summary).mapIndexed { index, text ->
+                ExperienceInsightPoint(
+                    text = text,
+                    evidenceIds = insight.evidenceIds.getOrNull(index)?.let(::listOf).orEmpty(),
+                )
+            }
+        }
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = InsightBackground,
@@ -457,20 +476,50 @@ private fun ExperienceInsightCard(insight: ExperienceInsight) {
             }
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 points.forEach { point ->
-                    Row(verticalAlignment = Alignment.Top) {
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 4.dp, end = 11.dp)
-                                .size(width = 3.dp, height = 19.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(InsightAccent.copy(alpha = 0.72f)),
-                        )
-                        Text(
-                            point,
-                            style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
-                            color = Color(0xFF353535),
-                            modifier = Modifier.weight(1f),
-                        )
+                    val pointSources = point.evidenceIds.mapNotNull(sourcesByEvidenceId::get)
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 4.dp, end = 11.dp)
+                                    .size(width = 3.dp, height = 19.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(InsightAccent.copy(alpha = 0.72f)),
+                            )
+                            Text(
+                                point.text,
+                                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                                color = Color(0xFF353535),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        pointSources.forEach { source ->
+                            Row(
+                                modifier = Modifier
+                                    .padding(start = 14.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { onOpen(source) }
+                                    .padding(horizontal = 7.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "来源：${source.title}",
+                                    style = MaterialTheme.typography.labelMedium.copy(lineHeight = 18.sp),
+                                    color = XiaohongshuRed,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                Icon(
+                                    Icons.AutoMirrored.Outlined.OpenInNew,
+                                    contentDescription = "打开对应小红书笔记",
+                                    tint = XiaohongshuRed,
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .size(15.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -661,14 +710,19 @@ private fun OfficialNoticeSection(
                     val channels = listOfNotNull(
                         official.wechatName?.let { "公众号：$it" },
                         official.miniProgramName?.let { "小程序：$it" },
-                        official.websiteUrl?.let { "官网已收录" },
+                        official.websiteUrl?.let { "官方页面已收录" },
                         official.ticketingUrl?.let { "官方票务入口已收录" },
                     )
                     if (channels.isNotEmpty()) {
                         Text(channels.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MutedInk)
                     }
                     official.websiteUrl?.takeIf(String::isNotBlank)?.let { url ->
-                        OfficialLinkRow("访问景区官网", url, onOpenUrl)
+                        val label = when (official.sourceType) {
+                            "GOVERNMENT_DIRECTORY" -> "查看政府官方页面"
+                            "ASSOCIATION_DIRECTORY" -> "查看权威协会页面"
+                            else -> "访问景区官网"
+                        }
+                        OfficialLinkRow(label, url, onOpenUrl)
                     }
                     official.ticketingUrl?.takeIf(String::isNotBlank)?.let { url ->
                         OfficialLinkRow("打开官方预约/票务", url, onOpenUrl)

@@ -311,8 +311,10 @@ def _map_city_run(run: dict) -> dict:
         "rankingVersion": run["ranking_version"],
         "status": run["status"],
         "candidateLimit": run["candidate_limit"],
-        "retainLimit": run["retain_limit"],
-        "displayLimit": run["display_limit"],
+        # Retention and detail display now use every cleaned candidate. Keep
+        # the legacy response fields aligned with the effective behavior.
+        "retainLimit": run["candidate_limit"],
+        "displayLimit": run["candidate_limit"],
         "targetCount": run["target_count"],
         "fetchedCount": run.get("fetched_count", 0),
         "acceptedCount": run.get("accepted_count", 0),

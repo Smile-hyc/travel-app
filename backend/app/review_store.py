@@ -675,28 +675,6 @@ class ReviewStore:
             )
         return cursor.rowcount > 0
 
-    def prune_active_evidence(self, poi_id: str, *, keep: int = 20) -> int:
-        """Soft-delete lower ranked evidence while retaining its audit row."""
-        if keep < 1 or keep > 50:
-            raise ValueError("keep must be between 1 and 50")
-        rows = self._fetchall(
-            "SELECT evidence_id FROM ugc_evidence "
-            "WHERE poi_id = ? AND deleted = 0 "
-            "ORDER BY relevance_score DESC, published_at DESC, updated_at DESC, evidence_id",
-            (poi_id,),
-        )
-        stale_ids = [row["evidence_id"] for row in rows[keep:]]
-        if not stale_ids:
-            return 0
-        now = _utc_now()
-        with self._transaction():
-            cursor = self._connection.execute(
-                f"UPDATE ugc_evidence SET deleted = 1, updated_at = ? "
-                f"WHERE evidence_id IN ({_placeholders(stale_ids)})",
-                (now, *stale_ids),
-            )
-        return cursor.rowcount
-
     def save_aggregate(self, aggregate: JsonObject | Any) -> dict[str, Any]:
         item = _as_mapping(aggregate)
         now = _utc_now()

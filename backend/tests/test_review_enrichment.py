@@ -99,6 +99,43 @@ def test_single_attributable_note_is_shown_as_low_sample_reference() -> None:
     store.close()
 
 
+def test_detail_returns_every_cleaned_note_and_traceable_insight_points() -> None:
+    store = ReviewStore(":memory:")
+    service = PlaceDetailService(FakeAuthorizedProvider(), store=store, author_hash_salt="test")
+    sources = [
+        ReviewSource(
+            id=f"xiaohongshu:all-note-{index}",
+            platform="小红书",
+            title=f"故宫拍照参考 {index}",
+            excerpt=f"故宫午后拍照很出片，推荐从午门附近取景，编号 {index}。",
+            url=f"https://www.xiaohongshu.com/explore/all-note-{index}",
+            author=f"all-author-{index}",
+        )
+        for index in range(24)
+    ]
+
+    result = service.import_review_sources(_place(), sources)
+    detail = result["detail"]
+    insight = detail.experienceLayer.insights[0]
+    returned_evidence_ids = {
+        source.evidenceId for source in detail.reviewSources if source.evidenceId
+    }
+
+    assert result["acceptedCount"] == 24
+    assert detail.experienceLayer.evidenceCount == 24
+    assert len(detail.reviewSources) == 24
+    assert insight.mentionCount == 24
+    assert len(insight.evidenceIds) == 24
+    assert insight.points
+    assert all(point.evidenceIds for point in insight.points)
+    assert all(
+        evidence_id in returned_evidence_ids
+        for point in insight.points
+        for evidence_id in point.evidenceIds
+    )
+    store.close()
+
+
 def test_concurrent_batches_deduplicate_same_poi_upstream_search() -> None:
     async def scenario():
         provider = FakeAuthorizedProvider()
@@ -132,6 +169,27 @@ def test_unconfigured_provider_returns_facts_without_queue() -> None:
     assert batch.pendingCount == 0
     assert batch.items[0].status == "UNAVAILABLE"
     assert batch.items[0].detail.factLayer.openingHours
+
+
+def test_pending_official_directory_entry_is_not_presented_as_verified() -> None:
+    store = ReviewStore(":memory:")
+    store.upsert_official_source(
+        {
+            "sourceId": "pending:B001",
+            "poiId": "B001",
+            "officialName": "故宫博物院",
+            "cityName": "北京市",
+            "discoveryStatus": "PENDING",
+            "adapterKind": "PENDING_DISCOVERY",
+        },
+    )
+    service = PlaceDetailService(FakeAuthorizedProvider(), store=store, author_hash_salt="test")
+
+    detail = asyncio.run(service.get_detail(_place()))
+
+    assert detail.officialLayer.status == "UNAVAILABLE"
+    assert detail.officialLayer.discoveryStatus == "PENDING"
+    store.close()
 
 
 def test_planning_signals_distinguish_access_restriction_from_whole_place_closure() -> None:
