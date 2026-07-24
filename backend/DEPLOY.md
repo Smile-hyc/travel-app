@@ -126,8 +126,11 @@ cp /opt/travel-app/backend/data/users.sqlite3 /backup/users_$(date +%Y%m%d).sqli
 
 在 `android/local.properties` 中配置：
 ```properties
-API_BASE_URL=https://api.your-domain.com
+API_BASE_URL=https://api.your-domain.com/
 ```
+
+该地址同时用于 debug 与 release 构建，必须保留末尾的 `/`。正式版本必须使用
+HTTPS；不要把公网用户名、密码、Token 或服务端密钥写入 `local.properties`。
 
 确保服务器 CORS 已正确配置（`.env` 中的 `DEV_CORS_ORIGINS`），生产环境下需要将 Android 包名对应的域名加入白名单，或使用 `*`（不推荐）。
 
