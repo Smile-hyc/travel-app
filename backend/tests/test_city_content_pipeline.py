@@ -10,6 +10,7 @@ from app.services.mediacrawler_runner import (
     MediaCrawlerRunError,
     MediaCrawlerRunResult,
     _is_captcha_interruption,
+    _is_login_interruption,
     _is_network_interruption,
 )
 from app.services.place_detail_service import PlaceDetailService
@@ -92,6 +93,42 @@ class PartialRunner(FakeRunner):
         return MediaCrawlerRunResult(result.export_path, result.log_path, 1)
 
 
+class PartialLoginRunner(FakeRunner):
+    async def run(self, *, run_id, city_name, items, candidate_limit, headless):
+        result = await super().run(
+            run_id=run_id,
+            city_name=city_name,
+            items=items[:1],
+            candidate_limit=candidate_limit,
+            headless=headless,
+        )
+        return MediaCrawlerRunResult(result.export_path, result.log_path, 460)
+
+
+class InsufficientRunner(FakeRunner):
+    async def run(self, *, run_id, city_name, items, candidate_limit, headless):
+        self.calls += 1
+        export = self.run_root / run_id / "xhs" / "jsonl" / "search_contents_test.jsonl"
+        export.parent.mkdir(parents=True)
+        rows = [
+            {
+                "note_id": f"irrelevant-{item['poi_id']}-{index}",
+                "title": "与景点无关的测试内容",
+                "desc": "没有地点体验信息",
+                "source_keyword": item["query_keyword"],
+            }
+            for item in items
+            for index in range(25)
+        ]
+        export.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in rows),
+            encoding="utf-8",
+        )
+        log = export.parents[3] / "crawler.log"
+        log.write_text("ok", encoding="utf-8")
+        return MediaCrawlerRunResult(export, log, 0)
+
+
 class NetworkUnavailableRunner:
     async def run(self, **kwargs):
         raise MediaCrawlerRunError("NETWORK_UNAVAILABLE: temporary outage")
@@ -158,6 +195,64 @@ def test_city_pipeline_binds_queries_and_caps_retained_evidence(tmp_path) -> Non
     store.close()
 
 
+def test_city_pipeline_limits_each_collection_batch_without_marking_others_done(tmp_path) -> None:
+    store = ReviewStore(":memory:")
+    detail = PlaceDetailService(DisabledReviewClient(), store=store, author_hash_salt="test")
+    places = [_place("TJ001", "民园广场", "4.8"), _place("TJ002", "五大道", "4.7")]
+    run_root = tmp_path / "runs"
+    runner = FakeRunner(run_root)
+    pipeline = CityContentPipelineService(
+        FakeCatalog(places),
+        detail,
+        MediaCrawlerImportService(
+            FakeCatalog(places), detail, data_root=tmp_path / "exports", run_root=run_root,
+        ),
+        runner,
+        store,
+    )
+
+    first = asyncio.run(
+        pipeline.run_city_and_wait("天津市", top=2, max_targets=1, candidate_limit=30),
+    )
+    second = asyncio.run(
+        pipeline.run_city_and_wait("天津市", top=2, max_targets=1, candidate_limit=30),
+    )
+
+    assert first["target_count"] == 1
+    assert second["target_count"] == 1
+    assert first["items"][0]["poi_id"] == "TJ001"
+    assert second["items"][0]["poi_id"] == "TJ002"
+    assert runner.calls == 2
+    store.close()
+
+
+def test_insufficient_poi_enters_cooldown_and_next_batch_advances(tmp_path) -> None:
+    store = ReviewStore(":memory:")
+    detail = PlaceDetailService(DisabledReviewClient(), store=store, author_hash_salt="test")
+    places = [_place("TJ001", "民园广场", "4.8"), _place("TJ002", "五大道", "4.7")]
+    run_root = tmp_path / "runs"
+    runner = InsufficientRunner(run_root)
+    pipeline = CityContentPipelineService(
+        FakeCatalog(places),
+        detail,
+        MediaCrawlerImportService(
+            FakeCatalog(places), detail, data_root=tmp_path / "exports", run_root=run_root,
+        ),
+        runner,
+        store,
+    )
+
+    first = asyncio.run(pipeline.run_city_and_wait("天津市", top=2, max_targets=1))
+    second = asyncio.run(pipeline.run_city_and_wait("天津市", top=2, max_targets=1))
+
+    assert first["items"][0]["poi_id"] == "TJ001"
+    assert first["items"][0]["status"] == "insufficient"
+    assert store.get_collection_target("TJ001")["status"] == "insufficient"
+    assert second["items"][0]["poi_id"] == "TJ002"
+    assert runner.calls == 2
+    store.close()
+
+
 def test_city_pipeline_records_login_required_separately(tmp_path) -> None:
     store = ReviewStore(":memory:")
     detail = PlaceDetailService(DisabledReviewClient(), store=store, author_hash_salt="test")
@@ -217,6 +312,37 @@ def test_captcha_interruption_is_detected_for_partial_import() -> None:
     assert _is_captcha_interruption("CAPTCHA appeared, status code 461")
     assert _is_captcha_interruption("Verifytype: 216")
     assert not _is_captcha_interruption("network connection reset")
+
+
+def test_login_interruption_matches_current_mediacrawler_messages() -> None:
+    assert _is_login_interruption("media_platform.xhs.exception.DataFetchError: 登录已过期")
+    assert _is_login_interruption("Login xiaohongshu failed by qrcode login method")
+    assert not _is_login_interruption("Login state result: True")
+
+
+def test_partial_login_imports_existing_rows_and_pauses_run(tmp_path) -> None:
+    store = ReviewStore(":memory:")
+    detail = PlaceDetailService(DisabledReviewClient(), store=store, author_hash_salt="test")
+    places = [_place("TJ001", "民园广场", "4.8"), _place("TJ002", "五大道", "4.7")]
+    run_root = tmp_path / "runs"
+    pipeline = CityContentPipelineService(
+        FakeCatalog(places),
+        detail,
+        MediaCrawlerImportService(
+            FakeCatalog(places), detail, data_root=tmp_path / "exports", run_root=run_root,
+        ),
+        PartialLoginRunner(run_root),
+        store,
+    )
+
+    result = asyncio.run(pipeline.run_city_and_wait("天津市", top=2, headless=False))
+
+    assert result["status"] == "login_required"
+    assert result["items"][0]["status"] == "ready"
+    assert result["items"][1]["status"] == "login_required"
+    assert result["items"][1]["error"] == "LOGIN_REQUIRED"
+    assert len(store.list_active_evidence("TJ001")) == 20
+    store.close()
 
 
 def test_network_interruption_is_classified_for_retry() -> None:

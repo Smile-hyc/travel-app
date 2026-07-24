@@ -78,6 +78,7 @@ class CityContentPipelineService:
         *,
         top: int = DEFAULT_TOP_POIS,
         candidate_limit: int = DEFAULT_CANDIDATES_PER_POI,
+        max_targets: int = 0,
         headless: bool = False,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
@@ -88,10 +89,8 @@ class CityContentPipelineService:
         for item in plan["places"]:
             poi_id = item["sourcePoiId"]
             target = self._store.get_collection_target(poi_id)
-            has_evidence = bool(self._store.list_active_evidence(poi_id, limit=1))
             due = (
                 force_refresh
-                or not has_evidence
                 or target is None
                 or target.get("next_collection_at") is None
                 or str(target["next_collection_at"]) <= now
@@ -104,6 +103,8 @@ class CityContentPipelineService:
                         "query_keyword": item["crawlerKeyword"],
                     },
                 )
+        if max_targets > 0:
+            items = items[:max(1, min(max_targets, top))]
         run = self._store.start_city_collection_run(
             {
                 "run_id": run_id,
@@ -160,7 +161,11 @@ class CityContentPipelineService:
         self._import_result(
             run_id,
             run,
-            MediaCrawlerRunResult(exports[0], run_dir / "crawler.log", 1),
+            MediaCrawlerRunResult(
+                exports[0],
+                run_dir / "crawler.log",
+                0 if run["status"] == "ready" else 1,
+            ),
         )
         return self.get_run(run_id)  # type: ignore[return-value]
 
@@ -236,14 +241,21 @@ class CityContentPipelineService:
         by_poi = {item["sourcePoiId"]: item for item in imported["imported"]}
         failed = 0
         crawler_interrupted = result.return_code != 0
-        interruption_error = (
-            "CAPTCHA_REQUIRED" if result.return_code == 461 else "CRAWLER_INTERRUPTED"
-        )
+        interruption_error = {
+            460: "LOGIN_REQUIRED",
+            461: "CAPTCHA_REQUIRED",
+            462: "NETWORK_UNAVAILABLE",
+        }.get(result.return_code, "CRAWLER_INTERRUPTED")
+        interruption_status = {
+            460: "login_required",
+            461: "captcha_required",
+            462: "network_unavailable",
+        }.get(result.return_code, "partial")
         now = datetime.now(timezone.utc)
         for item in items:
             metrics = by_poi.get(item["poi_id"])
             if metrics is None:
-                status = "partial" if crawler_interrupted else "insufficient"
+                status = interruption_status if crawler_interrupted else "insufficient"
                 fetched = accepted = 0
                 error = interruption_error if crawler_interrupted else None
                 if crawler_interrupted:
@@ -279,7 +291,7 @@ class CityContentPipelineService:
                 )
         self._store.update_city_collection_run(
             run_id,
-            status="ready" if not failed else "partial",
+            status="ready" if not failed else interruption_status,
             fetched_count=imported["fetchedCount"],
             accepted_count=imported["acceptedCount"],
             failed_count=failed,
@@ -295,7 +307,10 @@ def _ranking_version(city_adcode: str, places: list[PlaceSummary]) -> str:
 
 def _crawler_keyword(city_name: str, place_name: str) -> str:
     city = city_name.removesuffix("市")
-    return f"{city} {place_name} 攻略".replace(",", " ")
+    search_name = {
+        "福州路文化街": "福州路 书店",
+    }.get(place_name, place_name)
+    return f"{city} {search_name} 攻略".replace(",", " ")
 
 
 def _map_ranking(item: dict[str, Any]) -> dict[str, Any]:

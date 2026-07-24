@@ -355,14 +355,11 @@ cd F:\Projects\travel\backend
 # 首次运行显示浏览器，登录状态失效时扫码
 .\.venv\Scripts\python.exe scripts\build_city_content.py --city 天津市
 
-# 登录态已保存后，顺序处理一个省的前 5 座城市
-.\.venv\Scripts\python.exe scripts\build_city_content.py `
-  --all-cities --province 浙江省 --max-cities 5 --headless
-
-# 显式确认后顺序构建全国队列；始终只有一个浏览器采集进程
-.\.venv\Scripts\python.exe scripts\build_city_content.py `
-  --all-cities --confirm-all --headless
+# 顺序处理四个直辖市；保持可见浏览器，登录失效时可直接扫码
+.\scripts\run_municipality_content.ps1
 ```
+
+当前自动采集范围固定为北京市、上海市、天津市、重庆市，每城 Top 12。脚本复用已有缓存，不会清空或重复覆盖已经入库的证据。
 
 每次运行使用独立的 `runId` 目录和查询清单，JSONL 通过精确的 `queryKeyword -> AMap POI ID` 映射导入，不再按短名称猜测地点。任务按城市和 POI 持久化；单个城市失败后继续处理后续城市。原始 JSONL 与日志只作为暂存数据，7 天后在下一次采集开始时自动清理。
 

@@ -47,6 +47,21 @@ TAG_RULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_CURATED_PLACE_ALIASES: dict[str, tuple[str, ...]] = {
+    "东方明珠广播电视塔": ("东方明珠",),
+    "上海四行仓库抗战纪念馆": ("四行仓库",),
+    "福州路文化街": ("福州路",),
+    "万国建筑博览群": ("外滩万国建筑", "万国建筑群", "万国建筑"),
+    "天主教天津教区西开总堂": ("西开教堂", "西开总堂"),
+    "小白楼1902欧式风情街": ("小白楼1902",),
+    "洪崖洞民俗风貌区": ("洪崖洞",),
+    "洪崖洞夜景观景台": ("洪崖洞夜景", "洪崖洞"),
+    "重庆十八梯传统风貌区": ("十八梯",),
+    "人民解放纪念碑": ("解放碑",),
+    "十八梯观景台": ("十八梯",),
+    "重庆朝天门广场": ("朝天门广场", "朝天门"),
+}
+
 
 @dataclass(frozen=True)
 class CleanedReview:
@@ -222,6 +237,10 @@ def _place_aliases(name: str) -> set[str]:
         for suffix in suffixes
         if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 2
     }
+    aliases.update(
+        _normalize_for_match(alias)
+        for alias in _CURATED_PLACE_ALIASES.get(name, ())
+    )
     return {alias for alias in aliases if len(alias) >= 2}
 
 
