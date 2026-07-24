@@ -2,23 +2,6 @@ param(
     [int]$WaitForProcessId = 0
 )
 
-$ErrorActionPreference = "Stop"
-$backendRoot = Split-Path -Parent $PSScriptRoot
-
-if ($WaitForProcessId -gt 0) {
-    $existing = Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue
-    if ($null -ne $existing) {
-        Wait-Process -Id $WaitForProcessId
-    }
-}
-
-$env:PYTHONUTF8 = "1"
-Set-Location -LiteralPath $backendRoot
-
-& ".\.venv\Scripts\python.exe" `
-    "scripts\build_city_content.py" `
-    "--all-cities" `
-    "--confirm-all" `
-    "--wait-for-quota-reset"
-
+Write-Warning "全国采集已停用；此兼容入口仅处理北京、上海、天津、重庆。请改用 run_municipality_content.ps1。"
+& (Join-Path $PSScriptRoot "run_municipality_content.ps1") -WaitForProcessId $WaitForProcessId
 exit $LASTEXITCODE

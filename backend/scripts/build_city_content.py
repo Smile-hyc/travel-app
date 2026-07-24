@@ -53,8 +53,10 @@ async def _run(args: argparse.Namespace) -> None:
             raise SystemExit("请提供 --city、--cities-file 或 --all-cities")
 
         results = []
+        active_runs = 0
         for index, city_name in enumerate(city_names, 1):
             print(f"[{index}/{len(city_names)}] {city_name}", flush=True)
+            stop_after_batch = False
             while True:
                 try:
                     if args.plan_only:
@@ -67,10 +69,13 @@ async def _run(args: argparse.Namespace) -> None:
                             city_name,
                             top=args.top,
                             candidate_limit=args.candidate_limit,
+                            max_targets=args.max_targets_per_city,
                             headless=args.headless,
                             force_refresh=args.force,
                         )
                     results.append({"cityName": city_name, "result": result})
+                    if not args.plan_only and int(result.get("target_count") or 0) > 0:
+                        active_runs += 1
                     if not args.plan_only and result.get("status") == "login_required":
                         print(
                             "小红书登录态已失效，已暂停后续城市。请去掉 --headless 扫码后重试。",
@@ -79,7 +84,7 @@ async def _run(args: argparse.Namespace) -> None:
                         return
                     if not args.plan_only and result.get("status") == "captcha_required":
                         print(
-                            "小红书触发安全验证，全国任务已暂停；请人工完成验证后重新运行。",
+                            "小红书触发安全验证，当前城市队列已暂停；请人工完成验证后重新运行。",
                             flush=True,
                         )
                         return
@@ -92,10 +97,17 @@ async def _run(args: argparse.Namespace) -> None:
                         continue
                     if not args.plan_only and result.get("error") == "CAPTCHA_REQUIRED":
                         print(
-                            "已导入验证码出现前的数据，全国任务暂停等待人工验证。",
+                            "已导入验证码出现前的数据，当前城市队列暂停等待人工验证。",
                             flush=True,
                         )
                         return
+                    if args.max_active_cities and active_runs >= args.max_active_cities:
+                        print(
+                            f"本轮已完成 {active_runs} 个城市批次，停止并保留剩余任务。",
+                            flush=True,
+                        )
+                        stop_after_batch = True
+                        break
                     break
                 except Exception as exc:
                     if _is_amap_rate_limit_error(exc):
@@ -120,6 +132,8 @@ async def _run(args: argparse.Namespace) -> None:
                         },
                     )
                     break
+            if stop_after_batch:
+                break
         print(json.dumps(results, ensure_ascii=False, indent=2))
     finally:
         await tikhub_review_client.aclose()
@@ -137,6 +151,18 @@ def main() -> None:
     parser.add_argument("--max-cities", type=int, default=0, help="限制本次处理城市数量")
     parser.add_argument("--top", type=int, default=12, choices=range(1, 26))
     parser.add_argument("--candidate-limit", type=int, default=30, choices=range(1, 61))
+    parser.add_argument(
+        "--max-targets-per-city",
+        type=int,
+        default=0,
+        help="每个城市本轮最多处理的缺失 POI 数；0 表示不限制",
+    )
+    parser.add_argument(
+        "--max-active-cities",
+        type=int,
+        default=0,
+        help="本轮最多实际启动采集的城市数；0 表示不限制",
+    )
     parser.add_argument("--headless", action="store_true", help="复用已有登录态无界面运行")
     parser.add_argument("--force", action="store_true", help="忽略缓存刷新全部榜单 POI")
     parser.add_argument("--plan-only", action="store_true", help="只生成 Top 12 榜单和采集清单")

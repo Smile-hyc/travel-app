@@ -128,12 +128,23 @@ class MediaCrawlerRunner:
         )
         if process.returncode != 0:
             output_text = (output or b"").decode("utf-8", errors="replace")
-            if "have not found qrcode" in output_text:
+            has_export = bool(exports and exports[0].stat().st_size > 0)
+            if has_export:
+                if _is_login_interruption(output_text):
+                    return MediaCrawlerRunResult(exports[0], log_path, 460)
+                if _is_captcha_interruption(output_text):
+                    return MediaCrawlerRunResult(exports[0], log_path, 461)
+                if _is_network_interruption(output_text):
+                    return MediaCrawlerRunResult(exports[0], log_path, 462)
+                # Preserve and import any complete rows written before an
+                # unexpected crawler failure. Missing POIs remain due.
+                return MediaCrawlerRunResult(
+                    exports[0], log_path, process.returncode or 1,
+                )
+            if _is_login_interruption(output_text):
                 raise MediaCrawlerRunError(
                     "LOGIN_REQUIRED: 小红书登录态已过期，请去掉 --headless 后扫码登录再重试",
                 )
-            if exports and exports[0].stat().st_size > 0 and _is_captcha_interruption(output_text):
-                return MediaCrawlerRunResult(exports[0], log_path, 461)
             if _is_captcha_interruption(output_text):
                 raise MediaCrawlerRunError(
                     "CAPTCHA_REQUIRED: 小红书触发安全验证，请在可见浏览器中人工完成验证",
@@ -202,6 +213,14 @@ def _is_captcha_interruption(output: str) -> bool:
         or "Verifytype:" in output
         or "status code 461" in output
         or "status code 471" in output
+    )
+
+
+def _is_login_interruption(output: str) -> bool:
+    return (
+        "have not found qrcode" in output
+        or "登录已过期" in output
+        or "Login xiaohongshu failed by qrcode login method" in output
     )
 
 
