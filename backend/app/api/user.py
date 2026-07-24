@@ -9,18 +9,28 @@ from app.models.user import User
 from app.schemas.user import (
     UserFootprintCreateRequest,
     UserFootprintResponse,
+    UserJournalCreateRequest,
+    UserJournalResponse,
+    UserJournalUpdateRequest,
     UserPlanCreateRequest,
     UserPlanResponse,
+    UserPlanUpdateRequest,
     UserResponse,
     UserUpdateRequest,
 )
 from app.services.auth_service import (
     add_user_footprint,
+    create_user_journal,
     create_user_plan,
+    delete_user_journal,
+    delete_user_plan,
     get_user,
     get_user_footprints,
+    get_user_journals,
     get_user_plans,
     update_user,
+    update_user_journal,
+    update_user_plan,
 )
 
 router = APIRouter(prefix="/api/user", tags=["user"])
@@ -81,6 +91,33 @@ async def create_plan(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+@router.put("/plans/{plan_id}", response_model=UserPlanResponse)
+async def update_plan(
+    plan_id: str,
+    request: UserPlanUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an existing travel plan."""
+    try:
+        return await update_user_plan(db, current_user.id, plan_id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.delete("/plans/{plan_id}", status_code=204)
+async def delete_plan(
+    plan_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a travel plan."""
+    try:
+        await delete_user_plan(db, current_user.id, plan_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
 # ── User Footprints ──
 
 @router.get("/footprints", response_model=list[UserFootprintResponse])
@@ -101,5 +138,56 @@ async def add_footprint(
     """Add a city to the user's travel footprint."""
     try:
         return await add_user_footprint(db, current_user.id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ── User Journals ──
+
+@router.get("/journals", response_model=list[UserJournalResponse])
+async def list_user_journals(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all journal entries for the current user."""
+    return await get_user_journals(db, current_user.id)
+
+
+@router.post("/journals", response_model=UserJournalResponse, status_code=201)
+async def create_journal(
+    request: UserJournalCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new journal entry."""
+    try:
+        return await create_user_journal(db, current_user.id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.put("/journals/{journal_id}", response_model=UserJournalResponse)
+async def update_journal(
+    journal_id: str,
+    request: UserJournalUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an existing journal entry."""
+    try:
+        return await update_user_journal(db, current_user.id, journal_id, request)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.delete("/journals/{journal_id}", status_code=204)
+async def delete_journal(
+    journal_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a journal entry."""
+    try:
+        await delete_user_journal(db, current_user.id, journal_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

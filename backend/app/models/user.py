@@ -49,6 +49,20 @@ class UserPlan(Base):
     updated_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
 
 
+class UserJournal(Base):
+    __tablename__ = "user_journals"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(200), nullable=False, default="")
+    location = Column(String(200), default="")
+    date = Column(String(30), default="")
+    body = Column(Text, default="")
+    photos = Column(Text, default="[]")
+    created_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at = Column(String(30), nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
 class UserFootprint(Base):
     __tablename__ = "user_footprints"
 

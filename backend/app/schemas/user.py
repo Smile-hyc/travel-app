@@ -69,6 +69,45 @@ class UserPlanResponse(BaseModel):
     updated_at: str
 
 
+class UserPlanUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=100)
+    destination: str | None = Field(default=None, max_length=100)
+    date_range: str | None = Field(default=None, max_length=60)
+    day_count: int | None = Field(default=None, ge=1, le=30)
+    preferences: str | None = Field(default=None, max_length=2000)
+    plan_data: str | None = Field(default=None, max_length=100000)
+
+
+# ── UserJournal ──
+
+class UserJournalCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    location: str = Field(default="", max_length=200)
+    date: str = Field(default="", max_length=30)
+    body: str = Field(default="", max_length=10000)
+    photos: str = Field(default="[]", max_length=100000)
+
+
+class UserJournalUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    location: str | None = Field(default=None, max_length=200)
+    date: str | None = Field(default=None, max_length=30)
+    body: str | None = Field(default=None, max_length=10000)
+    photos: str | None = Field(default=None, max_length=100000)
+
+
+class UserJournalResponse(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    location: str
+    date: str
+    body: str
+    photos: str
+    created_at: str
+    updated_at: str
+
+
 # ── UserFootprint ──
 
 class UserFootprintCreateRequest(BaseModel):

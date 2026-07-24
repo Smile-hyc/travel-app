@@ -13,15 +13,19 @@ from app.core.security import (
     decode_token,
     hash_token,
 )
-from app.models.user import RefreshToken, User, UserPlan, UserFootprint
+from app.models.user import RefreshToken, User, UserPlan, UserFootprint, UserJournal
 from app.schemas.user import (
     LoginRequest,
     RegisterRequest,
     TokenResponse,
-    UserPlanCreateRequest,
-    UserPlanResponse,
     UserFootprintCreateRequest,
     UserFootprintResponse,
+    UserJournalCreateRequest,
+    UserJournalResponse,
+    UserJournalUpdateRequest,
+    UserPlanCreateRequest,
+    UserPlanResponse,
+    UserPlanUpdateRequest,
     UserResponse,
     UserUpdateRequest,
 )
@@ -213,6 +217,44 @@ def _plan_to_response(plan: UserPlan) -> UserPlanResponse:
     )
 
 
+async def update_user_plan(
+    db: AsyncSession, user_id: str, plan_id: str, request: "UserPlanUpdateRequest",
+) -> UserPlanResponse:
+    result = await db.execute(
+        select(UserPlan).where(UserPlan.id == plan_id, UserPlan.user_id == user_id)
+    )
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        raise ValueError("计划不存在或不属于当前用户")
+    now = datetime.now(timezone.utc).isoformat()
+    if request.title is not None:
+        plan.title = request.title
+    if request.destination is not None:
+        plan.destination = request.destination
+    if request.date_range is not None:
+        plan.date_range = request.date_range
+    if request.day_count is not None:
+        plan.day_count = request.day_count
+    if request.preferences is not None:
+        plan.preferences = request.preferences
+    if request.plan_data is not None:
+        plan.plan_data = request.plan_data
+    plan.updated_at = now
+    await db.commit()
+    return _plan_to_response(plan)
+
+
+async def delete_user_plan(db: AsyncSession, user_id: str, plan_id: str) -> None:
+    result = await db.execute(
+        select(UserPlan).where(UserPlan.id == plan_id, UserPlan.user_id == user_id)
+    )
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        raise ValueError("计划不存在或不属于当前用户")
+    await db.delete(plan)
+    await db.commit()
+
+
 # ── UserFootprint CRUD ──
 
 async def get_user_footprints(db: AsyncSession, user_id: str) -> list[UserFootprintResponse]:
@@ -265,4 +307,85 @@ def _footprint_to_response(fp: UserFootprint) -> UserFootprintResponse:
         visit_count=fp.visit_count,
         first_visited_at=fp.first_visited_at,
         last_visited_at=fp.last_visited_at,
+    )
+
+
+# ── UserJournal CRUD ──
+
+async def get_user_journals(db: AsyncSession, user_id: str) -> list[UserJournalResponse]:
+    result = await db.execute(
+        select(UserJournal)
+        .where(UserJournal.user_id == user_id)
+        .order_by(UserJournal.date.desc(), UserJournal.created_at.desc())
+    )
+    journals = result.scalars().all()
+    return [_journal_to_response(j) for j in journals]
+
+
+async def create_user_journal(
+    db: AsyncSession, user_id: str, request: UserJournalCreateRequest,
+) -> UserJournalResponse:
+    now = datetime.now(timezone.utc).isoformat()
+    journal = UserJournal(
+        user_id=user_id,
+        title=request.title.strip(),
+        location=request.location.strip(),
+        date=request.date.strip(),
+        body=request.body,
+        photos=request.photos,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(journal)
+    await db.commit()
+    return _journal_to_response(journal)
+
+
+async def update_user_journal(
+    db: AsyncSession, user_id: str, journal_id: str, request: UserJournalUpdateRequest,
+) -> UserJournalResponse:
+    result = await db.execute(
+        select(UserJournal).where(UserJournal.id == journal_id, UserJournal.user_id == user_id)
+    )
+    journal = result.scalar_one_or_none()
+    if journal is None:
+        raise ValueError("日记不存在或不属于当前用户")
+    now = datetime.now(timezone.utc).isoformat()
+    if request.title is not None:
+        journal.title = request.title.strip()
+    if request.location is not None:
+        journal.location = request.location.strip()
+    if request.date is not None:
+        journal.date = request.date.strip()
+    if request.body is not None:
+        journal.body = request.body
+    if request.photos is not None:
+        journal.photos = request.photos
+    journal.updated_at = now
+    await db.commit()
+    return _journal_to_response(journal)
+
+
+async def delete_user_journal(db: AsyncSession, user_id: str, journal_id: str) -> None:
+    result = await db.execute(
+        select(UserJournal).where(UserJournal.id == journal_id, UserJournal.user_id == user_id)
+    )
+    journal = result.scalar_one_or_none()
+    if journal is None:
+        raise ValueError("日记不存在或不属于当前用户")
+    await db.delete(journal)
+    await db.commit()
+
+
+def _journal_to_response(j: UserJournal) -> UserJournalResponse:
+    return UserJournalResponse(
+        id=j.id,
+        user_id=j.user_id,
+        title=j.title,
+        location=j.location,
+        date=j.date,
+        body=j.body,
+        photos=j.photos,
+        created_at=j.created_at,
+        updated_at=j.updated_at,
     )

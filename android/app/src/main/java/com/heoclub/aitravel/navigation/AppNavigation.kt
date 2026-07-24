@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +43,10 @@ import com.heoclub.aitravel.AiTravelApplication
 import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.repository.AddPlaceResult
+import com.heoclub.aitravel.data.repository.CloudTravelPlanRepository
+import kotlinx.coroutines.launch
+import com.heoclub.aitravel.data.repository.toJournalEntry
+import com.heoclub.aitravel.data.repository.toCreateRequest
 import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
 import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
 import com.heoclub.aitravel.ui.assistant.AiAssistantViewModel
@@ -60,8 +65,8 @@ import com.heoclub.aitravel.ui.explore.rememberExploreMapViewHolder
 import com.heoclub.aitravel.ui.journey.JourneyJournalEditorScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalDetailScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalScreen
+import com.heoclub.aitravel.ui.journey.JournalEntry
 import com.heoclub.aitravel.ui.journey.JourneyScreen
-import com.heoclub.aitravel.ui.journey.seedJournalEntries
 import com.heoclub.aitravel.ui.plan.PlanHomeScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeViewModel
 import com.heoclub.aitravel.ui.place.PlaceDetailScreen
@@ -226,9 +231,15 @@ fun AiTravelNavHost() {
         if (isLoggedIn == null) {
             isLoggedIn = authRepository.restoreOrRefreshSession()
             if (isLoggedIn == false) {
-                // Stale session beyond recovery — clear local data.
                 application.container.travelPlanRepository.clearAllPlans()
             }
+        }
+    }
+
+    // Load cloud plans whenever the user becomes authenticated.
+    LaunchedEffect(isLoggedIn) {
+        if (isLoggedIn == true) {
+            (application.container.travelPlanRepository as? CloudTravelPlanRepository)?.loadFromCloud()
         }
     }
 
@@ -256,7 +267,19 @@ fun AiTravelNavHost() {
     val exploreMapViewHolder = rememberExploreMapViewHolder()
     var pendingPlaceToAdd by remember { mutableStateOf<PlaceSummary?>(null) }
     var explorePlanContext by remember { mutableStateOf<ExplorePlanContext?>(null) }
-    val journalEntries = remember { mutableStateListOf(*seedJournalEntries.toTypedArray()) }
+    val journalEntries = remember { mutableStateListOf<JournalEntry>() }
+
+    // Load journals from cloud when authenticated.
+    LaunchedEffect(isLoggedIn) {
+        if (isLoggedIn == true) {
+            application.container.journalRepository.getJournals()
+                .onSuccess { responses ->
+                    journalEntries.clear()
+                    journalEntries.addAll(responses.map { it.toJournalEntry() }.sortedByDescending { it.date })
+                }
+        }
+    }
+
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
@@ -408,20 +431,30 @@ fun AiTravelNavHost() {
                 )
             }
             composable(Routes.journeyJournal) {
+                val scope = rememberCoroutineScope()
                 JourneyJournalScreen(
                     entries = journalEntries,
                     onBack = { navController.popBackStack() },
                     onWriteJourney = { navController.navigate(Routes.journeyJournalEditor) },
-                    onAddEntry = { entry -> journalEntries.add(0, entry) },
+                    onAddEntry = { entry ->
+                        journalEntries.add(0, entry)
+                        scope.launch {
+                            application.container.journalRepository.createJournal(entry.toCreateRequest())
+                        }
+                    },
                     onOpenEntry = { entryId -> navController.navigate(Routes.journeyJournalDetail(entryId)) },
                 )
             }
             composable(Routes.journeyJournalEditor) {
+                val scope = rememberCoroutineScope()
                 JourneyJournalEditorScreen(
                     onBack = { navController.popBackStack() },
                     onSave = { entry ->
                         journalEntries.add(0, entry)
                         navController.popBackStack()
+                        scope.launch {
+                            application.container.journalRepository.createJournal(entry.toCreateRequest())
+                        }
                     },
                 )
             }

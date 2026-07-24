@@ -1,9 +1,7 @@
 package com.heoclub.aitravel.data.repository
 
-import android.content.Context
 import android.location.Location
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import com.heoclub.aitravel.data.model.AiSuggestedAction
 import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
 import com.heoclub.aitravel.data.model.PlaceSummary
@@ -12,10 +10,15 @@ import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.RoutePlace
 import com.heoclub.aitravel.data.model.RouteModes
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.data.model.UserPlanCreateRequest
+import com.heoclub.aitravel.data.model.UserPlanResponse
+import com.heoclub.aitravel.data.model.UserPlanUpdateRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 private const val UNPLANNED_DAY_ID = "unplanned"
@@ -116,15 +119,10 @@ data class AiUndoResult(
 open class InMemoryTravelPlanRepository(
     initialPlans: List<TravelPlan> = emptyList(),
     private val onPlansChanged: (List<TravelPlan>) -> Unit = {},
-    seedDefaultPlanWhenEmpty: Boolean = true,
 ) : TravelPlanRepository {
     private var lastAiUndoSnapshot: AiUndoSnapshot? = null
 
-    private val _plans = MutableStateFlow(
-        sanitizePlans(initialPlans).let { plans ->
-            if (plans.isEmpty() && seedDefaultPlanWhenEmpty) listOf(defaultInitialPlan()) else plans
-        },
-    )
+    private val _plans = MutableStateFlow(sanitizePlans(initialPlans))
     override val plans: StateFlow<List<TravelPlan>> = _plans.asStateFlow()
 
     override fun createPlan(
@@ -675,46 +673,111 @@ open class InMemoryTravelPlanRepository(
     }
 }
 
-class PersistentTravelPlanRepository private constructor(
-    localStore: TravelPlanLocalStore,
+// ── Cloud-backed repository ──
+
+class CloudTravelPlanRepository(
+    private val apiService: com.heoclub.aitravel.data.remote.ApiService,
+    private val scope: CoroutineScope,
 ) : InMemoryTravelPlanRepository(
-    initialPlans = localStore.loadPlans(),
-    onPlansChanged = localStore::savePlans,
-    seedDefaultPlanWhenEmpty = !localStore.hasSavedPlans(),
+    initialPlans = emptyList(),
+    onPlansChanged = { /* plans persist to cloud via explicit sync / create / delete */ },
 ) {
-    constructor(context: Context) : this(TravelPlanLocalStore(context.applicationContext))
-}
-
-private class TravelPlanLocalStore(
-    context: Context,
-) {
-    private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val gson = Gson()
-    private val planListType = object : TypeToken<List<TravelPlan>>() {}.type
 
-    fun hasSavedPlans(): Boolean = preferences.contains(KEY_PLANS)
-
-    fun loadPlans(): List<TravelPlan> {
-        val json = preferences.getString(KEY_PLANS, null) ?: return emptyList()
-        return runCatching {
-            val plans = gson.fromJson<List<TravelPlan>>(json, planListType).orEmpty()
-            sanitizePlans(plans)
-        }.getOrElse {
-            emptyList()
+    /** Fetch plans from the cloud and replace the in-memory list. */
+    suspend fun loadFromCloud() {
+        runCatching {
+            apiService.getUserPlans().map { it.toTravelPlan(gson) }
+        }.onSuccess { plans ->
+            _reinitializePlans(plans)
         }
     }
 
-    fun savePlans(plans: List<TravelPlan>) {
-        preferences.edit()
-            .putString(KEY_PLANS, gson.toJson(sanitizePlans(plans)))
-            .apply()
+    /** Push the current in-memory state of a single plan to the cloud. */
+    suspend fun syncPlan(planId: String) {
+        val plan = getPlan(planId) ?: return
+        val request = plan.toUpdateRequest(gson)
+        runCatching {
+            apiService.updateUserPlan(planId, request)
+        }
     }
 
-    private companion object {
-        const val PREFS_NAME = "ai_travel_plans"
-        const val KEY_PLANS = "plans_json"
+    override fun createPlan(
+        destination: String,
+        dateRange: String,
+        preferences: List<String>,
+        dayCount: Int?,
+    ): TravelPlan {
+        val plan = super.createPlan(destination, dateRange, preferences, dayCount)
+        scope.launch {
+            runCatching {
+                apiService.createUserPlan(plan.toCreateRequest(gson))
+            }
+        }
+        return plan
+    }
+
+    override fun importGeneratedPlan(generated: AiPlanGenerationResponse): TravelPlan {
+        val plan = super.importGeneratedPlan(generated)
+        scope.launch {
+            runCatching {
+                apiService.createUserPlan(plan.toCreateRequest(gson))
+            }
+        }
+        return plan
+    }
+
+    override fun deletePlan(planId: String): Boolean {
+        val deleted = super.deletePlan(planId)
+        if (deleted) {
+            scope.launch {
+                runCatching { apiService.deleteUserPlan(planId) }
+            }
+        }
+        return deleted
+    }
+
+    override fun clearAllPlans() {
+        val ids = plans.value.map { it.id }
+        super.clearAllPlans()
+        scope.launch {
+            ids.forEach { id -> runCatching { apiService.deleteUserPlan(id) } }
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    internal fun _reinitializePlans(newPlans: List<TravelPlan>) {
+        val field = InMemoryTravelPlanRepository::class.java.getDeclaredField("_plans")
+        field.isAccessible = true
+        val flow = field.get(this) as MutableStateFlow<List<TravelPlan>>
+        flow.value = sanitizePlans(newPlans)
     }
 }
+
+// ── Conversion helpers ──
+
+private fun TravelPlan.toCreateRequest(gson: Gson) =
+    UserPlanCreateRequest(
+        title = title,
+        destination = destination,
+        dateRange = dateRange,
+        dayCount = dayCount,
+        preferences = gson.toJson(preferences),
+        planData = gson.toJson(this),
+    )
+
+private fun TravelPlan.toUpdateRequest(gson: Gson) =
+    UserPlanUpdateRequest(
+        title = title,
+        destination = destination,
+        dateRange = dateRange,
+        dayCount = dayCount,
+        preferences = gson.toJson(preferences),
+        planData = gson.toJson(this),
+    )
+
+private fun UserPlanResponse.toTravelPlan(gson: Gson): TravelPlan =
+    gson.fromJson(planData, TravelPlan::class.java)
 
 fun PlanItem.toRoutePlace(): RoutePlace? {
     val lat = latitude ?: return null
@@ -728,21 +791,6 @@ fun PlanItem.toRoutePlace(): RoutePlace? {
         cityName = cityName,
         adCode = adCode,
         cityCode = cityCode,
-    )
-}
-
-private fun defaultInitialPlan(): TravelPlan {
-    val now = System.currentTimeMillis()
-    return TravelPlan(
-        id = "chengdu-demo",
-        title = "成都市旅行",
-        destination = "成都",
-        dateRange = "7月10日 - 7月13日",
-        dayCount = 4,
-        preferences = listOf("美食打卡", "自然风光", "citywalk"),
-        createdAt = now,
-        revision = 1L,
-        updatedAt = now,
     )
 }
 
