@@ -162,7 +162,6 @@ fun CreatePlanScreen(
                         selectedCityLatitude = city.latitude
                         selectedCityLongitude = city.longitude
                         destinationError = false
-                        viewModel.loadTransportHubs(city.adCode)
                         mapPickerTarget = target
                     }
                 }
@@ -265,7 +264,6 @@ fun CreatePlanScreen(
                                     selectedCityLongitude = city.longitude
                                     destinationError = false
                                     viewModel.clearCitySuggestions()
-                                    viewModel.loadTransportHubs(city.adCode)
                                 }
                                 .padding(horizontal = 16.dp, vertical = 13.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -363,8 +361,16 @@ fun CreatePlanScreen(
                     placeholder = { Text("例如 北京南站") },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
+                    enabled = selectedCityAdCode != null,
+                    supportingText = if (selectedCityAdCode == null) {
+                        { Text("请先选择目的城市") }
+                    } else {
+                        null
+                    },
                 )
-                MapPickerButton("选择到达位置") { openMapPicker(MapPickerTarget.Arrival) }
+                MapPickerButton("选择到达位置", enabled = selectedCityAdCode != null) {
+                    openMapPicker(MapPickerTarget.Arrival)
+                }
             }
             StationSuggestionList(arrivalSuggestions) { suggestion ->
                 arrivalStation = suggestion.name
@@ -400,8 +406,16 @@ fun CreatePlanScreen(
                     placeholder = { Text("例如 北京西站") },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
+                    enabled = selectedCityAdCode != null,
+                    supportingText = if (selectedCityAdCode == null) {
+                        { Text("请先选择目的城市") }
+                    } else {
+                        null
+                    },
                 )
-                MapPickerButton("选择离开位置") { openMapPicker(MapPickerTarget.Departure) }
+                MapPickerButton("选择离开位置", enabled = selectedCityAdCode != null) {
+                    openMapPicker(MapPickerTarget.Departure)
+                }
             }
             StationSuggestionList(departureSuggestions) { suggestion ->
                 departureStation = suggestion.name
@@ -839,9 +853,14 @@ private fun PlanningAnchorSection(
 }
 
 @Composable
-private fun MapPickerButton(contentDescription: String, onClick: () -> Unit) {
+private fun MapPickerButton(
+    contentDescription: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier.height(56.dp),
         shape = RoundedCornerShape(16.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
@@ -909,7 +928,7 @@ private fun defaultDateRange(dayCount: Int): String {
 }
 
 private fun formatDateRange(start: LocalDate, end: LocalDate): String {
-    val formatter = DateTimeFormatter.ofPattern("MM.dd")
+    val formatter = DateTimeFormatter.ofPattern("yyyy.MM.dd")
     return "${start.format(formatter)} - ${end.format(formatter)}"
 }
 

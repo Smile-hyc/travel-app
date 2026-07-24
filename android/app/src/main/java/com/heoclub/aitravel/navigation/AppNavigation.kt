@@ -66,6 +66,7 @@ import com.heoclub.aitravel.ui.journey.JourneyJournalEditorScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalDetailScreen
 import com.heoclub.aitravel.ui.journey.JourneyJournalScreen
 import com.heoclub.aitravel.ui.journey.JournalEntry
+import com.heoclub.aitravel.ui.journey.JourneyJournalShareScreen
 import com.heoclub.aitravel.ui.journey.JourneyScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeScreen
 import com.heoclub.aitravel.ui.plan.PlanHomeViewModel
@@ -79,6 +80,7 @@ private object Routes {
     const val journeyJournal = "journey-journal"
     const val journeyJournalEditor = "journey-journal-editor"
     const val journeyJournalDetailPattern = "journey-journal-detail/{entryId}"
+    const val journeyJournalSharePattern = "journey-journal-share/{entryId}"
     const val planDetailPattern = "plan-detail/{planId}"
     const val placeDetailPattern = "place-detail/{placeId}"
     const val assistantPattern = "assistant?question={question}&planId={planId}"
@@ -92,6 +94,7 @@ private object Routes {
     fun planDetail(planId: String): String = "plan-detail/$planId"
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
     fun journeyJournalDetail(entryId: String): String = "journey-journal-detail/${Uri.encode(entryId)}"
+    fun journeyJournalShare(entryId: String): String = "journey-journal-share/${Uri.encode(entryId)}"
 
     fun aiPlanGeneration(
         destination: String,
@@ -268,6 +271,7 @@ fun AiTravelNavHost() {
     var pendingPlaceToAdd by remember { mutableStateOf<PlaceSummary?>(null) }
     var explorePlanContext by remember { mutableStateOf<ExplorePlanContext?>(null) }
     val journalEntries = remember { mutableStateListOf<JournalEntry>() }
+    var pendingShareDraft by remember { mutableStateOf<JournalEntry?>(null) }
 
     // Load journals from cloud when authenticated.
     LaunchedEffect(isLoggedIn) {
@@ -385,7 +389,9 @@ fun AiTravelNavHost() {
                     onLocate = requestCurrentLocation,
                     onCreatePlan = { navController.navigate(Routes.createPlan) },
                     onOpenPlan = { planId -> navController.navigate(Routes.planDetail(planId)) },
-                    onAskAi = { question -> navController.navigate(Routes.assistant(question = question)) },
+                    onAskAi = { question, planId ->
+                        navController.navigate(Routes.assistant(question = question, planId = planId))
+                    },
                 )
             }
             composable(AppDestination.Explore.route) {
@@ -443,18 +449,32 @@ fun AiTravelNavHost() {
                         }
                     },
                     onOpenEntry = { entryId -> navController.navigate(Routes.journeyJournalDetail(entryId)) },
+                    onShareEntry = { entryId -> navController.navigate(Routes.journeyJournalShare(entryId)) },
                 )
             }
             composable(Routes.journeyJournalEditor) {
                 val scope = rememberCoroutineScope()
                 JourneyJournalEditorScreen(
-                    onBack = { navController.popBackStack() },
+                    onBack = {
+                        pendingShareDraft = null
+                        navController.popBackStack()
+                    },
                     onSave = { entry ->
-                        journalEntries.add(0, entry)
+                        val existingIndex = journalEntries.indexOfFirst { it.id == entry.id }
+                        if (existingIndex >= 0) {
+                            journalEntries[existingIndex] = entry
+                        } else {
+                            journalEntries.add(0, entry)
+                        }
+                        pendingShareDraft = null
                         navController.popBackStack()
                         scope.launch {
                             application.container.journalRepository.createJournal(entry.toCreateRequest())
                         }
+                    },
+                    onShareDraft = { entry ->
+                        pendingShareDraft = entry
+                        navController.navigate(Routes.journeyJournalShare(entry.id))
                     },
                 )
             }
@@ -464,8 +484,24 @@ fun AiTravelNavHost() {
             ) { backStackEntry ->
                 val entryId = backStackEntry.arguments?.getString("entryId").orEmpty()
                 val entry = journalEntries.firstOrNull { it.id == entryId }
+                    ?: pendingShareDraft?.takeIf { it.id == entryId }
                 if (entry != null) {
                     JourneyJournalDetailScreen(
+                        entry = entry,
+                        onBack = { navController.popBackStack() },
+                        onShare = { navController.navigate(Routes.journeyJournalShare(entry.id)) },
+                    )
+                }
+            }
+            composable(
+                route = Routes.journeyJournalSharePattern,
+                arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
+            ) { backStackEntry ->
+                val entryId = backStackEntry.arguments?.getString("entryId").orEmpty()
+                val entry = journalEntries.firstOrNull { it.id == entryId }
+                    ?: pendingShareDraft?.takeIf { it.id == entryId }
+                if (entry != null) {
+                    JourneyJournalShareScreen(
                         entry = entry,
                         onBack = { navController.popBackStack() },
                     )

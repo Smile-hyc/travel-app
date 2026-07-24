@@ -5,7 +5,11 @@ import hmac
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.core.config import Settings, get_settings
-from app.main_state import get_content_ingestion_service, get_mediacrawler_import_service
+from app.main_state import (
+    get_city_content_pipeline_service,
+    get_content_ingestion_service,
+    get_mediacrawler_import_service,
+)
 from app.schemas.content import (
     ContentDatabaseStatsResponse,
     ContentIngestionRequest,
@@ -20,7 +24,11 @@ from app.schemas.content import (
     MediaCrawlerImportRequest,
     MediaCrawlerImportResponse,
     OfficialSourceResponse,
+    CityContentPlanResponse,
+    CityContentRunRequest,
+    CityContentRunResponse,
 )
+from app.services.city_content_pipeline import CityContentPipelineService
 from app.services.content_ingestion_service import (
     ContentIngestionService,
     map_ingestion_run,
@@ -224,3 +232,106 @@ async def import_mediacrawler_export(
     except MediaCrawlerImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return MediaCrawlerImportResponse.model_validate(result)
+
+
+@router.post(
+    "/cities/plan",
+    response_model=CityContentPlanResponse,
+    dependencies=[Depends(require_content_admin)],
+)
+async def plan_city_content(
+    request: CityContentRunRequest,
+    service: CityContentPipelineService = Depends(get_city_content_pipeline_service),
+) -> CityContentPlanResponse:
+    try:
+        result = await service.plan_city(request.cityName, top=request.top)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CityContentPlanResponse.model_validate(result)
+
+
+@router.post(
+    "/city-runs",
+    response_model=CityContentRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_content_admin)],
+)
+async def start_city_content_run(
+    request: CityContentRunRequest,
+    service: CityContentPipelineService = Depends(get_city_content_pipeline_service),
+) -> CityContentRunResponse:
+    try:
+        run = await service.start_city(
+            request.cityName,
+            top=request.top,
+            candidate_limit=request.candidateLimit,
+            headless=request.headless,
+            force_refresh=request.forceRefresh,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CityContentRunResponse.model_validate(_map_city_run(run))
+
+
+@router.get(
+    "/city-runs/{run_id}",
+    response_model=CityContentRunResponse,
+    dependencies=[Depends(require_content_admin)],
+)
+def get_city_content_run(
+    run_id: str,
+    service: CityContentPipelineService = Depends(get_city_content_pipeline_service),
+) -> CityContentRunResponse:
+    run = service.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="城市采集任务不存在。")
+    return CityContentRunResponse.model_validate(_map_city_run(run))
+
+
+@router.get(
+    "/city-runs",
+    response_model=list[CityContentRunResponse],
+    dependencies=[Depends(require_content_admin)],
+)
+def list_city_content_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    service: CityContentPipelineService = Depends(get_city_content_pipeline_service),
+) -> list[CityContentRunResponse]:
+    return [
+        CityContentRunResponse.model_validate(_map_city_run(run))
+        for run in service.list_runs(limit=limit)
+    ]
+
+
+def _map_city_run(run: dict) -> dict:
+    return {
+        "runId": run["run_id"],
+        "cityAdcode": run["city_adcode"],
+        "cityName": run["city_name"],
+        "rankingVersion": run["ranking_version"],
+        "status": run["status"],
+        "candidateLimit": run["candidate_limit"],
+        "retainLimit": run["retain_limit"],
+        "displayLimit": run["display_limit"],
+        "targetCount": run["target_count"],
+        "fetchedCount": run.get("fetched_count", 0),
+        "acceptedCount": run.get("accepted_count", 0),
+        "failedCount": run.get("failed_count", 0),
+        "outputPath": run.get("output_path"),
+        "error": run.get("error"),
+        "startedAt": run["started_at"],
+        "finishedAt": run.get("finished_at"),
+        "items": [
+            {
+                "sourcePoiId": item["poi_id"],
+                "placeName": item["place_name"],
+                "rank": item["rank"],
+                "queryKeyword": item["query_keyword"],
+                "status": item["status"],
+                "fetchedCount": item.get("fetched_count", 0),
+                "acceptedCount": item.get("accepted_count", 0),
+                "error": item.get("error"),
+            }
+            for item in run.get("items", [])
+        ],
+    }

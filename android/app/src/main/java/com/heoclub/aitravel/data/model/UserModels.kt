@@ -56,6 +56,7 @@ data class UserPlanResponse(
 )
 
 data class UserPlanCreateRequest(
+    val id: String,
     val title: String,
     val destination: String,
     @SerializedName("date_range") val dateRange: String = "",

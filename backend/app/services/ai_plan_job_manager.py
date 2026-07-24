@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,11 @@ from app.services.travel_plan_generation_service import TravelPlanGenerationServ
 TERMINAL_STATES: set[AiPlanJobState] = {"COMPLETED", "FAILED", "CANCELLED"}
 
 
+def planning_event_fingerprint(event: AiPlanProgressEvent) -> str:
+    message = re.sub(r"\s+", "", event.message).lower()
+    return f"{event.type}:{event.dayIndex or 0}:{event.placeId or ''}:{message}"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -36,6 +42,7 @@ class _JobRecord:
     active_day_index: int | None = None
     partial_days: list[AiGeneratedDay] = field(default_factory=list)
     events: list[AiPlanProgressEvent] = field(default_factory=list)
+    event_fingerprints: set[str] = field(default_factory=set)
     result: AiPlanGenerationResponse | None = None
     error: str | None = None
     created_at: datetime = field(default_factory=_now)
@@ -131,9 +138,11 @@ class AiPlanJobManager:
             if partial_days is not None:
                 record.partial_days = [day.model_copy(deep=True) for day in partial_days]
             if event is not None:
-                if not record.events or record.events[-1].message != event.message:
+                fingerprint = planning_event_fingerprint(event)
+                if fingerprint not in record.event_fingerprints:
                     sequenced_event = event.model_copy(update={"sequence": len(record.events) + 1})
                     record.events = [*record.events, sequenced_event][-48:]
+                    record.event_fingerprints.add(fingerprint)
             if active_day_index is not None:
                 record.active_day_index = active_day_index
             record.updated_at = _now()

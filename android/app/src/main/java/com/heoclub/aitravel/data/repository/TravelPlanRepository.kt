@@ -1,7 +1,9 @@
 package com.heoclub.aitravel.data.repository
 
+import android.content.Context
 import android.location.Location
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.heoclub.aitravel.data.model.AiSuggestedAction
 import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
 import com.heoclub.aitravel.data.model.PlaceSummary
@@ -42,6 +44,24 @@ interface TravelPlanRepository {
 
     /** Clear all locally stored plans (e.g. on logout). */
     fun clearAllPlans()
+
+    fun updatePlanTitle(planId: String, title: String)
+
+    fun updatePlanDateRange(planId: String, dateRange: String, dayCount: Int)
+
+    fun updateDayTitle(planId: String, dayIndex: Int, title: String)
+
+    fun updatePlanItemVisitTime(
+        planId: String,
+        dayIndex: Int,
+        itemId: String,
+        suggestedStart: String?,
+        suggestedEnd: String?,
+    )
+
+    fun movePlanItemToDay(planId: String, itemId: String, toDayIndex: Int)
+
+    fun removePlanItem(planId: String, itemId: String)
 
     fun addPlaceToPlan(
         planId: String,
@@ -119,10 +139,15 @@ data class AiUndoResult(
 open class InMemoryTravelPlanRepository(
     initialPlans: List<TravelPlan> = emptyList(),
     private val onPlansChanged: (List<TravelPlan>) -> Unit = {},
+    seedDefaultPlanWhenEmpty: Boolean = true,
 ) : TravelPlanRepository {
     private var lastAiUndoSnapshot: AiUndoSnapshot? = null
 
-    private val _plans = MutableStateFlow(sanitizePlans(initialPlans))
+    protected val _plans = MutableStateFlow(
+        sanitizePlans(initialPlans).let { plans ->
+            if (plans.isEmpty() && seedDefaultPlanWhenEmpty) listOf(defaultInitialPlan()) else plans
+        },
+    )
     override val plans: StateFlow<List<TravelPlan>> = _plans.asStateFlow()
 
     override fun createPlan(
@@ -248,6 +273,104 @@ open class InMemoryTravelPlanRepository(
         _plans.value = emptyList()
         lastAiUndoSnapshot = null
         persistCurrentPlans()
+    }
+
+    override fun updatePlanTitle(planId: String, title: String) {
+        val cleanTitle = title.trim().take(60)
+        if (cleanTitle.isBlank()) return
+        updatePlan(planId) { plan ->
+            plan.takeIf { it.title == cleanTitle } ?: plan.copy(title = cleanTitle).nextRevision()
+        }
+    }
+
+    override fun updatePlanDateRange(planId: String, dateRange: String, dayCount: Int) {
+        val cleanRange = dateRange.trim().take(40)
+        val safeDayCount = dayCount.coerceIn(1, 15)
+        if (cleanRange.isBlank()) return
+        updatePlan(planId) { plan ->
+            val existingDays = ensureDays(plan).sortedBy { it.dayIndex }
+            val resizedDays = List(safeDayCount) { index ->
+                existingDays.getOrNull(index)?.copy(dayIndex = index + 1)
+                    ?: PlanDay(
+                        id = "${plan.id}-day-${index + 1}",
+                        dayIndex = index + 1,
+                        title = "DAY ${index + 1}",
+                    )
+            }
+            val removedDayItems = existingDays.drop(safeDayCount).flatMap { it.items }
+            val updatedUnplanned = normalizeOrders(plan.unplannedItems + removedDayItems).map { item ->
+                item.copy(dayId = UNPLANNED_DAY_ID, dayIndex = UNPLANNED_DAY_INDEX)
+            }
+            if (plan.dateRange == cleanRange && plan.dayCount == safeDayCount) {
+                plan
+            } else {
+                plan.copy(
+                    dateRange = cleanRange,
+                    dayCount = safeDayCount,
+                    days = resizedDays,
+                    unplannedItems = updatedUnplanned,
+                ).nextRevision()
+            }
+        }
+    }
+
+    override fun updateDayTitle(planId: String, dayIndex: Int, title: String) {
+        val cleanTitle = title.trim().take(40)
+        if (cleanTitle.isBlank()) return
+        updatePlan(planId) { plan ->
+            val updatedDays = ensureDays(plan).map { day ->
+                if (day.dayIndex == dayIndex) day.copy(title = cleanTitle) else day
+            }
+            if (updatedDays == plan.days) plan else plan.copy(days = updatedDays).nextRevision()
+        }
+    }
+
+    override fun updatePlanItemVisitTime(
+        planId: String,
+        dayIndex: Int,
+        itemId: String,
+        suggestedStart: String?,
+        suggestedEnd: String?,
+    ) {
+        val cleanStart = suggestedStart?.trim()?.takeIf(String::isNotBlank)
+        val cleanEnd = suggestedEnd?.trim()?.takeIf(String::isNotBlank)
+        updatePlan(planId) { plan ->
+            val updatedDays = ensureDays(plan).map { day ->
+                if (day.dayIndex != dayIndex) return@map day
+                day.copy(
+                    items = day.items.map { item ->
+                        if (item.id == itemId) {
+                            item.copy(suggestedStart = cleanStart, suggestedEnd = cleanEnd)
+                        } else {
+                            item
+                        }
+                    },
+                )
+            }
+            if (updatedDays == plan.days) plan else plan.copy(days = updatedDays).nextRevision()
+        }
+    }
+
+    override fun movePlanItemToDay(planId: String, itemId: String, toDayIndex: Int) {
+        updatePlan(planId) { plan ->
+            val located = plan.findItem(itemId) ?: return@updatePlan plan
+            if (located.dayIndex == toDayIndex) return@updatePlan plan
+            val targetDay = ensureDays(plan).firstOrNull { it.dayIndex == toDayIndex }
+                ?: return@updatePlan plan
+            plan.removeItem(itemId)
+                .insertIntoDay(
+                    item = located.item.copy(dayId = targetDay.id, dayIndex = targetDay.dayIndex),
+                    dayIndex = targetDay.dayIndex,
+                    position = Int.MAX_VALUE,
+                )
+                .nextRevision()
+        }
+    }
+
+    override fun removePlanItem(planId: String, itemId: String) {
+        updatePlan(planId) { plan ->
+            if (plan.findItem(itemId) == null) plan else plan.removeItem(itemId).nextRevision()
+        }
     }
 
     override fun addPlaceToPlan(
@@ -596,6 +719,19 @@ open class InMemoryTravelPlanRepository(
         )
     }
 
+    private fun updatePlan(planId: String, transform: (TravelPlan) -> TravelPlan) {
+        var changed = false
+        _plans.update { current ->
+            current.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updated = transform(plan)
+                if (updated != plan) changed = true
+                updated
+            }
+        }
+        if (changed) persistCurrentPlans()
+    }
+
     private fun persistCurrentPlans() {
         onPlansChanged(sanitizePlans(_plans.value))
     }
@@ -673,23 +809,109 @@ open class InMemoryTravelPlanRepository(
     }
 }
 
-// ── Cloud-backed repository ──
+class PersistentTravelPlanRepository private constructor(
+    localStore: TravelPlanLocalStore,
+) : InMemoryTravelPlanRepository(
+    initialPlans = localStore.loadPlans(),
+    onPlansChanged = localStore::savePlans,
+    seedDefaultPlanWhenEmpty = !localStore.hasSavedPlans(),
+) {
+    constructor(context: Context) : this(TravelPlanLocalStore(context.applicationContext))
+}
 
-class CloudTravelPlanRepository(
+private class TravelPlanLocalStore(
+    context: Context,
+) {
+    private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val gson = Gson()
+    private val planListType = object : TypeToken<List<TravelPlan>>() {}.type
+
+    fun hasSavedPlans(): Boolean = preferences.contains(KEY_PLANS)
+
+    fun loadPlans(): List<TravelPlan> {
+        val json = preferences.getString(KEY_PLANS, null) ?: return emptyList()
+        return runCatching {
+            val plans = gson.fromJson<List<TravelPlan>>(json, planListType).orEmpty()
+            sanitizePlans(plans)
+        }.getOrElse { emptyList() }
+    }
+
+    fun savePlans(plans: List<TravelPlan>) {
+        preferences.edit()
+            .putString(KEY_PLANS, gson.toJson(sanitizePlans(plans)))
+            .apply()
+    }
+
+    private companion object {
+        const val PREFS_NAME = "ai_travel_plans"
+        const val KEY_PLANS = "plans_json"
+    }
+}
+
+private class TravelPlanCloudSync(
     private val apiService: com.heoclub.aitravel.data.remote.ApiService,
     private val scope: CoroutineScope,
-) : InMemoryTravelPlanRepository(
-    initialPlans = emptyList(),
-    onPlansChanged = { /* plans persist to cloud via explicit sync / create / delete */ },
+    private val localStore: TravelPlanLocalStore,
 ) {
     private val gson = Gson()
+
+    fun persist(plans: List<TravelPlan>) {
+        localStore.savePlans(plans)
+        plans.forEach { plan ->
+            scope.launch {
+                val update = runCatching {
+                    apiService.updateUserPlan(plan.id, plan.toUpdateRequest(gson))
+                }
+                if (update.isFailure) {
+                    runCatching { apiService.createUserPlan(plan.toCreateRequest(gson)) }
+                }
+            }
+        }
+    }
+
+    fun delete(planId: String) {
+        scope.launch { runCatching { apiService.deleteUserPlan(planId) } }
+    }
+}
+
+// ── Cloud-backed repository with the develop branch's local persistence as fallback. ──
+
+class CloudTravelPlanRepository private constructor(
+    private val apiService: com.heoclub.aitravel.data.remote.ApiService,
+    private val scope: CoroutineScope,
+    private val localStore: TravelPlanLocalStore,
+    private val cloudSync: TravelPlanCloudSync,
+) : InMemoryTravelPlanRepository(
+    initialPlans = localStore.loadPlans(),
+    onPlansChanged = cloudSync::persist,
+    seedDefaultPlanWhenEmpty = !localStore.hasSavedPlans(),
+) {
+    private val gson = Gson()
+
+    constructor(
+        context: Context,
+        apiService: com.heoclub.aitravel.data.remote.ApiService,
+        scope: CoroutineScope,
+    ) : this(
+        apiService = apiService,
+        scope = scope,
+        localStore = TravelPlanLocalStore(context.applicationContext),
+        cloudSync = TravelPlanCloudSync(
+            apiService = apiService,
+            scope = scope,
+            localStore = TravelPlanLocalStore(context.applicationContext),
+        ),
+    )
 
     /** Fetch plans from the cloud and replace the in-memory list. */
     suspend fun loadFromCloud() {
         runCatching {
             apiService.getUserPlans().map { it.toTravelPlan(gson) }
-        }.onSuccess { plans ->
-            _reinitializePlans(plans)
+        }.onSuccess { cloudPlans ->
+            val merged = (cloudPlans + plans.value)
+                .distinctBy { it.id }
+            _plans.value = sanitizePlans(merged)
+            cloudSync.persist(_plans.value)
         }
     }
 
@@ -702,55 +924,14 @@ class CloudTravelPlanRepository(
         }
     }
 
-    override fun createPlan(
-        destination: String,
-        dateRange: String,
-        preferences: List<String>,
-        dayCount: Int?,
-    ): TravelPlan {
-        val plan = super.createPlan(destination, dateRange, preferences, dayCount)
-        scope.launch {
-            runCatching {
-                apiService.createUserPlan(plan.toCreateRequest(gson))
-            }
-        }
-        return plan
-    }
-
-    override fun importGeneratedPlan(generated: AiPlanGenerationResponse): TravelPlan {
-        val plan = super.importGeneratedPlan(generated)
-        scope.launch {
-            runCatching {
-                apiService.createUserPlan(plan.toCreateRequest(gson))
-            }
-        }
-        return plan
-    }
-
     override fun deletePlan(planId: String): Boolean {
         val deleted = super.deletePlan(planId)
-        if (deleted) {
-            scope.launch {
-                runCatching { apiService.deleteUserPlan(planId) }
-            }
-        }
+        if (deleted) cloudSync.delete(planId)
         return deleted
     }
 
     override fun clearAllPlans() {
-        val ids = plans.value.map { it.id }
         super.clearAllPlans()
-        scope.launch {
-            ids.forEach { id -> runCatching { apiService.deleteUserPlan(id) } }
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    internal fun _reinitializePlans(newPlans: List<TravelPlan>) {
-        val field = InMemoryTravelPlanRepository::class.java.getDeclaredField("_plans")
-        field.isAccessible = true
-        val flow = field.get(this) as MutableStateFlow<List<TravelPlan>>
-        flow.value = sanitizePlans(newPlans)
     }
 }
 
@@ -758,6 +939,7 @@ class CloudTravelPlanRepository(
 
 private fun TravelPlan.toCreateRequest(gson: Gson) =
     UserPlanCreateRequest(
+        id = id,
         title = title,
         destination = destination,
         dateRange = dateRange,
@@ -777,7 +959,7 @@ private fun TravelPlan.toUpdateRequest(gson: Gson) =
     )
 
 private fun UserPlanResponse.toTravelPlan(gson: Gson): TravelPlan =
-    gson.fromJson(planData, TravelPlan::class.java)
+    gson.fromJson<TravelPlan>(planData, TravelPlan::class.java).copy(id = id)
 
 fun PlanItem.toRoutePlace(): RoutePlace? {
     val lat = latitude ?: return null
@@ -791,6 +973,21 @@ fun PlanItem.toRoutePlace(): RoutePlace? {
         cityName = cityName,
         adCode = adCode,
         cityCode = cityCode,
+    )
+}
+
+private fun defaultInitialPlan(): TravelPlan {
+    val now = System.currentTimeMillis()
+    return TravelPlan(
+        id = "chengdu-demo",
+        title = "成都市旅行",
+        destination = "成都",
+        dateRange = "7月10日 - 7月13日",
+        dayCount = 4,
+        preferences = listOf("美食打卡", "自然风光", "citywalk"),
+        createdAt = now,
+        revision = 1L,
+        updatedAt = now,
     )
 }
 

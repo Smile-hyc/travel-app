@@ -404,4 +404,8 @@ def map_stats(raw: dict[str, int]) -> dict[str, int]:
         "runningIngestionCount": raw.get("running_ingestion_count", 0),
         "officialSourceCount": raw.get("official_source_count", 0),
         "officialNoticeCount": raw.get("official_notice_count", 0),
+        "rankedCityCount": raw.get("ranked_city_count", 0),
+        "rankedPoiCount": raw.get("ranked_poi_count", 0),
+        "cityCollectionRunCount": raw.get("city_collection_run_count", 0),
+        "runningCityCollectionCount": raw.get("running_city_collection_count", 0),
     }

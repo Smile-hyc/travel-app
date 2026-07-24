@@ -48,6 +48,7 @@ class UserUpdateRequest(BaseModel):
 # ── UserPlan ──
 
 class UserPlanCreateRequest(BaseModel):
+    id: str | None = Field(default=None, min_length=1, max_length=64)
     title: str = Field(min_length=1, max_length=100)
     destination: str = Field(min_length=1, max_length=100)
     date_range: str = Field(default="", max_length=60)

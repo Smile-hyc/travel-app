@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
     captcha_ttl_seconds: int = 300
+    mediacrawler_tool_dir: str = "../tools/MediaCrawler"
+    mediacrawler_run_dir: str = "data/mediacrawler-runs"
+    mediacrawler_timeout_seconds: int = 10800
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"

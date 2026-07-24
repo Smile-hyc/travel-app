@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import HTTPException
@@ -84,6 +85,7 @@ class AmapRouteService:
         if not allow_cycling:
             mode_order = [mode for mode in mode_order if mode != "cycling"]
         failures: list[str] = []
+        candidates: list[RouteSegment] = []
         for mode in mode_order:
             try:
                 segment = await self.segment(
@@ -98,16 +100,80 @@ class AmapRouteService:
             except HTTPException as exc:
                 failures.append(f"{mode}:{exc.detail}")
                 continue
-            # 长距离步行不是“智能混合”的可执行方案，继续尝试公共交通或驾车。
-            if mode == "walking" and segment.distanceMeters > 2500:
-                failures.append("walking:步行距离超过2.5公里")
+            # Walking remains a candidate up to 4 km so explicit WALK users
+            # can choose it, but mixed mode will usually prefer transit/cycling.
+            if mode == "walking" and segment.distanceMeters > 4000:
+                failures.append("walking:步行距离超过4公里")
                 continue
-            return segment
+            candidates.append(segment)
+        if candidates:
+            return min(candidates, key=lambda item: _segment_choice_score(item, preference))
         raise HTTPException(
             status_code=502,
             detail="高德未返回可执行的混合交通路线：" + "；".join(failures[-3:]),
         )
 
+    async def road_time_matrix(
+        self,
+        places: list[RoutePlace],
+    ) -> dict[tuple[str, str], tuple[int, int]]:
+        """Return AMap road-network duration and distance for a small day set.
+
+        The distance API accepts multiple origins for one destination, so a
+        day with five locations needs five requests rather than one route call
+        per directed pair. The final itinerary still verifies every chosen leg
+        with ``best_segment`` and the user's actual transport preference.
+        """
+        _validate_day_places(places)
+        unique: list[RoutePlace] = []
+        seen: set[str] = set()
+        for place in places:
+            if place.id in seen:
+                continue
+            seen.add(place.id)
+            unique.append(place)
+        if len(unique) < 2:
+            return {}
+
+        semaphore = asyncio.Semaphore(4)
+
+        async def destination_rows(destination: RoutePlace) -> list[tuple[tuple[str, str], tuple[int, int]]]:
+            origins = [place for place in unique if place.id != destination.id]
+            if not origins:
+                return []
+            try:
+                async with semaphore:
+                    payload = await self._client.get(
+                        "/v3/distance",
+                        {
+                            "origins": "|".join(_coord_param(place) for place in origins),
+                            "destination": _coord_param(destination),
+                            "type": "1",
+                        },
+                    )
+            except HTTPException:
+                return []
+            raw_results = payload.get("results") if isinstance(payload.get("results"), list) else []
+            rows: list[tuple[tuple[str, str], tuple[int, int]]] = []
+            for position, item in enumerate(raw_results):
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    origin_index = int(str(item.get("origin_id") or position + 1)) - 1
+                except ValueError:
+                    origin_index = position
+                if not 0 <= origin_index < len(origins):
+                    continue
+                duration = _safe_int(item.get("duration"))
+                distance = _safe_int(item.get("distance"))
+                if duration <= 0 or distance <= 0:
+                    continue
+                origin = origins[origin_index]
+                rows.append(((origin.id, destination.id), (max(1, (duration + 59) // 60), distance)))
+            return rows
+
+        batches = await asyncio.gather(*(destination_rows(destination) for destination in unique))
+        return {key: value for batch in batches for key, value in batch}
     async def calculate_day(self, request: DayRouteRequest) -> DayRoutePlan:
         _validate_day_places(request.places)
         segments: list[RouteSegment] = []
@@ -221,6 +287,32 @@ class AmapRouteService:
             polyline=polyline,
             steps=steps,
         )
+
+
+def _segment_choice_score(segment: RouteSegment, preference: str) -> float:
+    minutes = max(1.0, segment.durationSeconds / 60)
+    score = minutes
+    preferred_mode = {
+        "WALK": "walking",
+        "TRANSIT": "transit",
+        "DRIVE": "driving",
+    }.get(preference)
+    if preferred_mode == segment.mode:
+        score -= 8.0
+    if segment.mode == "walking":
+        if segment.distanceMeters <= 1200:
+            score -= 8.0
+        elif segment.distanceMeters > 2500 and preference != "WALK":
+            score += 12.0
+    elif segment.mode == "cycling":
+        score += 2.0
+    elif segment.mode == "transit":
+        score += 2.0
+    elif segment.mode == "driving" and preference != "DRIVE":
+        # A small parking/pick-up cost prevents a marginally faster car route
+        # from winning every inner-city segment.
+        score += 8.0
+    return score
 
 
 def _validate_day_places(places: list[RoutePlace]) -> None:

@@ -128,7 +128,7 @@ async def get_current_user(
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"令牌无效 | reason: {e} | token: {credentials.credentials}",
+            detail=f"令牌无效: {e}",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if payload.get("type") != "access":

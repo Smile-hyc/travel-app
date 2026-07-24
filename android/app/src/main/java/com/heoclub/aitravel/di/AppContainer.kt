@@ -39,6 +39,7 @@ class AppContainer(
     val healthRepository: HealthRepository = DefaultHealthRepository(apiService)
     val currentLocationRepository = CurrentLocationRepository(context)
     val travelPlanRepository: TravelPlanRepository = CloudTravelPlanRepository(
+        context = context,
         apiService = apiService,
         scope = CoroutineScope(Dispatchers.IO),
     )

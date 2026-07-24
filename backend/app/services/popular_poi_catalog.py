@@ -101,25 +101,70 @@ class PopularPoiCatalogService:
         return best if _name_match_score(expected, _normalize(best.name)) >= 0.65 else None
 
     async def discover_city(self, city_name: str, *, limit: int = 12) -> list[PlaceSummary]:
-        """Discover a city's popular scenic POIs for on-demand database bootstrap."""
+        """Discover a ranked, deduplicated scenic POI snapshot for a city."""
         cities = await self._poi_service.search_cities(keyword=city_name, limit=5)
         if not cities:
             return []
         city = next((item for item in cities if _normalize(item.name) == _normalize(city_name)), cities[0])
-        result = await self._poi_service.search_pois(
-            keyword=None,
-            adcode=city.adCode,
-            category="scenic",
-            page=1,
-            page_size=max(1, min(limit, 25)),
-            city_limit=True,
-        )
-        unique = {place.sourcePoiId: place for place in result.items}
+        candidates: list[PlaceSummary] = []
+        candidate_limit = max(limit, min(50, limit * 4))
+        for page in range(1, 3):
+            result = await self._poi_service.search_pois(
+                keyword=None,
+                adcode=city.adCode,
+                category="scenic",
+                page=page,
+                page_size=min(25, candidate_limit - len(candidates)),
+                city_limit=True,
+            )
+            candidates.extend(result.items)
+            if not result.hasMore or len(candidates) >= candidate_limit:
+                break
+        api_order = {
+            place.sourcePoiId: index for index, place in enumerate(candidates)
+        }
+        city_seeds = [
+            seed for seed in self.seeds if _normalize(seed.city) == _normalize(city.name)
+        ]
+        seed_priority: dict[str, int] = {}
+        if city_seeds:
+            resolved_seeds, _ = await self.resolve(city_seeds)
+            for seed, place in resolved_seeds:
+                candidates.append(place)
+                seed_priority[place.sourcePoiId] = seed.priority
+        unique = {
+            place.sourcePoiId: place
+            for place in candidates
+            if not _is_auxiliary_poi(place.name)
+        }
+        by_name: dict[str, PlaceSummary] = {}
+        for place in unique.values():
+            name_key = _ranking_name(place.name)
+            current = by_name.get(name_key)
+            if current is None or _prefer_group_place(
+                place,
+                current,
+                api_order=api_order,
+                seed_priority=seed_priority,
+            ):
+                by_name[name_key] = place
         return sorted(
-            unique.values(),
-            key=lambda place: (_rating(place.rating), bool(place.images), place.name),
+            by_name.values(),
+            key=lambda place: _place_rank(place, api_order, seed_priority),
             reverse=True,
         )[: max(1, min(limit, 25))]
+
+    async def resolve_city(self, city_name: str):
+        cities = await self._poi_service.search_cities(keyword=city_name, limit=5)
+        if not cities:
+            return None
+        return next(
+            (item for item in cities if _normalize(item.name) == _normalize(city_name)),
+            cities[0],
+        )
+
+    async def list_cities(self):
+        return await self._poi_service.list_prefecture_cities()
 
 
 def seed_by_official_source(source_id: str) -> PopularPoiSeed | None:
@@ -146,3 +191,53 @@ def _rating(value: str | None) -> float:
         return float(value or 0)
     except ValueError:
         return 0.0
+
+
+_AUXILIARY_POI_MARKERS = (
+    "停车场", "出入口", "入口", "出口", "售票处", "游客中心", "服务中心",
+    "卫生间", "公交站", "地铁站", "商店", "便利店", "充电站",
+)
+
+
+def _is_auxiliary_poi(name: str) -> bool:
+    return any(marker in name for marker in _AUXILIARY_POI_MARKERS)
+
+
+def _ranking_name(name: str) -> str:
+    value = re.sub(r"[（(][^）)]{0,30}[）)]", "", name)
+    value = re.split(r"[-—–]", value, maxsplit=1)[0]
+    return _normalize(value)
+
+
+def _place_rank(
+    place: PlaceSummary,
+    api_order: dict[str, int] | None = None,
+    seed_priority: dict[str, int] | None = None,
+) -> tuple[int, int, float, int, int, str]:
+    order = (api_order or {}).get(place.sourcePoiId, 10_000)
+    return (
+        (seed_priority or {}).get(place.sourcePoiId, 0),
+        -order,
+        _rating(place.rating),
+        1 if place.images else 0,
+        1 if place.openingHoursWeek or place.openingHoursToday else 0,
+        place.name,
+    )
+
+
+def _prefer_group_place(
+    candidate: PlaceSummary,
+    current: PlaceSummary,
+    *,
+    api_order: dict[str, int],
+    seed_priority: dict[str, int],
+) -> bool:
+    candidate_is_child = bool(re.search(r"[-—–]", candidate.name))
+    current_is_child = bool(re.search(r"[-—–]", current.name))
+    if candidate_is_child != current_is_child:
+        return not candidate_is_child
+    return _place_rank(candidate, api_order, seed_priority) > _place_rank(
+        current,
+        api_order,
+        seed_priority,
+    )

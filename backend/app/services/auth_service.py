@@ -186,7 +186,12 @@ async def get_user_plans(db: AsyncSession, user_id: str) -> list[UserPlanRespons
 
 async def create_user_plan(db: AsyncSession, user_id: str, request: UserPlanCreateRequest) -> UserPlanResponse:
     now = datetime.now(timezone.utc).isoformat()
+    if request.id:
+        existing = await db.execute(select(UserPlan).where(UserPlan.id == request.id))
+        if existing.scalar_one_or_none() is not None:
+            raise ValueError("计划 ID 已存在")
     plan = UserPlan(
+        **({"id": request.id} if request.id else {}),
         user_id=user_id,
         title=request.title.strip(),
         destination=request.destination.strip(),

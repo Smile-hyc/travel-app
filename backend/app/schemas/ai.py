@@ -66,6 +66,8 @@ class AiPlanContext(BaseModel):
     dateRange: str | None = None
     revision: int | None = None
     updatedAt: int | None = None
+    currentDate: str | None = None
+    todayDayIndex: int | None = None
     days: list[AiDayContext] = Field(default_factory=list)
     unplannedPlaces: list[AiPlaceContext] = Field(default_factory=list)
     weather: AiWeatherContext | None = None
@@ -78,6 +80,7 @@ class AiChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[AiHistoryMessage] = Field(default_factory=list, max_length=12)
     context: AiPlanContext | None = None
+    planContexts: list[AiPlanContext] = Field(default_factory=list)
 
 
 AiSuggestedActionType = Literal[
@@ -239,6 +242,19 @@ class AiGeneratedPlace(BaseModel):
     businessArea: str | None = None
     openingHoursToday: str | None = None
     openingHoursWeek: str | None = None
+    officialScenicGrade: str | None = None
+    experienceEvidenceCount: int = Field(default=0, ge=0)
+    officialReservationRequired: bool = False
+    officialReservationNote: str | None = None
+    officialClosedDates: list[str] = Field(default_factory=list)
+    officialClosureWarning: str | None = None
+    officialOpeningHoursByDate: dict[str, str] = Field(default_factory=dict)
+    officialAccessNote: str | None = None
+    officialMaxDailyCapacity: int | None = Field(default=None, ge=1)
+    officialCapacityNote: str | None = None
+    officialTicketNote: str | None = None
+    crowdRisk: float = Field(default=0.0, ge=0, le=1)
+    contentUpdatedAt: str | None = None
     scheduleVerified: bool = False
     suggestedStart: str
     suggestedEnd: str
@@ -258,12 +274,26 @@ class AiGeneratedTransfer(BaseModel):
     polyline: list[RouteCoordinate] = Field(default_factory=list)
 
 
+class AiPlanAlternative(BaseModel):
+    id: str
+    sourcePoiId: str
+    name: str
+    category: str
+    latitude: float
+    longitude: float
+    districtName: str | None = None
+    openingHoursWeek: str | None = None
+    officialReservationRequired: bool = False
+    reason: str
+
+
 class AiGeneratedDay(BaseModel):
     dayIndex: int
     title: str
     summary: str
     places: list[AiGeneratedPlace] = Field(default_factory=list)
     transfers: list[AiGeneratedTransfer] = Field(default_factory=list)
+    alternatives: list[AiPlanAlternative] = Field(default_factory=list)
     weather: str | None = None
     estimatedDistanceKm: float = 0.0
     intensity: Literal["轻松", "适中", "充实"] = "适中"

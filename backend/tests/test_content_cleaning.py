@@ -71,6 +71,26 @@ def test_short_ambiguous_place_name_requires_own_location() -> None:
     assert compute_place_relevance(place, "天津小白楼拍照攻略", "和平区地铁站附近") >= 0.58
 
 
+def test_formal_place_names_match_common_public_aliases() -> None:
+    oriental_pearl = _place().model_copy(
+        update={"name": "东方明珠广播电视塔", "cityName": "上海市"},
+    )
+    liberation_monument = _place().model_copy(
+        update={"name": "人民解放纪念碑", "cityName": "重庆市"},
+    )
+
+    assert compute_place_relevance(
+        oriental_pearl,
+        "上海东方明珠游览攻略",
+        "陆家嘴夜景拍照",
+    ) >= 0.58
+    assert compute_place_relevance(
+        liberation_monument,
+        "重庆解放碑一日游",
+        "附近步行路线",
+    ) >= 0.58
+
+
 def test_walking_street_is_not_walking_intensity_and_food_must_be_near_place() -> None:
     assert "WALKING" not in extract_experience_tags("沿着湖南路步行街逛咖啡店")
     assert "WALKING" in extract_experience_tags("全程大概4km，约2-3小时")

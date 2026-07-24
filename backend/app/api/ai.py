@@ -19,7 +19,7 @@ from app.schemas.ai import (
     AiPlanGenerationResponse,
     AiPlanJobStatusResponse,
 )
-from app.services.ai_plan_job_manager import AiPlanJobManager
+from app.services.ai_plan_job_manager import AiPlanJobManager, planning_event_fingerprint
 from app.services.travel_ai_service import TravelAiService
 from app.services.travel_plan_generation_service import TravelPlanGenerationService
 
@@ -82,6 +82,7 @@ async def stream_travel_plan(
     created_at = datetime.now(timezone.utc).isoformat()
     queue: asyncio.Queue[AiPlanJobStatusResponse] = asyncio.Queue()
     events = []
+    event_fingerprints: set[str] = set()
     state = {
         "progress": 1,
         "stage": "智能规划流已建立",
@@ -119,9 +120,12 @@ async def stream_travel_plan(
         state["completed_days"] = completed_days
         if partial_days is not None:
             state["partial_days"] = [day.model_copy(deep=True) for day in partial_days]
-        if event is not None and (not events or events[-1].message != event.message):
-            events.append(event.model_copy(update={"sequence": len(events) + 1}, deep=True))
-            del events[:-64]
+        if event is not None:
+            fingerprint = planning_event_fingerprint(event)
+            if fingerprint not in event_fingerprints:
+                events.append(event.model_copy(update={"sequence": len(events) + 1}, deep=True))
+                event_fingerprints.add(fingerprint)
+                del events[:-64]
         if active_day_index is not None:
             state["active_day_index"] = active_day_index
         queue.put_nowait(snapshot())
