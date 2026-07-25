@@ -1621,6 +1621,50 @@ def test_actual_route_conflict_never_silently_drops_mandatory_place() -> None:
     assert "无法同时满足硬约束" in str(exc.value.detail)
 
 
+def test_actual_route_conflict_does_not_fail_whole_plan_for_default_popular_place() -> None:
+    class FakeRouteService:
+        async def best_segment(self, **kwargs):
+            return RouteSegment(
+                originId=kwargs["origin"].id,
+                destinationId=kwargs["destination"].id,
+                originName=kwargs["origin"].name,
+                destinationName=kwargs["destination"].name,
+                mode="walking",
+                distanceMeters=700,
+                durationSeconds=10 * 60,
+            )
+
+    service = TravelPlanGenerationService(object(), object(), FakeRouteService(), reveal_delay_seconds=0)
+    daytime = _ai_review_place("museum", "scenic", "14:00", "16:00").model_copy(
+        update={"name": "北京历史博物馆", "openingHoursWeek": "周一至周日 09:00-18:00"},
+    )
+    dinner = _ai_review_place("dinner", "food", "17:30", "18:45", "DINNER").model_copy(
+        update={"name": "北京烤鸭晚餐馆", "openingHoursWeek": "周一至周日 17:00-22:00"},
+    )
+    square = _ai_review_place("square", "scenic", "18:50", "20:20").model_copy(
+        update={"name": "天安门广场", "openingHoursWeek": "周一至周日 05:00-19:00"},
+    )
+
+    routed = asyncio.run(
+        service._apply_actual_routes(
+            AiPlanGenerationRequest(
+                destination="北京", dateRange="2026.07.25", dayCount=1, dailyEnd="22:00",
+            ),
+            [AiGeneratedDay(
+                dayIndex=1,
+                title="DAY 1",
+                summary="",
+                places=[daytime, dinner, square],
+            )],
+            [],
+            None,
+        ),
+    )
+
+    assert "museum" in {place.sourcePoiId for place in routed[0].places}
+    assert "square" not in {place.sourcePoiId for place in routed[0].places}
+
+
 def test_removed_meal_is_reinserted_from_actual_route_corridor() -> None:
     class FakeRouteService:
         async def best_segment(self, **kwargs):
@@ -2136,6 +2180,81 @@ def test_road_matrix_preserves_night_visit_window() -> None:
 
     assert [place.sourcePoiId for place in reordered] == ["museum", "bund"]
     assert reordered[-1].suggestedStart >= "17:30"
+
+
+def test_default_beijing_landmark_stays_before_dinner() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    scenic = [
+        PlaceSummary(
+            id="museum", sourcePoiId="museum", name="北京历史博物馆", category="scenic",
+            categoryCode="scenic", latitude=39.91, longitude=116.40,
+            openingHoursWeek="周一至周日 09:00-17:00",
+        ),
+        PlaceSummary(
+            id="square", sourcePoiId="square", name="天安门广场", category="scenic",
+            categoryCode="scenic", latitude=39.903, longitude=116.397,
+            openingHoursWeek="周一至周日 05:00-22:00",
+        ),
+    ]
+    foods = [
+        PlaceSummary(
+            id=f"meal-{index}", sourcePoiId=f"meal-{index}", name=name,
+            category="food", categoryCode="food",
+            latitude=39.904 + index * 0.001, longitude=116.398 + index * 0.001,
+            openingHoursWeek="周一至周日 07:00-23:00",
+        )
+        for index, name in enumerate(("北京特色早餐铺", "北京地方午餐馆", "北京烤鸭晚餐馆"))
+    ]
+
+    day = service._build_heuristic_days(
+        AiPlanGenerationRequest(
+            destination="北京", dateRange="2026.07.25", dayCount=1,
+            dailyStart="08:00", dailyEnd="21:00",
+        ),
+        scenic + foods,
+        city_name="北京市",
+    )[0]
+
+    square_index = next(index for index, place in enumerate(day.places) if place.sourcePoiId == "square")
+    dinner_index = next(index for index, place in enumerate(day.places) if place.mealType == "DINNER")
+    assert square_index < dinner_index
+
+
+def test_generic_square_requires_night_request_and_sufficient_window() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    square = PlaceSummary(
+        id="square", sourcePoiId="square", name="天安门广场", category="scenic",
+        categoryCode="scenic", latitude=39.903, longitude=116.397,
+        openingHoursWeek="周一至周日 05:00-22:00",
+    )
+    default_request = AiPlanGenerationRequest(
+        destination="北京", dateRange="2026.07.25", dayCount=1, dailyEnd="22:00",
+    )
+    night_request = default_request.model_copy(update={"freeText": "晚上想看天安门夜景"})
+
+    assert service._is_night_experience_candidate(square, default_request, 1) is False
+    assert service._is_night_experience_candidate(square, night_request, 1) is True
+
+    short_window = square.model_copy(
+        update={"name": "城市中心广场", "openingHoursWeek": "周一至周日 17:45-19:00"},
+    )
+    assert service._supports_evening_visit(short_window, night_request, 1) is False
+
+
+def test_indoor_place_with_square_in_branch_name_is_not_assumed_open_at_night() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    museum = PlaceSummary(
+        id="museum", sourcePoiId="museum", name="上海博物馆(人民广场馆)",
+        category="scenic", categoryCode="scenic", typeName="博物馆",
+        latitude=31.23, longitude=121.47,
+    )
+    request = AiPlanGenerationRequest(
+        destination="上海", dateRange="2026.07.25", dayCount=1,
+        freeText="晚上也可以安排活动", dailyEnd="22:00",
+    )
+
+    assert service._supports_evening_visit(museum, request, 1) is False
+    assert service._is_night_experience_candidate(museum, request, 1) is False
 
 
 def test_actual_route_replay_preserves_confirmed_night_visit_window() -> None:

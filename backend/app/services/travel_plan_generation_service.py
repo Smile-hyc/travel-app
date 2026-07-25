@@ -2901,13 +2901,40 @@ class TravelPlanGenerationService:
         day_index: int,
     ) -> bool:
         windows = self._opening_windows_for_day(place, request, day_index)
+        night_duration = min(90, self._visit_duration_minutes("scenic", request.pace))
         if any(
-            window.end >= 19 * 60
-            and (window.latest_start if window.latest_start is not None else window.end) >= 17 * 60 + 30
+            max(window.start, 17 * 60 + 30) + night_duration <= window.end
+            and (
+                window.latest_start if window.latest_start is not None else window.end - night_duration
+            ) >= max(window.start, 17 * 60 + 30)
             for window in windows
         ):
             return True
-        return not windows and self._is_evening_public_place(place)
+        if windows or self._is_indoor_place(place):
+            return False
+        hours_text = f"{place.openingHoursToday or ''} {place.openingHoursWeek or ''}"
+        return (
+            "24小时" in hours_text
+            or self._has_explicit_night_signal(place)
+            or (self._night_requested(request) and self._is_evening_public_place(place))
+        )
+
+    def _night_requested(self, request: AiPlanGenerationRequest) -> bool:
+        instructions = " ".join([*request.preferences, request.freeText or ""])
+        return any(
+            keyword in instructions
+            for keyword in ("夜景", "夜游", "晚上", "夜间", "灯光秀", "夜市", "看夜景")
+        )
+
+    def _has_explicit_night_signal(self, place: PlaceSummary) -> bool:
+        text = f"{place.name} {place.typeName or ''}"
+        return any(
+            keyword in text
+            for keyword in (
+                "夜游", "夜景", "夜市", "灯光秀", "不夜城", "外滩", "江滩",
+                "滨江夜景", "滨河夜景", "夜间观光",
+            )
+        )
 
     def _is_night_experience_candidate(
         self,
@@ -2917,7 +2944,11 @@ class TravelPlanGenerationService:
     ) -> bool:
         if not self._supports_evening_visit(place, request, day_index):
             return False
-        return self._is_evening_public_place(place) or self._night_experience_score(place) >= 42.0
+        if self._has_explicit_night_signal(place):
+            return True
+        if self._is_first_visit_core_landmark(place) and not self._night_requested(request):
+            return False
+        return self._night_requested(request) and self._is_evening_public_place(place)
 
     def _is_evening_public_place(self, place: PlaceSummary) -> bool:
         text = f"{place.name} {place.typeName or ''}"
@@ -3378,7 +3409,6 @@ class TravelPlanGenerationService:
                     elif (
                         original.category in {"transport", "lodging"}
                         or self._is_user_mandatory(request, original_summary)
-                        or self._should_protect_core_landmark(request, original_summary)
                     ):
                         raise HTTPException(
                             status_code=422,
@@ -3787,7 +3817,11 @@ class TravelPlanGenerationService:
                 return None
             scheduled_as_night = (
                 self._time_to_minutes(place.suggestedStart) >= 17 * 60 + 30
-                and self._is_night_experience_candidate(summary, request, day_index)
+                and self._supports_evening_visit(summary, request, day_index)
+                and (
+                    self._has_explicit_night_signal(summary)
+                    or self._is_evening_public_place(summary)
+                )
             )
             if scheduled_as_night:
                 earliest = max(earliest, 17 * 60 + 30)
@@ -4414,7 +4448,7 @@ class TravelPlanGenerationService:
         for position, place in enumerate(places):
             if previous is not None:
                 transfer_minutes = min(55, max(15, round(self._distance(previous, place) * 8)))
-                current += transfer_minutes
+                current += self._exit_buffer_minutes(previous) + transfer_minutes
             duration = 360 if self._is_full_day_scenic(place) else self._visit_duration_minutes(place.category, request.pace)
             if place.category == "scenic":
                 current += self._entry_buffer_minutes(place)
