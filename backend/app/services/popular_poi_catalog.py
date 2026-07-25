@@ -19,6 +19,7 @@ class PopularPoiSeed:
 
 POPULAR_POI_SEEDS: tuple[PopularPoiSeed, ...] = (
     PopularPoiSeed("北京市", "故宫博物院", 100, official_source_id="dpm"),
+    PopularPoiSeed("北京市", "天安门广场", 99),
     PopularPoiSeed("北京市", "八达岭长城", 98, official_source_id="badaling"),
     PopularPoiSeed("北京市", "颐和园", 96),
     PopularPoiSeed("北京市", "天坛公园", 94),

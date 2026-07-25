@@ -76,6 +76,34 @@ def test_direct_municipality_remains_one_destination() -> None:
     assert cities[0].adCode == "110000"
 
 
+def test_direct_municipality_city_alias_is_canonicalized_and_deduplicated() -> None:
+    service = AmapPoiService(
+        FakeAmapClient(
+            [
+                {
+                    "name": "北京城区",
+                    "level": "city",
+                    "adcode": "110100",
+                    "center": "116.407387,39.904179",
+                },
+                {
+                    "name": "北京市",
+                    "level": "province",
+                    "adcode": "110000",
+                    "center": "116.407387,39.904179",
+                    "districts": [],
+                },
+            ],
+        ),
+    )
+
+    cities = asyncio.run(service.search_cities(keyword="北京市", limit=12))
+
+    assert [(city.name, city.adCode, city.provinceName) for city in cities] == [
+        ("北京市", "110000", "北京市"),
+    ]
+
+
 def test_prefecture_city_catalog_includes_municipalities_and_province_children() -> None:
     class CatalogClient:
         async def get(self, path, params):

@@ -13,6 +13,7 @@ from typing import AsyncIterator, Protocol
 from app.review_store import ReviewStore
 from app.schemas.explore import (
     ExperienceInsight,
+    ExperienceInsightPoint,
     OfficialNotice,
     PlaceDetail,
     PlaceExperienceLayer,
@@ -35,7 +36,7 @@ EXPERIENCE_TTL = timedelta(days=30)
 # One attributable note is enough to expose a clearly labelled reference.
 # Confidence and the UI sample badge communicate how much corroboration exists.
 MIN_INDEPENDENT_EVIDENCE = 1
-SUMMARY_VERSION = "experience-evidence-v3"
+SUMMARY_VERSION = "experience-evidence-v4"
 
 
 class PlaceReviewClient(Protocol):
@@ -416,8 +417,6 @@ class PlaceDetailService:
                 },
             )
 
-        self._store.prune_active_evidence(place.sourcePoiId, keep=20)
-
         status = self._save_aggregate_from_evidence(place, now=now)
         return status, len(cleaned_sources)
 
@@ -472,6 +471,9 @@ class PlaceDetailService:
         evidence = self._store.list_active_evidence(place.sourcePoiId)
         notices = [self._official_notice(item) for item in self._store.list_official_notices(place.sourcePoiId)]
         official_source = self._store.get_official_source_by_poi(place.sourcePoiId)
+        official_source_ready = bool(
+            official_source and official_source.get("discovery_status") == "VERIFIED"
+        )
         sources = [
             ReviewSource(
                 id=f"ugc:{item['evidence_id']}",
@@ -486,7 +488,7 @@ class PlaceDetailService:
                 tags=_json_value(item.get("tags"), []),
                 deleted=bool(item.get("deleted", False)),
             )
-            for item in evidence[:8]
+            for item in evidence
         ]
         positives = [
             ReviewHighlight(title=item.title, description=item.summary)
@@ -547,7 +549,7 @@ class PlaceDetailService:
                 expiresAt=fact_expiry,
             ),
             officialLayer=PlaceOfficialLayer(
-                status="READY" if notices or official_source else "UNAVAILABLE",
+                status="READY" if notices or official_source_ready else "UNAVAILABLE",
                 notices=notices,
                 updatedAt=max((item.effectiveAt or "" for item in notices), default=None),
                 sourceId=(official_source or {}).get("source_id"),
@@ -558,6 +560,9 @@ class PlaceDetailService:
                 wechatName=(official_source or {}).get("wechat_name"),
                 miniProgramName=(official_source or {}).get("mini_program_name"),
                 ticketingUrl=(official_source or {}).get("ticketing_url"),
+                discoveryStatus=(official_source or {}).get("discovery_status"),
+                verifiedAt=(official_source or {}).get("verified_at"),
+                sourceType=(official_source or {}).get("adapter_kind"),
             ),
             experienceLayer=PlaceExperienceLayer(
                 status=status,
@@ -701,21 +706,20 @@ _DETAIL_SPACE_RE = re.compile(r"\s+")
 
 
 def _aggregate_insights(evidence: list[dict], now: str, place_name: str = "") -> list[ExperienceInsight]:
-    by_tag: dict[str, dict[str, dict]] = {}
+    by_tag: dict[str, list[dict]] = {}
     for item in evidence:
         tags = _json_value(item.get("tags"), [])
-        author = item.get("author_hash") or item["evidence_id"]
         for tag in tags:
-            by_tag.setdefault(tag, {})[author] = item
+            by_tag.setdefault(tag, []).append(item)
     insights: list[ExperienceInsight] = []
-    for tag, independent in by_tag.items():
-        if len(independent) < MIN_INDEPENDENT_EVIDENCE or tag not in TAG_TITLES:
+    for tag, items in by_tag.items():
+        if len(items) < MIN_INDEPENDENT_EVIDENCE or tag not in TAG_TITLES:
             continue
         ttl = CROWD_TTL if tag == "QUEUE" else EXPERIENCE_TTL
-        items = list(independent.values())
-        summary = _build_evidence_summary(tag, items, place_name)
-        if not summary:
+        points = _build_evidence_points(tag, items, place_name)
+        if not points:
             continue
+        summary = "；".join(point.text for point in points) + "。"
         title = TAG_TITLES[tag]
         if tag == "WORTH_IT" and _has_negative_experience(summary):
             title = "体验分歧"
@@ -726,7 +730,8 @@ def _aggregate_insights(evidence: list[dict], now: str, place_name: str = "") ->
                 summary=summary,
                 mentionCount=len(items),
                 confidence=min(0.95, round(0.34 + len(items) * 0.15, 2)),
-                evidenceIds=[item["evidence_id"] for item in items[:12]],
+                evidenceIds=list(dict.fromkeys(item["evidence_id"] for item in items)),
+                points=points,
                 updatedAt=now,
                 expiresAt=_iso(_parse_iso(now) + ttl),
             ),
@@ -734,10 +739,13 @@ def _aggregate_insights(evidence: list[dict], now: str, place_name: str = "") ->
     return insights
 
 
-def _build_evidence_summary(tag: str, items: list[dict], place_name: str = "") -> str:
-    """Build a compact, evidence-grounded insight instead of a canned claim."""
-    candidates: list[tuple[int, str]] = []
-    fingerprints: set[str] = set()
+def _build_evidence_points(
+    tag: str,
+    items: list[dict],
+    place_name: str = "",
+) -> list[ExperienceInsightPoint]:
+    """Build concise claims while preserving the exact notes behind each one."""
+    candidates: dict[str, tuple[int, str, list[str]]] = {}
     for item in sorted(
         items,
         key=lambda value: (
@@ -752,13 +760,24 @@ def _build_evidence_summary(tag: str, items: list[dict], place_name: str = "") -
             place_name,
         )
         fingerprint = re.sub(r"\W", "", snippet)[:36]
-        if snippet and fingerprint and fingerprint not in fingerprints:
-            candidates.append((_snippet_quality(snippet, tag, place_name), snippet))
-            fingerprints.add(fingerprint)
+        if not snippet or not fingerprint:
+            continue
+        evidence_id = str(item["evidence_id"])
+        existing = candidates.get(fingerprint)
+        if existing:
+            existing[2].append(evidence_id)
+        else:
+            candidates[fingerprint] = (
+                _snippet_quality(snippet, tag, place_name),
+                snippet,
+                [evidence_id],
+            )
     if not candidates:
-        return ""
-    snippets = [item[1] for item in sorted(candidates, reverse=True)[:2]]
-    return "；".join(snippets) + "。"
+        return []
+    return [
+        ExperienceInsightPoint(text=text, evidenceIds=list(dict.fromkeys(evidence_ids)))
+        for _, text, evidence_ids in sorted(candidates.values(), reverse=True)[:3]
+    ]
 
 
 def _extract_detail_snippet(text: str, tag: str, place_name: str = "") -> str:

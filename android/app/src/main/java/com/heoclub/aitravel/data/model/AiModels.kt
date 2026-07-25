@@ -287,6 +287,16 @@ data class AiPlanQuality(
     val totalPlaceCount: Int = 0,
     val usedFallback: Boolean = false,
     val dataSources: List<String> = emptyList(),
+    val totalCommuteMinutes: Int = 0,
+    val longestLegMinutes: Int = 0,
+    val crossRegionTransferCount: Int = 0,
+    val backtrackingLegCount: Int = 0,
+    val longIdleGapCount: Int = 0,
+    val estimatedWalkingKm: Double = 0.0,
+    val mealWindowDeviationCount: Int = 0,
+    val minimumClosingMarginMinutes: Int? = null,
+    val requiredPlaceCoverage: Double = 1.0,
+    val comfortScore: Int = 100,
 )
 
 data class AiPlanGenerationResponse(

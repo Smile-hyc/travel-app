@@ -100,6 +100,11 @@ class OfficialNotice(BaseModel):
     expiresAt: str | None = None
 
 
+class ExperienceInsightPoint(BaseModel):
+    text: str
+    evidenceIds: list[str] = Field(default_factory=list)
+
+
 class ExperienceInsight(BaseModel):
     tag: str
     title: str
@@ -107,6 +112,7 @@ class ExperienceInsight(BaseModel):
     mentionCount: int = Field(ge=1)
     confidence: float = Field(ge=0, le=1)
     evidenceIds: list[str] = Field(default_factory=list)
+    points: list[ExperienceInsightPoint] = Field(default_factory=list)
     updatedAt: str
     expiresAt: str
 
@@ -138,6 +144,9 @@ class PlaceOfficialLayer(BaseModel):
     wechatName: str | None = None
     miniProgramName: str | None = None
     ticketingUrl: str | None = None
+    discoveryStatus: str | None = None
+    verifiedAt: str | None = None
+    sourceType: str | None = None
 
 
 class PlaceExperienceLayer(BaseModel):

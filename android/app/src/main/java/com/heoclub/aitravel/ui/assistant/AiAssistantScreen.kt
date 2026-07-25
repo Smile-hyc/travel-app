@@ -449,7 +449,8 @@ private fun RecommendedPlaceCard(place: AiRecommendedPlace, onClick: () -> Unit)
     ) {
         Column {
             PlaceCoverImage(
-                imageUrl = place.coverImageUrl ?: place.imageUrls.firstOrNull(),
+                imageUrl = place.coverImageUrl?.takeIf(String::isNotBlank),
+                fallbackImageUrls = place.imageUrls,
                 placeName = place.name,
                 category = place.category,
                 modifier = Modifier.fillMaxWidth().height(132.dp),
@@ -622,7 +623,8 @@ private fun ExpandedDay(day: AiGeneratedDay, onPlaceClick: (String) -> Unit) {
 private fun ExpandedPlace(number: Int, place: AiGeneratedPlace, onPlaceClick: (String) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().clickable { onPlaceClick(place.id) }, verticalAlignment = Alignment.Top) {
         PlaceCoverImage(
-            imageUrl = place.thumbnailUrl ?: place.imageUrls.firstOrNull(),
+            imageUrl = place.thumbnailUrl?.takeIf(String::isNotBlank),
+            fallbackImageUrls = place.imageUrls,
             placeName = place.name,
             category = place.category,
             modifier = Modifier.size(76.dp),

@@ -622,6 +622,10 @@ def _parse_city_result(raw: dict[str, Any]) -> CitySearchResult | None:
         normalized_name = f"{normalized_name}市"
 
     normalized_adcode = _normalize_amap_city_adcode(adcode)
+    municipality_name = PROVINCE_NAMES_BY_ADCODE_PREFIX.get(normalized_adcode[:2])
+    if normalized_adcode[:2] in {"11", "12", "31", "50"} and municipality_name:
+        normalized_name = municipality_name
+        province = municipality_name
 
     return CitySearchResult(
         id=f"amap-city:{normalized_adcode}:{normalized_name}",
@@ -635,10 +639,10 @@ def _parse_city_result(raw: dict[str, Any]) -> CitySearchResult | None:
 
 
 def _dedupe_cities(cities: list[CitySearchResult]) -> list[CitySearchResult]:
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     result: list[CitySearchResult] = []
     for city in cities:
-        key = (city.adCode, city.name)
+        key = _normalize_amap_city_adcode(city.adCode)
         if key in seen:
             continue
         seen.add(key)

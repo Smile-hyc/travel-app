@@ -608,8 +608,8 @@ fun CreatePlanScreen(
 
         StepTitle(number = "6", title = "规划方式")
         SelectableOptionCard(
-            title = "智能优化",
-            description = "先生成可浏览的基础行程，再结合偏好、天气、开放时间与实际通勤进一步优化。",
+            title = "智能规划",
+            description = "先生成可执行草案，再由 AI 审稿、局部调整，并重新校验开放时间与真实路线。",
             selected = optimizationMode == "REQUIRED",
             onClick = { optimizationMode = "REQUIRED" },
         )
@@ -693,7 +693,7 @@ fun CreatePlanScreen(
             ) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
                 Text(
-                    text = if (optimizationMode == "REQUIRED") "开始智能规划" else "开始快速规划",
+                    text = if (optimizationMode == "FAST") "开始快速规划" else "开始智能规划",
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }

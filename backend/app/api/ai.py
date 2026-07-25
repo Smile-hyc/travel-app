@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -24,6 +25,7 @@ from app.services.travel_ai_service import TravelAiService
 from app.services.travel_plan_generation_service import TravelPlanGenerationService
 
 router = APIRouter(prefix="/api", tags=["ai"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health/ai", response_model=AiHealthResponse)
@@ -141,6 +143,7 @@ async def stream_travel_plan(
             state["stage"] = "智能规划失败"
             queue.put_nowait(snapshot("FAILED", error=str(exc.detail)))
         except Exception:
+            logger.exception("Unexpected error while streaming AI travel plan")
             state["stage"] = "智能规划失败"
             queue.put_nowait(snapshot("FAILED", error="服务发生未预期错误，请稍后重试。"))
 

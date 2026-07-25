@@ -1,6 +1,10 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -34,9 +38,12 @@ class Settings(BaseSettings):
     mediacrawler_timeout_seconds: int = 10800
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
+    deepseek_fallback_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_request_timeout_seconds: float = 240.0
     deepseek_max_output_tokens: int = 8000
+    deepseek_reasoning_max_output_tokens: int = 16000
+    deepseek_reasoning_effort: str = "high"
     deepseek_temperature: float = 0.35
     dev_cors_origins: str = (
         "http://localhost:3000,"
@@ -46,7 +53,7 @@ class Settings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )

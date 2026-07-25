@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import json
+import logging
 from time import perf_counter
 from typing import Callable
 
@@ -11,6 +12,14 @@ from fastapi import HTTPException, status
 from app.core.config import Settings
 
 
+logger = logging.getLogger(__name__)
+
+LOCAL_NOOP_PROPOSAL = (
+    '{"kind":"result","proposal":{"changes":[],"fallbackNoop":true,'
+    '"travelerExplanation":"AI未提出通过验证的局部修改，保留可执行草案。"}}'
+)
+
+
 class DeepSeekClient:
     def __init__(self, settings: Settings):
         self._settings = settings
@@ -18,6 +27,19 @@ class DeepSeekClient:
     @property
     def model_name(self) -> str:
         return self._settings.deepseek_model
+
+    @property
+    def fallback_model_name(self) -> str:
+        return self._settings.deepseek_fallback_model.strip() or self._settings.deepseek_model
+
+    @property
+    def reasoning_max_output_tokens(self) -> int:
+        return max(1000, self._settings.deepseek_reasoning_max_output_tokens)
+
+    @property
+    def reasoning_effort(self) -> str:
+        effort = self._settings.deepseek_reasoning_effort.strip().lower()
+        return effort if effort in {"high", "max"} else "high"
 
     async def chat_stream_chunks(
         self,
@@ -116,6 +138,10 @@ class DeepSeekClient:
         temperature: float | None = None,
         timeout_seconds: float | None = None,
         disable_read_timeout: bool = False,
+        model: str | None = None,
+        thinking_enabled: bool | None = None,
+        reasoning_effort: str | None = None,
+        json_mode: bool = False,
     ) -> str:
         if not self._settings.deepseek_configured:
             raise HTTPException(
@@ -125,11 +151,17 @@ class DeepSeekClient:
 
         url = f"{self._settings.deepseek_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self._settings.deepseek_model,
+            "model": model or self._settings.deepseek_model,
             "messages": messages,
             "temperature": self._settings.deepseek_temperature if temperature is None else temperature,
             "max_tokens": self._settings.deepseek_max_output_tokens if max_tokens is None else max_tokens,
         }
+        if thinking_enabled is not None:
+            payload["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+        if thinking_enabled and reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort if reasoning_effort in {"high", "max"} else "high"
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {self._settings.deepseek_api_key}",
             "Content-Type": "application/json",
@@ -171,12 +203,25 @@ class DeepSeekClient:
                 detail="AI 服务没有返回可用回复。",
             )
 
-        message = choices[0].get("message") or {}
+        choice = choices[0]
+        message = choice.get("message") or {}
         content = (message.get("content") or "").strip()
         if not content:
+            finish_reason = str(choice.get("finish_reason") or "unknown")
+            reasoning = message.get("reasoning_content")
+            reasoning_received = isinstance(reasoning, str) and bool(reasoning.strip())
+            logger.warning(
+                "DeepSeek returned no visible content: requested_model=%s response_model=%s "
+                "reasoning_received=%s finish_reason=%s completion_tokens=%s",
+                payload["model"],
+                data.get("model") or "unknown",
+                reasoning_received,
+                finish_reason,
+                (data.get("usage") or {}).get("completion_tokens"),
+            )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="AI 服务返回了空回复。",
+                detail="AI 服务本次没有返回可用建议，当前可继续使用已生成的规则草案。",
             )
         return content
 
@@ -190,6 +235,9 @@ class DeepSeekClient:
         timeout_seconds: float | None = None,
         disable_read_timeout: bool = False,
         on_timing: Callable[[str, int], None] | None = None,
+        model: str | None = None,
+        thinking_enabled: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Consume the provider's real SSE token stream.
 
@@ -204,12 +252,16 @@ class DeepSeekClient:
             )
         url = f"{self._settings.deepseek_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self._settings.deepseek_model,
+            "model": model or self._settings.deepseek_model,
             "messages": messages,
             "temperature": self._settings.deepseek_temperature if temperature is None else temperature,
             "max_tokens": self._settings.deepseek_max_output_tokens if max_tokens is None else max_tokens,
             "stream": True,
         }
+        if thinking_enabled is not None:
+            payload["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+        if thinking_enabled and reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort if reasoning_effort in {"high", "max"} else "high"
         headers = {
             "Authorization": f"Bearer {self._settings.deepseek_api_key}",
             "Content-Type": "application/json",
@@ -228,6 +280,10 @@ class DeepSeekClient:
         chunks: list[str] = []
         started_at = perf_counter()
         first_content_received = False
+        reasoning_received = False
+        finish_reason: str | None = None
+        response_model: str | None = None
+        completion_tokens: int | None = None
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("POST", url, json=payload, headers=headers) as response:
@@ -247,7 +303,17 @@ class DeepSeekClient:
                         except json.JSONDecodeError:
                             continue
                         choices = data.get("choices") or []
-                        delta = choices[0].get("delta") if choices else None
+                        response_model = data.get("model") or response_model
+                        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+                        completion_tokens = usage.get("completion_tokens") or completion_tokens
+                        choice = choices[0] if choices else {}
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                        delta = choice.get("delta") if choices else None
+                        reasoning = delta.get("reasoning_content") if isinstance(delta, dict) else None
+                        if isinstance(reasoning, str) and reasoning and not reasoning_received:
+                            reasoning_received = True
+                            if on_timing is not None:
+                                on_timing("reasoning", round((perf_counter() - started_at) * 1000))
                         content = delta.get("content") if isinstance(delta, dict) else None
                         if not isinstance(content, str) or not content:
                             continue
@@ -264,6 +330,18 @@ class DeepSeekClient:
         except httpx.RequestError as exc:
             raise HTTPException(status_code=502, detail="无法连接 AI 流式服务。") from exc
         content = "".join(chunks).strip()
+        if content and finish_reason == "length":
+            logger.warning(
+                "DeepSeek visible stream was truncated; appending local no-op proposal: "
+                "requested_model=%s response_model=%s completion_tokens=%s",
+                payload["model"],
+                response_model or "unknown",
+                completion_tokens,
+            )
+            separator = "" if content.endswith("\n") else "\n"
+            recovery = separator + LOCAL_NOOP_PROPOSAL + "\n"
+            content += recovery
+            on_delta(recovery)
         if not content:
             # Some DeepSeek reasoning-capable models can consume a short
             # streaming token budget with hidden reasoning and finish without
@@ -271,16 +349,48 @@ class DeepSeekClient:
             # completion endpoint with the configured full output budget so a
             # valid plan is not discarded after the executable draft exists.
             fallback_started_at = perf_counter()
-            content = await self.chat(
-                messages,
-                max_tokens=max(
-                    self._settings.deepseek_max_output_tokens,
-                    max_tokens or 0,
-                ),
-                temperature=temperature,
-                timeout_seconds=timeout_seconds,
-                disable_read_timeout=disable_read_timeout,
-            )
+            retry_messages = [
+                {
+                    "role": "system",
+                    "content": "你是JSON响应器。不要分析、解释或输出Markdown，只返回用户指定的一行JSON。",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "返回这一行，不得添加其他内容："
+                        + LOCAL_NOOP_PROPOSAL
+                    ),
+                },
+            ]
+            try:
+                content = await self.chat(
+                    retry_messages,
+                    max_tokens=max(
+                        self._settings.deepseek_max_output_tokens,
+                        max_tokens or 0,
+                    ),
+                    temperature=temperature,
+                    timeout_seconds=timeout_seconds,
+                    disable_read_timeout=disable_read_timeout,
+                    model=self._settings.deepseek_fallback_model.strip() or self._settings.deepseek_model,
+                    thinking_enabled=False,
+                    json_mode=True,
+                )
+            except HTTPException as exc:
+                if reasoning_received:
+                    logger.warning(
+                        "DeepSeek reasoning-only response and compact fallback both failed: "
+                        "requested_model=%s response_model=%s finish_reason=%s "
+                        "completion_tokens=%s fallback_status=%s; using local no-op proposal",
+                        payload["model"],
+                        response_model or "unknown",
+                        finish_reason or "unknown",
+                        completion_tokens,
+                        exc.status_code,
+                    )
+                    content = LOCAL_NOOP_PROPOSAL
+                else:
+                    raise
             if on_timing is not None:
                 on_timing("first_token", round((perf_counter() - fallback_started_at) * 1000))
             on_delta(content)

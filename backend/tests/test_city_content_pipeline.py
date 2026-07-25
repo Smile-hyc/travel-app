@@ -149,7 +149,7 @@ def _place(poi_id: str, name: str, rating: str) -> PlaceSummary:
     )
 
 
-def test_city_pipeline_binds_queries_and_caps_retained_evidence(tmp_path) -> None:
+def test_city_pipeline_binds_queries_and_retains_all_cleaned_evidence(tmp_path) -> None:
     store = ReviewStore(":memory:")
     detail = PlaceDetailService(DisabledReviewClient(), store=store, author_hash_salt="test")
     places = [_place("TJ001", "民园广场", "4.8"), _place("TJ002", "五大道", "4.7")]
@@ -176,12 +176,12 @@ def test_city_pipeline_binds_queries_and_caps_retained_evidence(tmp_path) -> Non
     assert result["status"] == "ready"
     assert result["target_count"] == 2
     assert result["fetched_count"] == 50
-    assert result["accepted_count"] == 40
+    assert result["accepted_count"] == 50
     assert [item["status"] for item in result["items"]] == ["ready", "ready"]
     for place in places:
-        assert len(store.list_active_evidence(place.sourcePoiId)) == 20
+        assert len(store.list_active_evidence(place.sourcePoiId)) == 25
         detail_result = asyncio.run(detail.get_detail(place))
-        assert len(detail_result.reviewSources) == 8
+        assert len(detail_result.reviewSources) == 25
         assert all("unmatched" not in source.id for source in detail_result.reviewSources)
     ranking = store.get_city_ranking("120000")
     assert [item["poi_id"] for item in ranking] == ["TJ001", "TJ002"]
@@ -341,7 +341,7 @@ def test_partial_login_imports_existing_rows_and_pauses_run(tmp_path) -> None:
     assert result["items"][0]["status"] == "ready"
     assert result["items"][1]["status"] == "login_required"
     assert result["items"][1]["error"] == "LOGIN_REQUIRED"
-    assert len(store.list_active_evidence("TJ001")) == 20
+    assert len(store.list_active_evidence("TJ001")) == 25
     store.close()
 
 
