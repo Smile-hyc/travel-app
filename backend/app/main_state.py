@@ -35,7 +35,7 @@ amap_route_service = AmapRouteService(amap_client)
 amap_weather_service = AmapWeatherService(amap_client)
 deepseek_client = DeepSeekClient(settings)
 tikhub_review_client = TikhubReviewClient(settings)
-review_store = ReviewStore(settings.review_database_path)
+review_store = ReviewStore(_setting_path(settings.review_database_path))
 initialize_official_directory(review_store)
 place_detail_service = PlaceDetailService(
     tikhub_review_client,

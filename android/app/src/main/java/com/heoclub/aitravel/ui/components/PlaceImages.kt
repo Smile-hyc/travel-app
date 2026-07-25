@@ -25,8 +25,12 @@ import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,8 +39,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
@@ -46,13 +48,21 @@ import com.heoclub.aitravel.data.model.PlaceImage
 @Composable
 fun PlaceCoverImage(
     imageUrl: String?,
+    fallbackImageUrls: List<String> = emptyList(),
     placeName: String,
     category: String? = null,
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(16.dp),
     contentScale: ContentScale = ContentScale.Crop,
 ) {
-    val cleanUrl = imageUrl?.trim()?.takeIf { it.isRemoteImageUrl() }
+    val candidates = remember(imageUrl, fallbackImageUrls) {
+        (listOfNotNull(imageUrl) + fallbackImageUrls)
+            .map(String::trim)
+            .filter(String::isRemoteImageUrl)
+            .distinct()
+    }
+    var imageIndex by remember(candidates) { mutableIntStateOf(0) }
+    val cleanUrl = candidates.getOrNull(imageIndex)
     Box(
         modifier = modifier
             .clip(shape)
@@ -60,7 +70,7 @@ fun PlaceCoverImage(
         contentAlignment = Alignment.Center,
     ) {
         if (cleanUrl == null) {
-            PlaceImagePlaceholder(placeName = placeName, category = category)
+            PlaceImagePlaceholder(category = category)
         } else {
             SubcomposeAsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
@@ -75,7 +85,11 @@ fun PlaceCoverImage(
                     }
                 },
                 error = {
-                    PlaceImagePlaceholder(placeName = placeName, category = category)
+                    if (imageIndex < candidates.lastIndex) {
+                        LaunchedEffect(cleanUrl) { imageIndex += 1 }
+                    } else {
+                        PlaceImagePlaceholder(category = category)
+                    }
                 },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -118,6 +132,7 @@ fun PlaceImageCarousel(
         itemsIndexed(urls, key = { _, url -> url }) { index, url ->
             PlaceCoverImage(
                 imageUrl = url,
+                fallbackImageUrls = urls.drop(index + 1) + urls.take(index),
                 placeName = placeName,
                 category = category,
                 modifier = Modifier
@@ -130,7 +145,7 @@ fun PlaceImageCarousel(
 }
 
 @Composable
-private fun PlaceImagePlaceholder(placeName: String, category: String?) {
+private fun PlaceImagePlaceholder(category: String?) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -151,15 +166,6 @@ private fun PlaceImagePlaceholder(placeName: String, category: String?) {
             },
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
-        )
-        Text(
-            text = placeName.take(2),
-            modifier = Modifier.align(Alignment.BottomCenter),
-            color = Color(0xFF4E6D8F),
-            fontWeight = FontWeight.SemiBold,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
         )
     }
 }

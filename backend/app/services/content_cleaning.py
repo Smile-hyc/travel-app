@@ -76,7 +76,7 @@ def clean_review_sources(
     place: PlaceSummary,
     sources: list[ReviewSource],
     *,
-    limit: int = 20,
+    limit: int | None = None,
 ) -> list[CleanedReview]:
     results: list[CleanedReview] = []
     seen_note_ids: set[str] = set()
@@ -119,7 +119,7 @@ def clean_review_sources(
         )
         seen_note_ids.add(note_id)
         seen_fingerprints.add(fingerprint)
-        if len(results) >= max(1, min(limit, 50)):
+        if limit is not None and len(results) >= max(1, limit):
             break
     return results
 

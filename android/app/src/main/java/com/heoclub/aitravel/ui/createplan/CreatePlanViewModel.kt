@@ -303,15 +303,30 @@ internal fun mergeDestinationSuggestions(
     remote: List<ExploreCity>,
     local: List<ExploreCity>,
 ): List<ExploreCity> = (remote + local)
-    .groupBy { "${it.adCode}:${it.name}" }
+    .groupBy { destinationAdministrativeKey(it.adCode) }
     .values
     .map { matches ->
-        matches.maxByOrNull { city ->
+        val selected = matches.maxByOrNull { city ->
             when {
+                city.id.startsWith("amap-city:") && city.name == canonicalMunicipalityName(city.adCode) -> 3
                 isDirectMunicipality(city) -> 2
                 city.provinceName.isNotBlank() && city.provinceName != city.name -> 2
                 else -> 1
             }
         } ?: matches.first()
+        canonicalMunicipalityName(selected.adCode)?.let { canonical ->
+            selected.copy(name = canonical, displayName = canonical, provinceName = canonical)
+        } ?: selected
     }
+
+private fun canonicalMunicipalityName(adCode: String): String? = when (adCode.take(2)) {
+    "11" -> "北京市"
+    "12" -> "天津市"
+    "31" -> "上海市"
+    "50" -> "重庆市"
+    else -> null
+}
+
+private fun destinationAdministrativeKey(adCode: String): String =
+    canonicalMunicipalityName(adCode)?.let { "${adCode.take(2)}0000" } ?: adCode
 

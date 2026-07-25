@@ -10,6 +10,22 @@ import com.heoclub.aitravel.data.model.PlaceSuggestion
 
 class AiPlanGenerationRulesTest {
     @Test
+    fun `legacy and unknown planning modes use merged smart planning`() {
+        assertEquals("REQUIRED", canonicalPlanningMode("PREFERRED"))
+        assertEquals("REQUIRED", canonicalPlanningMode(null))
+        assertEquals("REQUIRED", canonicalPlanningMode("DEEP"))
+        assertEquals("FAST", canonicalPlanningMode("fast"))
+    }
+
+    @Test
+    fun `smart planning loading recognizes merged and legacy stages`() {
+        assertTrue(isAiPlanningStage("正在进行智能规划", 74, 3, 3))
+        assertTrue(isAiPlanningStage("正在等待 AI 优化", 74, 3, 3))
+        assertTrue(isAiPlanningStage("AI 正在提出局部调整", 74, 3, 3))
+        assertFalse(isAiPlanningStage("正在筛选候选地点", 42, 1, 3))
+    }
+
+    @Test
     fun `province query asks user to choose a child city`() {
         val suggestions = listOf(
             ExploreCity("chengdu", "成都市", "成都市", "四川省", "510100", 30.57, 104.06, 13.2f),
@@ -42,6 +58,23 @@ class AiPlanGenerationRulesTest {
         assertEquals("省会 · 四川省", cityRegionLabel(chengdu))
         assertEquals("省会 · 江苏省", cityRegionLabel(nanjing))
         assertEquals("直辖市", cityRegionLabel(beijing))
+    }
+
+    @Test
+    fun `municipality aliases and local city merge into one canonical destination`() {
+        val suggestions = mergeDestinationSuggestions(
+            remote = listOf(
+                ExploreCity("amap-city:110000:北京城区", "北京城区", "北京城区", "北京市", "110000", 39.90, 116.40, 13.2f),
+                ExploreCity("amap-city:110100:北京市", "北京市", "北京市", "北京市", "110100", 39.90, 116.40, 13.2f),
+            ),
+            local = listOf(
+                ExploreCity("beijing", "北京市", "北京市", "北京市", "110000", 39.90, 116.40, 13.2f),
+            ),
+        )
+
+        assertEquals(1, suggestions.size)
+        assertEquals("北京市", suggestions.single().name)
+        assertEquals("北京市", suggestions.single().displayName)
     }
 
     @Test

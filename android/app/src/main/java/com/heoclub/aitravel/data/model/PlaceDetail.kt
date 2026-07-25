@@ -40,6 +40,9 @@ data class OfficialPlaceLayer(
     val wechatName: String? = null,
     val miniProgramName: String? = null,
     val ticketingUrl: String? = null,
+    val discoveryStatus: String? = null,
+    val verifiedAt: String? = null,
+    val sourceType: String? = null,
 )
 
 data class OfficialNotice(
@@ -67,8 +70,14 @@ data class ExperienceInsight(
     val mentionCount: Int,
     val confidence: Double = 0.0,
     val evidenceIds: List<String> = emptyList(),
+    val points: List<ExperienceInsightPoint> = emptyList(),
     val updatedAt: String? = null,
     val expiresAt: String? = null,
+)
+
+data class ExperienceInsightPoint(
+    val text: String,
+    val evidenceIds: List<String> = emptyList(),
 )
 
 data class ReviewHighlight(

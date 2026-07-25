@@ -57,6 +57,7 @@ import com.heoclub.aitravel.ui.createplan.AiPlanGenerationScreen
 import com.heoclub.aitravel.ui.createplan.AiPlanGenerationViewModel
 import com.heoclub.aitravel.ui.createplan.CreatePlanScreen
 import com.heoclub.aitravel.ui.createplan.CreatePlanViewModel
+import com.heoclub.aitravel.ui.createplan.canonicalPlanningMode
 import com.heoclub.aitravel.ui.detail.PlanDetailScreen
 import com.heoclub.aitravel.ui.detail.PlanDetailViewModel
 import com.heoclub.aitravel.ui.discover.DiscoverScreen
@@ -138,7 +139,7 @@ private object Routes {
             "&hotelName=${Uri.encode(hotelName.orEmpty())}" +
             "&hotelStays=${Uri.encode(hotelStays.joinToString(";;") { stay -> encodeHotelStay(stay) })}" +
             "&mapPoints=${Uri.encode(encodeMapPoints(arrivalPoint, departurePoint, hotelPoint))}" +
-            "&optimizationMode=${Uri.encode(optimizationMode)}"
+            "&optimizationMode=${Uri.encode(canonicalPlanningMode(optimizationMode))}"
     }
 
     fun assistant(
@@ -675,7 +676,9 @@ fun AiTravelNavHost() {
                                 )
                             } else null
                         },
-                    optimizationMode = backStackEntry.arguments?.getString("optimizationMode") ?: "REQUIRED",
+                    optimizationMode = canonicalPlanningMode(
+                        backStackEntry.arguments?.getString("optimizationMode"),
+                    ),
                 )
                 val generationViewModel: AiPlanGenerationViewModel = viewModel(
                     factory = AiPlanGenerationViewModel.Factory(

@@ -178,3 +178,35 @@ def test_time_window_enforces_last_admission_before_closing_time() -> None:
 
     assert feasible.ordered_place_ids == ("museum",)
     assert too_late.ordered_place_ids == ()
+
+
+def test_comfort_policy_rejects_small_value_gain_from_very_long_transfer() -> None:
+    candidates = [
+        VisitCandidate("near", 5.0, 60, (TimeWindow(9 * 60, 18 * 60),), category="park", region="west"),
+        VisitCandidate("far", 5.4, 60, (TimeWindow(9 * 60, 18 * 60),), category="museum", region="east"),
+    ]
+    edges = {
+        ("hotel", "near"): TravelEdge("hotel", "near", 15, 1500, verified=True),
+        ("near", "hotel"): TravelEdge("near", "hotel", 15, 1500, verified=True),
+        ("hotel", "far"): TravelEdge("hotel", "far", 90, 18000, verified=True),
+        ("far", "hotel"): TravelEdge("far", "hotel", 90, 18000, verified=True),
+        ("near", "far"): TravelEdge("near", "far", 90, 18000, verified=True),
+        ("far", "near"): TravelEdge("far", "near", 90, 18000, verified=True),
+    }
+
+    result = solve_day_with_time_windows(
+        candidates,
+        edges,
+        DaySolverConfig(
+            day_start=9 * 60,
+            day_end=18 * 60,
+            max_visits=1,
+            max_normal_leg_minutes=35,
+            excess_leg_minute_penalty=0.08,
+        ),
+        start_id="hotel",
+        end_id="hotel",
+    )
+
+    assert result.ordered_place_ids == ("near",)
+    assert result.longest_leg_minutes == 15

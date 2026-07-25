@@ -411,7 +411,8 @@ private fun TravelPlanCover(
     height: androidx.compose.ui.unit.Dp,
 ) {
     val shape = RoundedCornerShape(20.dp)
-    val remoteCover = plan.firstRemoteCoverUrl()
+    val remoteCovers = plan.remoteCoverUrls()
+    val remoteCover = remoteCovers.firstOrNull()
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -422,6 +423,7 @@ private fun TravelPlanCover(
         when {
             remoteCover != null -> PlaceCoverImage(
                 imageUrl = remoteCover,
+                fallbackImageUrls = remoteCovers.drop(1),
                 placeName = plan.destination,
                 modifier = Modifier.fillMaxSize(),
                 shape = shape,
@@ -445,17 +447,19 @@ private fun TravelPlanCover(
     }
 }
 
-private fun TravelPlan.firstRemoteCoverUrl(): String? {
+private fun TravelPlan.remoteCoverUrls(): List<String> {
     val items = days
         .sortedBy { it.dayIndex }
         .flatMap { day -> day.items.sortedBy { it.visitOrder } } + unplannedItems
     return items.asSequence()
         .flatMap { item -> (item.imageUrls + listOfNotNull(item.thumbnailUrl)).asSequence() }
         .map(String::trim)
-        .firstOrNull { url ->
+        .filter { url ->
             url.startsWith("http://", ignoreCase = true) ||
                 url.startsWith("https://", ignoreCase = true)
         }
+        .distinct()
+        .toList()
 }
 
 @Composable

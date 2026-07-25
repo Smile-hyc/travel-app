@@ -1097,8 +1097,8 @@ private fun PlanItemCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PlaceCoverImage(
-                    imageUrl = item.thumbnailUrl?.takeIf(String::isNotBlank)
-                        ?: item.imageUrls.firstOrNull { it.isNotBlank() },
+                    imageUrl = item.thumbnailUrl?.takeIf(String::isNotBlank),
+                    fallbackImageUrls = item.imageUrls,
                     placeName = item.name,
                     category = item.category,
                     modifier = Modifier.size(64.dp),

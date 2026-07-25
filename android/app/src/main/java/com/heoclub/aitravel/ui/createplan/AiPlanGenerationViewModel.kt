@@ -48,6 +48,9 @@ data class AiPlanDraftInput(
     val dailyEnd: String = "20:00",
 )
 
+internal fun canonicalPlanningMode(value: String?): String =
+    if (value?.uppercase() == "FAST") "FAST" else "REQUIRED"
+
 sealed interface AiPlanGenerationUiState {
     data class Loading(
         val progress: Int = 0,
@@ -65,7 +68,13 @@ sealed interface AiPlanGenerationUiState {
         val savedPlanId: String,
     ) : AiPlanGenerationUiState
 
-    data class Error(val message: String) : AiPlanGenerationUiState
+    data class Error(
+        val message: String,
+        val completedDays: Int = 0,
+        val totalDays: Int = 0,
+        val partialDays: List<AiGeneratedDay> = emptyList(),
+        val events: List<AiPlanProgressEvent> = emptyList(),
+    ) : AiPlanGenerationUiState
 }
 
 class AiPlanGenerationViewModel(
@@ -96,11 +105,21 @@ class AiPlanGenerationViewModel(
     }
 
     fun useCurrentDraftWithoutAi(): Boolean {
-        val loading = _uiState.value as? AiPlanGenerationUiState.Loading ?: return false
-        val days = loading.partialDays
+        val state = _uiState.value
+        val partialDays = when (state) {
+            is AiPlanGenerationUiState.Loading -> state.partialDays
+            is AiPlanGenerationUiState.Error -> state.partialDays
+            else -> return false
+        }
+        val completedDays = when (state) {
+            is AiPlanGenerationUiState.Loading -> state.completedDays
+            is AiPlanGenerationUiState.Error -> state.completedDays
+            else -> 0
+        }
+        val days = partialDays
             .sortedBy { it.dayIndex }
             .filter { it.places.isNotEmpty() }
-        if (days.isEmpty() || loading.completedDays < input.dayCount) return false
+        if (days.isEmpty() || completedDays < input.dayCount) return false
 
         generationJob?.cancel()
         generationJob = null
@@ -158,7 +177,7 @@ class AiPlanGenerationViewModel(
                 hotelName = input.hotelName,
                 hotelPoint = input.hotelPoint,
                 hotelStays = input.hotelStays,
-                optimizationMode = input.optimizationMode,
+                optimizationMode = canonicalPlanningMode(input.optimizationMode),
                 pace = input.pace,
                 transportPreference = input.transportPreference,
                 dailyStart = input.dailyStart,
@@ -166,26 +185,38 @@ class AiPlanGenerationViewModel(
                 clientRequestId = UUID.randomUUID().toString(),
             )
             var result: AiPlanGenerationResponse? = null
+            var latestPartialDays: List<AiGeneratedDay> = emptyList()
+            var latestCompletedDays = 0
+            var latestTotalDays = input.dayCount
+            var latestEvents: List<AiPlanProgressEvent> = emptyList()
             try {
                 aiRepository.streamPlan(request).collect { snapshot ->
                     activeJobId = snapshot.jobId
+                    latestPartialDays = snapshot.partialDays
+                    latestCompletedDays = snapshot.completedDays
+                    latestTotalDays = snapshot.totalDays
+                    latestEvents = snapshot.events
                     when (snapshot.status) {
                         "COMPLETED" -> result = snapshot.result
                         "FAILED" -> _uiState.value = AiPlanGenerationUiState.Error(
-                            snapshot.error ?: "智能规划任务失败，请调整条件后重试。",
-                        )
-                        "CANCELLED" -> _uiState.value = AiPlanGenerationUiState.Error("智能规划已取消。")
-                        else -> {
-                        upsertGeneratedPlaces(snapshot.partialDays)
-                        _uiState.value = AiPlanGenerationUiState.Loading(
-                            progress = snapshot.progress,
-                            stage = snapshot.stage,
+                            message = snapshot.error ?: "智能规划任务失败，请调整条件后重试。",
                             completedDays = snapshot.completedDays,
                             totalDays = snapshot.totalDays,
-                            activeDayIndex = snapshot.activeDayIndex,
                             partialDays = snapshot.partialDays,
                             events = snapshot.events,
                         )
+                        "CANCELLED" -> _uiState.value = AiPlanGenerationUiState.Error("智能规划已取消。")
+                        else -> {
+                            upsertGeneratedPlaces(snapshot.partialDays)
+                            _uiState.value = AiPlanGenerationUiState.Loading(
+                                progress = snapshot.progress,
+                                stage = snapshot.stage,
+                                completedDays = snapshot.completedDays,
+                                totalDays = snapshot.totalDays,
+                                activeDayIndex = snapshot.activeDayIndex,
+                                partialDays = snapshot.partialDays,
+                                events = snapshot.events,
+                            )
                         }
                     }
                 }
@@ -193,7 +224,11 @@ class AiPlanGenerationViewModel(
                 return@launch
             } catch (error: Exception) {
                 _uiState.value = AiPlanGenerationUiState.Error(
-                    error.message ?: "智能规划流中断，请检查后端连接后重试。",
+                    message = error.message ?: "智能规划流中断，请检查后端连接后重试。",
+                    completedDays = latestCompletedDays,
+                    totalDays = latestTotalDays,
+                    partialDays = latestPartialDays,
+                    events = latestEvents,
                 )
                 return@launch
             }
@@ -201,7 +236,13 @@ class AiPlanGenerationViewModel(
             val completedResult = result
             if (completedResult == null) {
                 if (_uiState.value !is AiPlanGenerationUiState.Error) {
-                    _uiState.value = AiPlanGenerationUiState.Error("规划流已结束，但没有返回可用行程。")
+                    _uiState.value = AiPlanGenerationUiState.Error(
+                        message = "规划流已结束，但没有返回可用行程。",
+                        completedDays = latestCompletedDays,
+                        totalDays = latestTotalDays,
+                        partialDays = latestPartialDays,
+                        events = latestEvents,
+                    )
                 }
                 return@launch
             }
@@ -209,7 +250,11 @@ class AiPlanGenerationViewModel(
 
             if (completedResult.days.isEmpty()) {
                 _uiState.value = AiPlanGenerationUiState.Error(
-                    "没有生成可用的每日行程，请调整目的地或天数后重试。",
+                    message = "没有生成可用的每日行程，请调整目的地或天数后重试。",
+                    completedDays = latestCompletedDays,
+                    totalDays = latestTotalDays,
+                    partialDays = latestPartialDays,
+                    events = latestEvents,
                 )
                 return@launch
             }
