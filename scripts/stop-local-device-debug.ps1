@@ -19,7 +19,10 @@ if (Test-Path -LiteralPath $pidFile) {
     $processId = [int](Get-Content -LiteralPath $pidFile -Raw)
     $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
     if ($null -ne $process) {
-        Stop-Process -Id $processId
+        # Avoid a PowerShell 5.1 Stop-Process null-reference bug observed when
+        # Conda exports duplicate case variants of environment keys.
+        $process.Kill()
+        $process.WaitForExit(5000) | Out-Null
         Write-Host "Stopped local travel backend PID $processId."
     }
     Remove-Item -LiteralPath $pidFile -Force
