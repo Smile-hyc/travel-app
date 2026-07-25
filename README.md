@@ -227,10 +227,39 @@ http://127.0.0.1:8000/docs
 | AI | GET | `/api/ai/plans/jobs/{jobId}` | 查询真实进度、Day 增量地点、规划事件和最终结果 |
 | AI | POST | `/api/ai/plans/jobs/{jobId}/cancel` | 取消正在执行的规划任务 |
 
-Android 调试默认使用模拟器宿主地址 `http://10.0.2.2:8000/`。真机配合 `adb reverse tcp:8000 tcp:8000` 时，可这样构建而不修改源码：
+Android Debug 构建默认使用本机真机联调地址 `http://127.0.0.1:8000/`，通过
+`adb reverse tcp:8000 tcp:8000` 转发到电脑上的 FastAPI。Release 构建仍单独读取
+`API_BASE_URL`，以后部署云端时不需要修改业务代码。
+
+### Windows 真机一键联调
+
+先在手机上开启开发者选项与 USB 调试，用数据线连接电脑，并在手机上允许这台电脑调试。
+然后从仓库根目录运行：
 
 ```powershell
-.\gradlew.bat :app:assembleDebug -PAI_TRAVEL_API_BASE_URL=http://127.0.0.1:8000/
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local-device-debug.ps1
+```
+
+脚本会检查真机授权、建立 ADB 端口反向转发、启动本机 FastAPI，并保留
+`backend/data/reviews.sqlite3` 与 `backend/data/users.sqlite3`。首次注册时用户库会自动创建；
+已有数据库不会被脚本清空或替换。脚本成功后，直接在 Android Studio 运行 `app` 的 Debug 配置。
+
+结束联调时运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-local-device-debug.ps1
+```
+
+如果需要覆盖默认本机地址，可以在 `android/local.properties` 中设置：
+
+```properties
+LOCAL_DEVICE_API_BASE_URL=http://127.0.0.1:8000/
+```
+
+模拟器不使用 `adb reverse`，可这样构建：
+
+```powershell
+.\gradlew.bat :app:assembleDebug -PAI_TRAVEL_API_BASE_URL=http://10.0.2.2:8000/
 ```
 
 ## 环境变量与密钥

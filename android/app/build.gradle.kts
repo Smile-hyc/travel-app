@@ -26,11 +26,15 @@ fun localConfigValue(key: String, fallback: String = ""): String {
         ?: fallback
 }
 
-val apiBaseUrl = localConfigValue(
-    key = "API_BASE_URL",
+val localDeviceApiBaseUrl = localConfigValue(
+    key = "LOCAL_DEVICE_API_BASE_URL",
     fallback = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
         .orElse("http://127.0.0.1:8000/")
         .get(),
+)
+val releaseApiBaseUrl = localConfigValue(
+    key = "API_BASE_URL",
+    fallback = "https://example.invalid/",
 )
 val amapAndroidKey = localConfigValue(
     key = "AMAP_ANDROID_KEY",
@@ -58,11 +62,13 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+            // A USB-connected device reaches the host through `adb reverse`.
+            // Keep Debug independent from the shared/cloud server.
+            buildConfigField("String", "API_BASE_URL", "\"$localDeviceApiBaseUrl\"")
         }
         release {
             isMinifyEnabled = false
-            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+            buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
