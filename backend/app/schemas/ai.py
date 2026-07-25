@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.routes import RouteCoordinate
 from app.schemas.explore import PlaceSummary
@@ -209,12 +209,17 @@ class AiPlanGenerationRequest(BaseModel):
     hotelName: str | None = Field(default=None, max_length=80)
     hotelPoint: AiMapPointInput | None = None
     hotelStays: list[AiHotelStayInput] = Field(default_factory=list, max_length=10)
-    optimizationMode: Literal["REQUIRED", "PREFERRED", "FAST"] = "PREFERRED"
+    optimizationMode: Literal["REQUIRED", "FAST"] = "REQUIRED"
     pace: Literal["RELAXED", "BALANCED", "INTENSIVE"] = "BALANCED"
     transportPreference: Literal["MIXED", "WALK", "TRANSIT", "DRIVE"] = "MIXED"
     dailyStart: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     dailyEnd: str = Field(default="20:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     clientRequestId: str | None = Field(default=None, min_length=8, max_length=80)
+
+    @field_validator("optimizationMode", mode="before")
+    @classmethod
+    def merge_legacy_ai_modes(cls, value: object) -> object:
+        return "REQUIRED" if value == "PREFERRED" else value
 
 
 class AiGeneratedPlace(BaseModel):
@@ -305,6 +310,16 @@ class AiPlanQuality(BaseModel):
     totalPlaceCount: int = 0
     usedFallback: bool = False
     dataSources: list[str] = Field(default_factory=lambda: ["AMAP", "DEEPSEEK"])
+    totalCommuteMinutes: int = Field(default=0, ge=0)
+    longestLegMinutes: int = Field(default=0, ge=0)
+    crossRegionTransferCount: int = Field(default=0, ge=0)
+    backtrackingLegCount: int = Field(default=0, ge=0)
+    longIdleGapCount: int = Field(default=0, ge=0)
+    estimatedWalkingKm: float = Field(default=0.0, ge=0)
+    mealWindowDeviationCount: int = Field(default=0, ge=0)
+    minimumClosingMarginMinutes: int | None = Field(default=None, ge=0)
+    requiredPlaceCoverage: float = Field(default=1.0, ge=0, le=1)
+    comfortScore: int = Field(default=100, ge=0, le=100)
 
 
 class AiPlanGenerationResponse(BaseModel):

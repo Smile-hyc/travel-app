@@ -62,6 +62,8 @@ class VisitCandidate:
     windows: tuple[TimeWindow, ...]
     mandatory: bool = False
     uncertainty_penalty: float = 0.0
+    category: str = ""
+    region: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,10 @@ class DaySolution:
     travel_minutes: int = 0
     waiting_minutes: int = 0
     distance_meters: int = 0
+    longest_leg_minutes: int = 0
+    long_wait_count: int = 0
+    cross_region_count: int = 0
+    repeated_category_count: int = 0
     finish_minute: int | None = None
     feasible: bool = True
     violations: tuple[str, ...] = ()
@@ -107,6 +113,12 @@ class DaySolverConfig:
     unverified_edge_penalty: float = 0.08
     waiting_minute_penalty: float = 0.004
     minimum_optional_gain: float = 0.01
+    max_normal_leg_minutes: int = 40
+    max_idle_minutes: int = 45
+    excess_leg_minute_penalty: float = 0.035
+    long_idle_minute_penalty: float = 0.018
+    cross_region_penalty: float = 0.18
+    repeated_category_penalty: float = 0.12
 
 
 def solve_day_with_time_windows(
@@ -279,6 +291,12 @@ def _evaluate(
     waiting_minutes = 0
     distance_meters = 0
     unverified_edges = 0
+    longest_leg_minutes = 0
+    long_wait_count = 0
+    cross_region_count = 0
+    repeated_category_count = 0
+    excess_leg_minutes = 0
+    excess_idle_minutes = 0
     violations: list[str] = []
 
     for place_id in route:
@@ -293,8 +311,24 @@ def _evaluate(
                 break
             current += max(0, edge.duration_minutes)
             travel_minutes += max(0, edge.duration_minutes)
+            longest_leg_minutes = max(longest_leg_minutes, max(0, edge.duration_minutes))
+            excess_leg_minutes += max(0, edge.duration_minutes - config.max_normal_leg_minutes)
             distance_meters += max(0, edge.distance_meters)
             unverified_edges += int(not edge.verified)
+            previous_candidate = candidates.get(previous_id)
+            if previous_candidate is not None:
+                if (
+                    previous_candidate.region
+                    and candidate.region
+                    and previous_candidate.region != candidate.region
+                ):
+                    cross_region_count += 1
+                if (
+                    previous_candidate.category
+                    and candidate.category
+                    and previous_candidate.category == candidate.category
+                ):
+                    repeated_category_count += 1
         arrival = current
         slot = next(
             (
@@ -311,7 +345,11 @@ def _evaluate(
             violations.append(f"time_window:{place_id}")
             break
         start, end = slot
-        waiting_minutes += max(0, start - arrival)
+        wait = max(0, start - arrival)
+        waiting_minutes += wait
+        if wait > config.max_idle_minutes:
+            long_wait_count += 1
+            excess_idle_minutes += wait - config.max_idle_minutes
         visits.append(ScheduledVisit(place_id=place_id, arrival=arrival, start=start, end=end))
         current = end
         previous_id = place_id
@@ -323,6 +361,8 @@ def _evaluate(
         else:
             current += max(0, edge.duration_minutes)
             travel_minutes += max(0, edge.duration_minutes)
+            longest_leg_minutes = max(longest_leg_minutes, max(0, edge.duration_minutes))
+            excess_leg_minutes += max(0, edge.duration_minutes - config.max_normal_leg_minutes)
             distance_meters += max(0, edge.distance_meters)
             unverified_edges += int(not edge.verified)
             if current > config.day_end:
@@ -336,6 +376,10 @@ def _evaluate(
         - distance_meters / 1000 * config.distance_km_penalty
         - unverified_edges * config.unverified_edge_penalty
         - waiting_minutes * config.waiting_minute_penalty
+        - excess_leg_minutes * config.excess_leg_minute_penalty
+        - excess_idle_minutes * config.long_idle_minute_penalty
+        - cross_region_count * config.cross_region_penalty
+        - repeated_category_count * config.repeated_category_penalty
         - uncertainty
     )
     return DaySolution(
@@ -346,6 +390,10 @@ def _evaluate(
         travel_minutes=travel_minutes,
         waiting_minutes=waiting_minutes,
         distance_meters=distance_meters,
+        longest_leg_minutes=longest_leg_minutes,
+        long_wait_count=long_wait_count,
+        cross_region_count=cross_region_count,
+        repeated_category_count=repeated_category_count,
         finish_minute=current if not violations else None,
         feasible=not violations,
         violations=tuple(violations),

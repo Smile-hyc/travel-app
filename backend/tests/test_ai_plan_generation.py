@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 import pytest
 
@@ -25,6 +26,17 @@ from app.services.ai_plan_job_manager import planning_event_fingerprint
 
 
 client = TestClient(app)
+
+
+def test_legacy_preferred_mode_is_merged_into_ai_optimization() -> None:
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.07.25",
+        dayCount=1,
+        optimizationMode="PREFERRED",
+    )
+
+    assert request.optimizationMode == "REQUIRED"
 
 
 def test_generate_plan_returns_structured_itinerary() -> None:
@@ -175,7 +187,7 @@ def test_generate_plan_falls_back_to_real_pois_when_ai_fails() -> None:
     assert all(day.places for day in result.days)
     assert not any(place.category in {"transport", "lodging"} for day in result.days for place in day.places)
     assert result.model is None
-    assert result.warnings and "已使用地点偏好与距离规则生成" in result.warnings[0]
+    assert not any("AI" in warning for warning in result.warnings)
     preferred_calls = ark.calls
 
     fast_result = asyncio.run(
@@ -192,17 +204,36 @@ def test_generate_plan_falls_back_to_real_pois_when_ai_fails() -> None:
     assert fast_result.model is None
     assert fast_result.quality.dataSources == ["AMAP"]
 
-    with pytest.raises(HTTPException, match="必须 AI 深度优化"):
-        asyncio.run(
-            service.generate(
-                AiPlanGenerationRequest(
-                    destination="北京",
-                    dateRange="07.16 - 07.17",
-                    dayCount=2,
-                    optimizationMode="REQUIRED",
-                ),
+    required_result = asyncio.run(
+        service.generate(
+            AiPlanGenerationRequest(
+                destination="北京",
+                dateRange="07.16 - 07.17",
+                dayCount=2,
+                optimizationMode="REQUIRED",
             ),
-        )
+        ),
+    )
+    assert required_result.days
+    assert required_result.quality.usedFallback is True
+
+    async def unexpected_ai_failure(*args, **kwargs) -> str:
+        raise RuntimeError("unexpected model adapter failure")
+
+    ark.chat = unexpected_ai_failure
+    unexpected_result = asyncio.run(
+        service.generate(
+            AiPlanGenerationRequest(
+                destination="北京",
+                dateRange="07.16 - 07.17",
+                dayCount=2,
+                optimizationMode="REQUIRED",
+            ),
+        ),
+    )
+    assert unexpected_result.days
+    assert unexpected_result.quality.usedFallback is True
+    assert not any("AI" in warning for warning in unexpected_result.warnings)
 
 
 def test_plan_job_reports_real_progress_and_is_idempotent() -> None:
@@ -559,7 +590,7 @@ def test_actual_route_duration_retimes_next_place_and_records_mode() -> None:
             None,
         ),
     )
-    assert routed[0].places[1].suggestedStart == "10:55"
+    assert routed[0].places[1].suggestedStart == "11:00"
     assert routed[0].transfers[0].mode == "transit"
     assert routed[0].transfers[0].modeLabel == "地铁 + 公交"
     assert routed[0].transfers[0].durationMinutes == 45
@@ -715,8 +746,156 @@ def test_model_ndjson_stream_emits_auditable_event_before_result() -> None:
     assert events[0].type == "MODEL_REASON"
     assert events[0].evidence == ["天气：雨"]
     assert events[0].decision == "保留博物馆"
-    assert "thinking_type" not in captured_options
-    assert captured_options["max_tokens"] == 2200
+    assert captured_options["thinking_enabled"] is False
+    assert captured_options["max_tokens"] == 1400
+
+
+def test_deep_mode_reviews_once_then_reuses_cached_assessment_for_patch_generation() -> None:
+    class TwoStageModel:
+        def __init__(self) -> None:
+            self.review_calls = 0
+            self.patch_prompts = []
+
+        async def chat(self, messages, **kwargs):
+            self.review_calls += 1
+            assert kwargs["max_tokens"] == 16000
+            assert kwargs["disable_read_timeout"] is True
+            assert kwargs["thinking_enabled"] is True
+            assert kwargs["reasoning_effort"] == "high"
+            assert kwargs["json_mode"] is True
+            return json.dumps(
+                {
+                    "strengths": ["经典地点已覆盖"],
+                    "problems": [
+                        {
+                            "dayIndex": 1,
+                            "type": "VARIETY",
+                            "message": "连续同类展馆，体验较单调",
+                            "evidence": ["上午和下午均为博物馆"],
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+        async def chat_stream(self, messages, *, on_delta, **kwargs):
+            self.patch_prompts.append(messages[-1]["content"])
+            result = '{"kind":"result","proposal":{"changes":[]}}\n'
+            on_delta(result)
+            return result
+
+    model = TwoStageModel()
+    service = TravelPlanGenerationService(model, object(), reveal_delay_seconds=0)
+    museum = _ai_review_place("museum", "scenic", "09:00", "11:00").model_copy(
+        update={"name": "城市博物馆", "districtName": "中心区"},
+    )
+    day = AiGeneratedDay(dayIndex=1, title="DAY 1", summary="", places=[museum])
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.07.25",
+        dayCount=1,
+        optimizationMode="REQUIRED",
+    )
+    candidate = service._generated_to_summary(museum)
+
+    first = asyncio.run(service._generate_with_ai(request, "北京市", [candidate], [day], None))
+    second = asyncio.run(service._generate_with_ai(request, "北京市", [candidate], [day], None))
+
+    assert first["changes"] == []
+    assert second["changes"] == []
+    assert model.review_calls == 1
+    assert all("连续同类展馆" in prompt for prompt in model.patch_prompts)
+
+
+def test_reasoning_review_failure_retries_with_compact_non_thinking_review() -> None:
+    class ReviewFallbackModel:
+        fallback_model_name = "deepseek-chat"
+        reasoning_max_output_tokens = 16000
+        reasoning_effort = "high"
+
+        def __init__(self) -> None:
+            self.review_options = []
+
+        async def chat(self, messages, **kwargs):
+            self.review_options.append(kwargs)
+            if kwargs["thinking_enabled"] is True:
+                raise HTTPException(status_code=502, detail="reasoning-only")
+            return json.dumps({"strengths": ["路线紧凑"], "problems": []}, ensure_ascii=False)
+
+        async def chat_stream(self, messages, *, on_delta, **kwargs):
+            result = '{"kind":"result","proposal":{"changes":[]}}\n'
+            on_delta(result)
+            return result
+
+    model = ReviewFallbackModel()
+    service = TravelPlanGenerationService(model, object(), reveal_delay_seconds=0)
+    place = _ai_review_place("museum", "scenic", "09:00", "11:00")
+    day = AiGeneratedDay(dayIndex=1, title="DAY 1", summary="", places=[place])
+
+    result = asyncio.run(
+        service._generate_with_ai(
+            AiPlanGenerationRequest(
+                destination="北京",
+                dateRange="2026.07.25",
+                dayCount=1,
+                optimizationMode="REQUIRED",
+            ),
+            "北京市",
+            [service._generated_to_summary(place)],
+            [day],
+            None,
+        ),
+    )
+
+    assert result["changes"] == []
+    assert len(model.review_options) == 2
+    assert model.review_options[0]["thinking_enabled"] is True
+    assert model.review_options[0]["reasoning_effort"] == "high"
+    assert model.review_options[1]["thinking_enabled"] is False
+    assert model.review_options[1]["model"] == "deepseek-chat"
+    assert model.review_options[1]["max_tokens"] == 1800
+
+
+def test_ai_candidate_context_excludes_unrelated_far_place() -> None:
+    class CapturingModel:
+        def __init__(self) -> None:
+            self.user_payload = None
+
+        async def chat_stream(self, messages, *, on_delta, **kwargs):
+            self.user_payload = json.loads(messages[-1]["content"])
+            result = '{"kind":"result","proposal":{"changes":[]}}\n'
+            on_delta(result)
+            return result
+
+    model = CapturingModel()
+    service = TravelPlanGenerationService(model, object(), reveal_delay_seconds=0)
+    planned = _ai_review_place("planned", "scenic", "09:00", "11:00").model_copy(
+        update={"districtName": "东城区", "latitude": 39.90, "longitude": 116.40},
+    )
+    nearby = PlaceSummary(
+        id="nearby", sourcePoiId="nearby", name="附近景点", category="scenic", categoryCode="scenic",
+        latitude=39.91, longitude=116.41, districtName="东城区",
+    )
+    far = PlaceSummary(
+        id="far", sourcePoiId="far", name="远处景点", category="scenic", categoryCode="scenic",
+        latitude=40.30, longitude=117.10, districtName="远郊区",
+    )
+    day = AiGeneratedDay(dayIndex=1, title="DAY 1", summary="", places=[planned])
+
+    asyncio.run(
+        service._generate_with_ai(
+            AiPlanGenerationRequest(
+                destination="北京", dateRange="2026.07.25", dayCount=1, optimizationMode="REQUIRED",
+            ),
+            "北京市",
+            [service._generated_to_summary(planned), nearby, far],
+            [day],
+            None,
+        ),
+    )
+
+    ids = {item["sourcePoiId"] for item in model.user_payload["candidatePlaces"]}
+    assert ids == {"planned", "nearby"}
 
 
 def test_model_patch_replaces_only_movable_candidate() -> None:
@@ -981,7 +1160,7 @@ def _ai_review_place(
     )
 
 
-def test_ai_review_rejects_plan_that_drops_required_meal_period() -> None:
+def test_ai_review_does_not_treat_draft_meals_as_hard_constraints() -> None:
     service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
     breakfast = _ai_review_place("早餐", "food", "08:00", "09:00", "BREAKFAST")
     scenic = _ai_review_place("景点", "scenic", "09:30", "11:30")
@@ -989,15 +1168,83 @@ def test_ai_review_rejects_plan_that_drops_required_meal_period() -> None:
     baseline = AiGeneratedDay(dayIndex=1, title="DAY 1", summary="规则草案", places=[breakfast, scenic, lunch])
     candidate = baseline.model_copy(update={"summary": "AI建议", "places": [breakfast, scenic]}, deep=True)
 
-    selected, accepted, notes = service._select_ai_optimized_days(
+    violations = service._ai_day_violations(
         AiPlanGenerationRequest(destination="北京", dateRange="07.22", dayCount=1, dailyStart="08:00"),
-        [baseline],
-        [candidate],
+        baseline,
+        candidate,
     )
 
-    assert accepted == 0
-    assert selected[0].summary == "规则草案"
-    assert "必要餐期" in notes[0]
+    assert not any("必要餐期" in violation for violation in violations)
+
+
+def test_preference_recall_includes_popular_and_matching_attraction_queries() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+
+    keywords = service._preference_recall_keywords(
+        "北京市",
+        ["经典必玩", "历史古建", "拍照出片"],
+        "晚上想看夜景",
+    )
+
+    assert "北京历史古迹" in keywords
+    assert "北京摄影夜景" in keywords
+
+
+def test_classic_preference_boosts_recognized_popular_attractions() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.10.01",
+        dayCount=1,
+        preferences=["经典必玩"],
+    )
+    landmark = PlaceSummary(
+        id="landmark",
+        sourcePoiId="landmark",
+        name="国家博物馆",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+        rating="4.8",
+        officialScenicGrade="5A",
+        experienceEvidenceCount=20,
+    )
+    generic = landmark.model_copy(
+        update={
+            "id": "generic",
+            "sourcePoiId": "generic",
+            "name": "普通游览点",
+            "rating": "4.1",
+            "officialScenicGrade": None,
+            "experienceEvidenceCount": 0,
+        },
+    )
+
+    assert service._preference_place_score(request, landmark) > service._preference_place_score(request, generic)
+
+
+def test_future_today_hours_can_be_used_only_as_unverified_hint() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(destination="北京", dateRange="2026.10.01", dayCount=1)
+    place = PlaceSummary(
+        id="hint",
+        sourcePoiId="hint",
+        name="开放时间待确认景点",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=39.9,
+        longitude=116.4,
+        openingHoursToday="10:00-20:00",
+    )
+
+    assert service._opening_windows_for_day(place, request, 1) == []
+    assert [(item.start, item.end) for item in service._opening_hint_windows_for_day(place, request, 1)] == [
+        (10 * 60, 20 * 60),
+    ]
+    generated = service._schedule_places(request, [place], 1)
+    assert generated[0].scheduleVerified is False
+    assert "尚未按出行日期确认" in generated[0].note
 
 
 def test_ai_review_accepts_safe_copywriting_improvement_without_reordering() -> None:
@@ -1612,6 +1859,70 @@ def test_famous_public_night_landmark_is_scheduled_in_evening() -> None:
     assert scheduled[0].suggestedStart == "17:30"
     assert scheduled[0].suggestedEnd == "19:00"
 
+
+def test_night_preference_reserves_evening_landmark_after_daytime_solver() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.07.23",
+        dayCount=1,
+        preferences=["经典必玩", "晚上看夜景"],
+        dailyStart="09:00",
+        dailyEnd="22:00",
+    )
+    daytime = [
+        PlaceSummary(
+            id=f"day-{index}",
+            sourcePoiId=f"day-{index}",
+            name=f"热门博物馆{index}",
+            category="scenic",
+            categoryCode="scenic",
+            typeName="博物馆",
+            latitude=39.90 + index * 0.001,
+            longitude=116.40 + index * 0.001,
+            rating="5.0",
+            openingHoursWeek="周一至周日 09:00-18:00",
+        )
+        for index in range(4)
+    ]
+    night = PlaceSummary(
+        id="night-landmark",
+        sourcePoiId="night-landmark",
+        name="南锣鼓巷",
+        category="scenic",
+        categoryCode="scenic",
+        typeName="风景名胜",
+        latitude=39.905,
+        longitude=116.405,
+        rating="4.2",
+    )
+    far_night = PlaceSummary(
+        id="far-night",
+        sourcePoiId="far-night",
+        name="远郊高分夜景广场",
+        category="scenic",
+        categoryCode="scenic",
+        typeName="城市夜景",
+        latitude=40.08,
+        longitude=116.62,
+        rating="5.0",
+    )
+
+    selected = service._select_time_window_scenic(
+        request,
+        [*daytime, far_night, night],
+        day_index=1,
+        target=3,
+        weather=None,
+        start_anchor=None,
+        end_anchor=None,
+    )
+
+    assert len(selected) == 3
+    assert "night-landmark" in {place.sourcePoiId for place in selected}
+    assert "far-night" not in {place.sourcePoiId for place in selected}
+
+
 def test_opening_parser_supports_all_day_and_cross_midnight_hours() -> None:
     service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
 
@@ -1827,6 +2138,35 @@ def test_road_matrix_preserves_night_visit_window() -> None:
     assert reordered[-1].suggestedStart >= "17:30"
 
 
+def test_actual_route_replay_preserves_confirmed_night_visit_window() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.07.23",
+        dayCount=1,
+        dailyStart="09:00",
+        dailyEnd="22:00",
+    )
+    night_place = _ai_review_place("tiantan", "scenic", "17:30", "19:00").model_copy(
+        update={
+            "name": "天坛公园",
+            "typeName": "公园广场",
+            "openingHoursWeek": "周一至周日 06:00-22:00 最晚进入21:00",
+        },
+    )
+
+    fitted = service._fit_place_after_route(
+        request,
+        night_place,
+        day_index=1,
+        earliest=15 * 60,
+    )
+
+    assert fitted is not None
+    assert fitted.suggestedStart == "17:30"
+    assert fitted.suggestedEnd == "19:00"
+
+
 def test_adverse_or_hot_weather_requests_indoor_candidate_recall() -> None:
     service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
 
@@ -1888,6 +2228,153 @@ def test_indoor_museum_branch_name_does_not_become_night_landmark_from_square_wo
     )
 
     assert service._night_experience_score(museum) < 24.0
+
+
+def test_plan_quality_reports_real_route_comfort_risks() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.07.23",
+        dayCount=1,
+        pace="BALANCED",
+        freeText="必去故宫",
+    )
+    first = _ai_review_place("forbidden", "scenic", "09:00", "11:00").model_copy(
+        update={"name": "故宫", "districtName": "东城区"},
+    )
+    second = _ai_review_place("summer", "scenic", "13:30", "15:30").model_copy(
+        update={"name": "颐和园", "districtName": "海淀区"},
+    )
+    day = AiGeneratedDay(
+        dayIndex=1,
+        title="DAY 1",
+        summary="",
+        places=[first, second],
+        transfers=[
+            AiGeneratedTransfer(
+                originPlaceId=first.id,
+                destinationPlaceId=second.id,
+                mode="transit",
+                distanceMeters=18000,
+                durationMinutes=70,
+            ),
+        ],
+    )
+
+    quality = service._evaluate_plan_quality(request, [day], False, ["AMAP"])
+
+    assert quality.totalCommuteMinutes == 70
+    assert quality.longestLegMinutes == 70
+    assert quality.crossRegionTransferCount == 1
+    assert quality.longIdleGapCount == 1
+    assert quality.requiredPlaceCoverage == 1.0
+    assert quality.comfortScore < 100
+
+
+def test_beijing_first_visit_landmarks_outrank_generic_high_rated_scenic() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="北京",
+        dateRange="2026.07.26",
+        dayCount=1,
+        pace="BALANCED",
+    )
+    palace = PlaceSummary(
+        id="palace", sourcePoiId="palace", name="故宫博物院", category="scenic", categoryCode="scenic",
+        latitude=39.916, longitude=116.397, rating="4.7", openingHoursWeek="周二至周日 08:30-17:00",
+    )
+    square = PlaceSummary(
+        id="square", sourcePoiId="square", name="天安门广场", category="scenic", categoryCode="scenic",
+        latitude=39.904, longitude=116.397, rating="4.6", openingHoursWeek="周一至周日 05:00-22:00",
+    )
+    generic = PlaceSummary(
+        id="generic", sourcePoiId="generic", name="城市文化体验园", category="scenic", categoryCode="scenic",
+        latitude=39.908, longitude=116.402, rating="5.0", openingHoursWeek="周一至周日 09:00-20:00",
+    )
+
+    selected = service._select_time_window_scenic(
+        request,
+        [generic, square, palace],
+        day_index=1,
+        target=2,
+        weather=None,
+        start_anchor=None,
+        end_anchor=None,
+    )
+
+    assert {place.sourcePoiId for place in selected} == {"palace", "square"}
+    assert service._is_first_visit_core_landmark(palace) is True
+    assert service._is_first_visit_core_landmark(square) is True
+    assert service._should_protect_core_landmark(request, palace) is True
+    assert service._should_protect_core_landmark(request, square) is True
+
+    monday_request = request.model_copy(update={"dateRange": "2026.07.27"})
+    monday_selected = service._select_time_window_scenic(
+        monday_request,
+        [generic, square, palace],
+        day_index=1,
+        target=2,
+        weather=None,
+        start_anchor=None,
+        end_anchor=None,
+    )
+    assert "palace" not in {place.sourcePoiId for place in monday_selected}
+    assert "square" in {place.sourcePoiId for place in monday_selected}
+
+
+def test_low_crowd_preference_overrides_default_landmark_protection() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    square = PlaceSummary(
+        id="square", sourcePoiId="square", name="天安门广场", category="scenic", categoryCode="scenic",
+        latitude=39.904, longitude=116.397, rating="4.8", crowdRisk=0.9,
+        openingHoursWeek="周一至周日 05:00-22:00",
+    )
+    palace = PlaceSummary(
+        id="palace", sourcePoiId="palace", name="故宫博物院", category="scenic", categoryCode="scenic",
+        latitude=39.916, longitude=116.397, rating="4.8", crowdRisk=0.9,
+        openingHoursWeek="周二至周日 08:30-17:00",
+    )
+    quiet_place = PlaceSummary(
+        id="quiet", sourcePoiId="quiet", name="史家胡同社区旧址", category="scenic", categoryCode="scenic",
+        latitude=39.914, longitude=116.416, rating="4.4", crowdRisk=0.1,
+        openingHoursWeek="周一至周日 09:00-18:00",
+    )
+    niche_request = AiPlanGenerationRequest(
+        destination="北京", dateRange="2026.07.28", dayCount=1, preferences=["小众探索"],
+    )
+
+    assert service._should_protect_core_landmark(niche_request, square) is False
+    assert (
+        service._candidate_score(niche_request, quiet_place, None, None).total
+        > service._candidate_score(niche_request, square, None, None).total
+    )
+
+    mixed_request = niche_request.model_copy(update={"preferences": ["经典必玩", "小众探索"]})
+    assert service._should_protect_core_landmark(mixed_request, palace) is True
+    assert service._should_protect_core_landmark(mixed_request, square) is False
+
+    explicit_request = niche_request.model_copy(
+        update={"freeText": "天安门必去，其他地点希望偏冷门人少"},
+    )
+    assert service._should_protect_core_landmark(explicit_request, square) is True
+
+
+def test_tiananmen_complex_is_deduped_and_keeps_canonical_square() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    tower = PlaceSummary(
+        id="tower", sourcePoiId="tower", name="天安门城楼", category="scenic", categoryCode="scenic",
+        latitude=39.9087, longitude=116.3975, rating="4.8",
+    )
+    square = PlaceSummary(
+        id="square", sourcePoiId="square", name="天安门广场", category="scenic", categoryCode="scenic",
+        latitude=39.9033, longitude=116.3976, rating="4.7",
+        imageUrls=["https://img.example/square.jpg"],
+    )
+
+    deduped = service._dedupe_candidates([tower, square])
+
+    assert [place.name for place in deduped] == ["天安门广场"]
+
 
 def test_nearby_meal_recall_prefers_local_keyword_then_falls_back() -> None:
     class FakePoiService:

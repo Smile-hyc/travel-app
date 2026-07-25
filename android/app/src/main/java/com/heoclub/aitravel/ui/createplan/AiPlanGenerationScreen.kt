@@ -208,6 +208,10 @@ fun AiPlanGenerationScreen(
 
                 is AiPlanGenerationUiState.Error -> ErrorPlanContent(
                     message = state.message,
+                    completedDays = state.completedDays,
+                    totalDays = state.totalDays,
+                    partialDays = state.partialDays,
+                    onUseDraft = viewModel::useCurrentDraftWithoutAi,
                     onRetry = viewModel::retry,
                     onBack = onBack,
                 )
@@ -282,8 +286,7 @@ private fun LoadingPlanContent(
     } else {
         listOfNotNull(selectedDay ?: fallbackDay)
     }
-    val waitingForAi = (progress == 74 && completedDays >= totalDays) ||
-        stage.contains("等待 AI") || stage.contains("AI 深度优化")
+    val waitingForAi = isAiPlanningStage(stage, progress, completedDays, totalDays)
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp)) {
         Text("正在规划行程", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
@@ -545,8 +548,8 @@ private fun PlanningTimeline(
                 ) {
                     if (eventPlace != null) {
                         PlaceCoverImage(
-                            imageUrl = eventPlace.thumbnailUrl?.takeIf(String::isNotBlank)
-                                ?: eventPlace.imageUrls.firstOrNull { it.isNotBlank() },
+                            imageUrl = eventPlace.thumbnailUrl?.takeIf(String::isNotBlank),
+                            fallbackImageUrls = eventPlace.imageUrls,
                             placeName = eventPlace.name,
                             category = eventPlace.category,
                             modifier = Modifier.size(44.dp),
@@ -665,6 +668,34 @@ private fun ReadyPlanContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF2F6657),
                         )
+                        Text(
+                            "舒适度 ${state.result.quality.comfortScore} · " +
+                                "总通勤 ${state.result.quality.totalCommuteMinutes} 分钟 · " +
+                                "最长单段 ${state.result.quality.longestLegMinutes} 分钟",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF2F6657),
+                        )
+                        val routeRisks = buildList {
+                            if (state.result.quality.crossRegionTransferCount > 0) {
+                                add("跨区 ${state.result.quality.crossRegionTransferCount} 次")
+                            }
+                            if (state.result.quality.backtrackingLegCount > 0) {
+                                add("疑似折返 ${state.result.quality.backtrackingLegCount} 处")
+                            }
+                            if (state.result.quality.longIdleGapCount > 0) {
+                                add("长空档 ${state.result.quality.longIdleGapCount} 处")
+                            }
+                            if (state.result.quality.estimatedWalkingKm > 0) {
+                                add("路线步行约 ${state.result.quality.estimatedWalkingKm} km")
+                            }
+                        }
+                        if (routeRisks.isNotEmpty()) {
+                            Text(
+                                routeRisks.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF47766A),
+                            )
+                        }
                     }
                 }
             }
@@ -725,6 +756,23 @@ private fun planningStageText(
         completedDays >= totalDays -> "正在保存完整行程"
         else -> "正在完善行程安排"
     }
+}
+
+internal fun isAiPlanningStage(
+    stage: String,
+    progress: Int,
+    completedDays: Int,
+    totalDays: Int,
+): Boolean {
+    if (totalDays > 0 && completedDays >= totalDays && progress in 74..89) return true
+    return listOf(
+        "智能规划",
+        "等待 AI",
+        "AI 优化",
+        "AI 审阅",
+        "AI 调整",
+        "深度优化",
+    ).any(stage::contains)
 }
 
 internal fun planningFeatureText(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
@@ -803,7 +851,8 @@ private fun GeneratedPlaceCard(
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
             PlaceCoverImage(
-                imageUrl = place.thumbnailUrl,
+                imageUrl = place.thumbnailUrl?.takeIf(String::isNotBlank),
+                fallbackImageUrls = place.imageUrls,
                 placeName = place.name,
                 category = place.category,
                 modifier = Modifier.size(78.dp),
@@ -868,7 +917,16 @@ private fun GeneratedPlaceCard(
 }
 
 @Composable
-private fun ErrorPlanContent(message: String, onRetry: () -> Unit, onBack: () -> Unit) {
+private fun ErrorPlanContent(
+    message: String,
+    completedDays: Int,
+    totalDays: Int,
+    partialDays: List<com.heoclub.aitravel.data.model.AiGeneratedDay>,
+    onUseDraft: () -> Boolean,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val canUseDraft = partialDays.any { it.places.isNotEmpty() } && completedDays >= totalDays && totalDays > 0
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -884,9 +942,28 @@ private fun ErrorPlanContent(message: String, onRetry: () -> Unit, onBack: () ->
             modifier = Modifier.padding(top = 10.dp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
-            Icon(Icons.Outlined.Refresh, contentDescription = null)
-            Text("重新规划", modifier = Modifier.padding(start = 8.dp))
+        if (canUseDraft) {
+            Button(
+                onClick = { onUseDraft() },
+                modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Outlined.CheckCircle, contentDescription = null)
+                Text("使用已生成草案", modifier = Modifier.padding(start = 8.dp))
+            }
+            OutlinedButton(
+                onClick = onRetry,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Text("重新尝试智能规划", modifier = Modifier.padding(start = 8.dp))
+            }
+        } else {
+            Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Text("重新规划", modifier = Modifier.padding(start = 8.dp))
+            }
         }
         OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
             Text("返回修改")
