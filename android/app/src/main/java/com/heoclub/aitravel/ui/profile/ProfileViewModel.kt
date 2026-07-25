@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import retrofit2.HttpException
+import java.io.IOException
 
 data class ProfileUiState(
     val isLoggedIn: Boolean = false,
@@ -126,7 +128,7 @@ class ProfileViewModel(
                 }
             }.onFailure { e ->
                 _uiState.update {
-                    it.copy(isLoading = false, errorMessage = e.message ?: "登录失败")
+                    it.copy(isLoading = false, errorMessage = authErrorMessage(e, "登录失败，请稍后重试"))
                 }
             }
         }
@@ -183,7 +185,7 @@ class ProfileViewModel(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = e.message ?: "注册失败",
+                        errorMessage = authErrorMessage(e, "注册失败，请稍后重试"),
                         captchaText = "",
                     )
                 }
@@ -266,6 +268,26 @@ class ProfileViewModel(
             }
         }
         return e.message ?: "未知错误"
+    }
+
+    private fun authErrorMessage(error: Throwable, fallback: String): String {
+        if (error is HttpException) {
+            val detail = runCatching {
+                val body = error.response()?.errorBody()?.string().orEmpty()
+                JSONObject(body).optString("detail").takeIf { it.isNotBlank() }
+            }.getOrNull()
+            if (detail != null) return detail
+
+            return when (error.code()) {
+                400 -> "提交的信息有误，请检查后重试"
+                401 -> "手机号或密码错误"
+                408, 504 -> "请求超时，请稍后重试"
+                in 500..599 -> "服务器暂时不可用，请稍后重试"
+                else -> fallback
+            }
+        }
+        if (error is IOException) return "无法连接后端服务，请检查网络后重试"
+        return fallback
     }
 
     class Factory(

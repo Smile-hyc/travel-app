@@ -20,11 +20,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -34,18 +37,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.heoclub.aitravel.R
 import com.heoclub.aitravel.data.repository.AuthRepository
 import com.heoclub.aitravel.data.repository.HealthRepository
 import com.heoclub.aitravel.ui.home.HomeUiState
@@ -64,6 +73,7 @@ fun AuthScreen(
         factory = ProfileViewModel.Factory(authRepository, healthRepository),
     )
     val state by viewModel.uiState.collectAsState()
+    var passwordVisible by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.isLoggedIn) {
         if (state.isLoggedIn) {
@@ -87,14 +97,27 @@ fun AuthScreen(
             Spacer(modifier = Modifier.height(40.dp))
 
             // ── Header ──
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.tuling_logo),
+                    contentDescription = "途灵 Logo",
+                    modifier = Modifier
+                        .size(68.dp)
+                        .clip(RoundedCornerShape(18.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                Text(
+                    text = "Touring",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Text(
-                text = "AI Travel",
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                text = "智能旅行助手",
+                text = "途灵——智能旅行助手",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -157,6 +180,7 @@ fun AuthScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !state.isLoading,
+                        shape = RoundedCornerShape(14.dp),
                     )
 
                     // Password
@@ -165,9 +189,26 @@ fun AuthScreen(
                         onValueChange = viewModel::onPasswordChanged,
                         label = { Text("密码") },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passwordVisible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                Icon(
+                                    imageVector = if (passwordVisible) {
+                                        Icons.Outlined.VisibilityOff
+                                    } else {
+                                        Icons.Outlined.Visibility
+                                    },
+                                    contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                                )
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !state.isLoading,
+                        shape = RoundedCornerShape(14.dp),
                     )
 
                     // Register-only fields
@@ -179,6 +220,7 @@ fun AuthScreen(
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !state.isLoading,
+                            shape = RoundedCornerShape(14.dp),
                         )
 
                         // Captcha
@@ -194,6 +236,7 @@ fun AuthScreen(
                                 singleLine = true,
                                 modifier = Modifier.weight(1f),
                                 enabled = !state.isLoading,
+                                shape = RoundedCornerShape(14.dp),
                             )
                             if (state.captchaImageBase64 != null) {
                                 val bytes = Base64.decode(state.captchaImageBase64, Base64.DEFAULT)
