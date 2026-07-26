@@ -334,6 +334,15 @@ AMAP_ANDROID_KEY=你的高德 Android 平台 Key
 
 `android/local.properties` 已被 `.gitignore` 忽略，不要提交。
 
+该 Key 必须在高德开放平台创建为 **Android 平台 Key**，并绑定：
+
+- 包名：`com.heoclub.aitravel`
+- 当前构建签名的 SHA-1（Debug 可用 `cd android; .\gradlew signingReport` 查询）
+
+`AMAP_WEB_SERVICE_KEY` 属于 Web 服务，不能用于 Android 地图或定位 SDK。打包、安装任务会在
+`AMAP_ANDROID_KEY` 缺失时直接失败，避免生成运行后必然提示 Key 错误的 APK。也可以通过
+Gradle 参数 `-PAMAP_ANDROID_KEY=...` 或同名环境变量临时提供该值。
+
 ## 启动后端
 
 首次安装：

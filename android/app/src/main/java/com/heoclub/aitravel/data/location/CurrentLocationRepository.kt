@@ -42,6 +42,12 @@ class CurrentLocationRepository(context: Context) {
             reportPermissionDenied()
             return
         }
+        if (!hasAmapAndroidKey()) {
+            finishWithError(
+                "未配置高德 Android Key，请在 android/local.properties 中设置 AMAP_ANDROID_KEY",
+            )
+            return
+        }
         if (_state.value.isLocating) return
 
         _state.value = _state.value.copy(isLocating = true, errorMessage = null)
@@ -90,10 +96,11 @@ class CurrentLocationRepository(context: Context) {
         if (location.errorCode != AMapLocation.LOCATION_SUCCESS) {
             val detail = location.errorInfo.orEmpty().trim()
             finishWithError(
-                if (detail.isBlank()) {
-                    "定位失败（${location.errorCode}）"
-                } else {
-                    "定位失败：$detail"
+                when {
+                    location.errorCode == AMAP_KEY_ERROR_CODE ->
+                        "定位失败：高德 Android Key 校验失败，请检查包名和签名 SHA-1 绑定"
+                    detail.isBlank() -> "定位失败（${location.errorCode}）"
+                    else -> "定位失败：$detail"
                 },
             )
             return
@@ -141,5 +148,23 @@ class CurrentLocationRepository(context: Context) {
                 applicationContext,
                 Manifest.permission.ACCESS_COARSE_LOCATION,
             ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasAmapAndroidKey(): Boolean {
+        val applicationInfo = runCatching {
+            applicationContext.packageManager.getApplicationInfo(
+                applicationContext.packageName,
+                PackageManager.GET_META_DATA,
+            )
+        }.getOrNull()
+        return applicationInfo?.metaData
+            ?.getString(AMAP_KEY_METADATA_NAME)
+            .orEmpty()
+            .isNotBlank()
+    }
+
+    private companion object {
+        const val AMAP_KEY_METADATA_NAME = "com.amap.api.v2.apikey"
+        const val AMAP_KEY_ERROR_CODE = 7
     }
 }

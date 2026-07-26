@@ -23,6 +23,7 @@ fun localConfigValue(key: String, fallback: String = ""): String {
     return localProperties.getProperty(key)
         ?: backendEnvProperties.getProperty(key)
         ?: providers.gradleProperty(key).orNull
+        ?: providers.environmentVariable(key).orNull
         ?: fallback
 }
 
@@ -92,6 +93,32 @@ android {
 
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
+    }
+}
+
+val validateAmapAndroidKey by tasks.registering {
+    group = "verification"
+    description = "Checks that an AMap Android SDK key is configured before packaging the app."
+
+    doLast {
+        check(amapAndroidKey.isNotBlank()) {
+            "AMAP_ANDROID_KEY is missing. Add the Android-platform key to " +
+                "android/local.properties (do not use AMAP_WEB_SERVICE_KEY). " +
+                "The key must be bound to package com.heoclub.aitravel and this build's signing SHA-1."
+        }
+    }
+}
+
+tasks.configureEach {
+    val packagesApp = name.startsWith("package", ignoreCase = true) &&
+        !name.endsWith("Resources", ignoreCase = true) &&
+        !name.endsWith("Assets", ignoreCase = true)
+    if (name.startsWith("assemble", ignoreCase = true) ||
+        name.startsWith("bundle", ignoreCase = true) ||
+        packagesApp ||
+        name.startsWith("install", ignoreCase = true)
+    ) {
+        dependsOn(validateAmapAndroidKey)
     }
 }
 
