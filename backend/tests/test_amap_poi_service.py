@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+from fastapi import HTTPException
+
 from app.services.amap_poi_service import AmapPoiService
 
 
@@ -348,3 +351,73 @@ def test_nearby_search_forwards_local_food_keyword() -> None:
     )
 
     assert result == []
+
+
+def test_comprehensive_search_omits_types_and_infers_category() -> None:
+    """选着「景点」搜火锅店时走综合搜索：不限制 types，分类由 typecode 反推。"""
+
+    captured: dict = {}
+
+    class ComprehensiveClient:
+        async def get(self, path, params):
+            captured["path"] = path
+            captured["params"] = params
+            return {
+                "count": "2",
+                "pois": [
+                    {
+                        "id": "food-1",
+                        "name": "海底捞火锅",
+                        "type": "餐饮服务;中餐厅;火锅店",
+                        "typecode": "050117",
+                        "location": "117.20,39.13",
+                        "adcode": "120101",
+                        "cityname": "天津市",
+                    },
+                    {
+                        "id": "hotel-1",
+                        "name": "海底捞旁边的酒店",
+                        "type": "住宿服务;宾馆酒店;宾馆酒店",
+                        "typecode": "100100",
+                        "location": "117.21,39.14",
+                        "adcode": "120101",
+                        "cityname": "天津市",
+                    },
+                ],
+            }
+
+    result = asyncio.run(
+        AmapPoiService(ComprehensiveClient()).search_pois(
+            keyword="海底捞",
+            adcode="120000",
+            category="all",
+            page=1,
+            page_size=20,
+            city_limit=True,
+        ),
+    )
+
+    assert captured["path"] == "/v5/place/text"
+    assert "types" not in captured["params"]
+    assert [item.category for item in result.items] == ["food", "lodging"]
+    assert [item.categoryCode for item in result.items] == ["food", "lodging"]
+
+
+def test_comprehensive_search_requires_keyword() -> None:
+    class UnusedClient:
+        async def get(self, path, params):  # pragma: no cover - 不应该被调用
+            raise AssertionError("综合搜索缺少关键字时不应该请求高德")
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            AmapPoiService(UnusedClient()).search_pois(
+                keyword="   ",
+                adcode="120000",
+                category="all",
+                page=1,
+                page_size=20,
+                city_limit=True,
+            ),
+        )
+
+    assert excinfo.value.status_code == 422

@@ -390,6 +390,11 @@ fun AiTravelNavHost() {
                     onLocate = requestCurrentLocation,
                     onCreatePlan = { navController.navigate(Routes.createPlan) },
                     onOpenPlan = { planId -> navController.navigate(Routes.planDetail(planId)) },
+                    onOpenPlanItem = { item ->
+                        val place = item.toPlaceSummary()
+                        application.container.exploreRepository.upsertPlace(place)
+                        navController.navigate(Routes.placeDetail(place.id))
+                    },
                     onAskAi = { question, planId ->
                         navController.navigate(Routes.assistant(question = question, planId = planId))
                     },
@@ -397,7 +402,10 @@ fun AiTravelNavHost() {
             }
             composable(AppDestination.Explore.route) {
                 val exploreViewModel: ExploreViewModel = viewModel(
-                    factory = ExploreViewModel.Factory(application.container.exploreRepository),
+                    factory = ExploreViewModel.Factory(
+                        exploreRepository = application.container.exploreRepository,
+                        searchHistoryStore = application.container.placeSearchHistoryStore,
+                    ),
                 )
                 DiscoverScreen(
                     viewModel = exploreViewModel,

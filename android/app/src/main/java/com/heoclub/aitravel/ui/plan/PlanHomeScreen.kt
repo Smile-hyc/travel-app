@@ -1,6 +1,5 @@
 package com.heoclub.aitravel.ui.plan
 
-import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -43,7 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import com.heoclub.aitravel.R
 import com.heoclub.aitravel.data.location.CurrentLocationUiState
+import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.TravelPlan
 import com.heoclub.aitravel.data.model.findPlanForDate
 import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
@@ -65,12 +64,13 @@ fun PlanHomeScreen(
     onLocate: () -> Unit,
     onCreatePlan: () -> Unit,
     onOpenPlan: (String) -> Unit,
+    onOpenPlanItem: (PlanItem) -> Unit,
     onAskAi: (String, String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val plans by viewModel.plans.collectAsState()
-    val context = LocalContext.current
     var planPendingDeletion by remember { mutableStateOf<TravelPlan?>(null) }
+    var searchVisible by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier
@@ -82,9 +82,7 @@ fun PlanHomeScreen(
         item {
             Spacer(modifier = Modifier.height(12.dp))
             PlanHeader(
-                onSearch = {
-                    Toast.makeText(context, "搜索功能后续接入", Toast.LENGTH_SHORT).show()
-                },
+                onSearch = { searchVisible = true },
                 onCreatePlan = onCreatePlan,
             )
         }
@@ -113,6 +111,21 @@ fun PlanHomeScreen(
         item {
             Spacer(modifier = Modifier.height(92.dp))
         }
+    }
+
+    if (searchVisible) {
+        PlanSearchScreen(
+            plans = plans,
+            onOpenPlan = { planId ->
+                searchVisible = false
+                onOpenPlan(planId)
+            },
+            onOpenPlanItem = { item ->
+                searchVisible = false
+                onOpenPlanItem(item)
+            },
+            onDismiss = { searchVisible = false },
+        )
     }
 
     planPendingDeletion?.let { plan ->

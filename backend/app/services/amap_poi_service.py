@@ -13,7 +13,7 @@ from app.schemas.explore import (
     PlaceSummary,
     ReverseGeocodePoint,
 )
-from app.services.amap_categories import get_amap_category
+from app.services.amap_categories import get_amap_category, infer_category
 from app.services.amap_client import AmapClient
 from app.services.simple_cache import TtlCache
 
@@ -413,6 +413,8 @@ class AmapPoiService:
         page_size = min(max(page_size, 1), MAX_PAGE_SIZE)
         clean_keyword = (keyword or "").strip()[:MAX_KEYWORD_LENGTH]
         effective_keyword = clean_keyword or category_mapping.keyword
+        if not effective_keyword:
+            raise HTTPException(status_code=422, detail="综合搜索需要提供关键字。")
         normalized_adcode = _normalize_amap_city_adcode(adcode)
         cache_key = ("search", effective_keyword, normalized_adcode, category, page, page_size, city_limit)
         cached = self._places_cache.get(cache_key)
@@ -421,37 +423,50 @@ class AmapPoiService:
 
         params: dict[str, Any] = {
             "keywords": effective_keyword,
-            "types": category_mapping.type_codes,
             "region": normalized_adcode,
             "city_limit": str(city_limit).lower(),
             "page_size": min(page_size, 25),
             "page_num": page,
             "show_fields": "business,photos",
         }
+        # 综合搜索没有 type_codes，省略 types 让高德按关键字自由命中。
+        if category_mapping.type_codes:
+            params["types"] = category_mapping.type_codes
         try:
             payload = await self._client.get("/v5/place/text", params)
         except HTTPException:
             # POI 2.0 may be unavailable for some Web service keys. Keep the
             # existing v3 path as a graceful fallback; opening hours will then
             # be marked as unverified instead of invented.
-            payload = await self._client.get(
-                "/v3/place/text",
-                {
-                    "keywords": effective_keyword,
-                    "types": category_mapping.type_codes,
-                    "city": normalized_adcode,
-                    "citylimit": str(city_limit).lower(),
-                    "offset": page_size,
-                    "page": page,
-                    "extensions": "all",
-                },
-            )
+            fallback_params: dict[str, Any] = {
+                "keywords": effective_keyword,
+                "city": normalized_adcode,
+                "citylimit": str(city_limit).lower(),
+                "offset": page_size,
+                "page": page,
+                "extensions": "all",
+            }
+            if category_mapping.type_codes:
+                fallback_params["types"] = category_mapping.type_codes
+            payload = await self._client.get("/v3/place/text", fallback_params)
         total = _safe_int(payload.get("count"))
-        items = [
-            _parse_place(item, category=category, category_code=category_mapping.code)
-            for item in payload.get("pois", [])
-            if isinstance(item, dict)
-        ]
+        comprehensive = not category_mapping.type_codes
+        items = []
+        for item in payload.get("pois", []):
+            if not isinstance(item, dict):
+                continue
+            resolved = (
+                infer_category(_clean_string(item.get("typecode")))
+                if comprehensive
+                else category
+            )
+            items.append(
+                _parse_place(
+                    item,
+                    category=resolved,
+                    category_code=resolved if comprehensive else category_mapping.code,
+                ),
+            )
         response = PaginatedPlaces(
             items=items,
             page=page,

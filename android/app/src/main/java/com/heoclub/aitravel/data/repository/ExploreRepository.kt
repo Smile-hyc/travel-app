@@ -41,6 +41,19 @@ interface ExploreRepository {
         append: Boolean = false,
     ): PaginatedPlaces
 
+    /**
+     * 关键字搜索，但不改动 [places]。搜索结果先留在调用方手里，
+     * 等用户真的选中之后再通过 [upsertPlaces] 发布到地图和推荐面板。
+     */
+    suspend fun queryPlaces(
+        adcode: String,
+        keyword: String,
+        category: String = ExploreCategories.ALL,
+        page: Int = 1,
+        pageSize: Int = 20,
+        cityLimit: Boolean = true,
+    ): PaginatedPlaces
+
     suspend fun getInputTips(
         keyword: String,
         adcode: String? = null,
@@ -59,6 +72,9 @@ interface ExploreRepository {
     suspend fun getCityWeather(adcode: String): ExploreWeather
 
     fun upsertPlace(place: PlaceSummary)
+
+    /** 把一批搜索结果发布到 [places]，第一个元素排在最前面。 */
+    fun upsertPlaces(places: List<PlaceSummary>)
     fun getPlace(placeId: String): PlaceSummary?
     fun getPlaceDetail(placeId: String): PlaceDetail?
     suspend fun refreshPlaceDetail(placeId: String): PlaceDetail?
@@ -102,6 +118,24 @@ class RemoteExploreRepository(
             mappableItems
         }
         return result
+    }
+
+    override suspend fun queryPlaces(
+        adcode: String,
+        keyword: String,
+        category: String,
+        page: Int,
+        pageSize: Int,
+        cityLimit: Boolean,
+    ): PaginatedPlaces {
+        return apiService.searchPois(
+            adcode = adcode,
+            category = category,
+            keyword = keyword.trim().takeIf { it.isNotBlank() },
+            page = page,
+            pageSize = pageSize,
+            cityLimit = cityLimit,
+        )
     }
 
     override suspend fun getInputTips(
@@ -154,6 +188,14 @@ class RemoteExploreRepository(
     override fun upsertPlace(place: PlaceSummary) {
         _places.update { current ->
             listOf(place) + current.filterNot { it.id == place.id }
+        }
+    }
+
+    override fun upsertPlaces(places: List<PlaceSummary>) {
+        if (places.isEmpty()) return
+        val incomingIds = places.mapTo(mutableSetOf()) { it.id }
+        _places.update { current ->
+            (places + current.filterNot { it.id in incomingIds }).distinctBy { it.id }
         }
     }
 
@@ -274,6 +316,24 @@ class MockExploreRepository : ExploreRepository {
         )
     }
 
+    override suspend fun queryPlaces(
+        adcode: String,
+        keyword: String,
+        category: String,
+        page: Int,
+        pageSize: Int,
+        cityLimit: Boolean,
+    ): PaginatedPlaces {
+        val matched = initialPlaces.filter { it.name.contains(keyword.trim(), ignoreCase = true) }
+        return PaginatedPlaces(
+            items = matched,
+            page = 1,
+            pageSize = matched.size,
+            total = matched.size,
+            hasMore = false,
+        )
+    }
+
     override suspend fun getInputTips(
         keyword: String,
         adcode: String?,
@@ -312,6 +372,14 @@ class MockExploreRepository : ExploreRepository {
 
     override fun upsertPlace(place: PlaceSummary) {
         _places.update { current -> listOf(place) + current.filterNot { it.id == place.id } }
+    }
+
+    override fun upsertPlaces(places: List<PlaceSummary>) {
+        if (places.isEmpty()) return
+        val incomingIds = places.mapTo(mutableSetOf()) { it.id }
+        _places.update { current ->
+            (places + current.filterNot { it.id in incomingIds }).distinctBy { it.id }
+        }
     }
 
     override fun getPlace(placeId: String): PlaceSummary? {

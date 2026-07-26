@@ -1,6 +1,7 @@
 package com.heoclub.aitravel.di
 
 import android.content.Context
+import com.heoclub.aitravel.data.local.SearchHistoryStore
 import com.heoclub.aitravel.data.local.TokenStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +45,7 @@ class AppContainer(
         scope = CoroutineScope(Dispatchers.IO),
     )
     val aiConversationHistoryStore = AiConversationHistoryStore(context)
+    val placeSearchHistoryStore = SearchHistoryStore(context, "explore_place_search_history")
     val footprintRepository = FootprintRepository(apiService)
     val journalRepository = JournalRepository(apiService)
     val exploreRepository: ExploreRepository = RemoteExploreRepository(apiService)
