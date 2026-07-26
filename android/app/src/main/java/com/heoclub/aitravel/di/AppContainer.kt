@@ -16,6 +16,7 @@ import com.heoclub.aitravel.data.repository.HealthRepository
 import com.heoclub.aitravel.data.repository.CloudTravelPlanRepository
 import com.heoclub.aitravel.data.repository.FootprintRepository
 import com.heoclub.aitravel.data.repository.JournalRepository
+import com.heoclub.aitravel.data.repository.JournalPhotoStore
 import com.heoclub.aitravel.data.repository.RemoteAiRepository
 import com.heoclub.aitravel.data.repository.RemoteExploreRepository
 import com.heoclub.aitravel.data.repository.RemoteRouteRepository
@@ -48,6 +49,7 @@ class AppContainer(
     val placeSearchHistoryStore = SearchHistoryStore(context, "explore_place_search_history")
     val footprintRepository = FootprintRepository(apiService)
     val journalRepository = JournalRepository(apiService)
+    val journalPhotoStore = JournalPhotoStore(context)
     val exploreRepository: ExploreRepository = RemoteExploreRepository(apiService)
     val routeRepository: RouteRepository = RemoteRouteRepository(apiService)
     val aiRepository: AiRepository = RemoteAiRepository(

@@ -174,7 +174,10 @@ class ExploreViewModel(
 
     fun useCurrentLocation(location: CurrentLocation) {
         val previousCity = _uiState.value.selectedCity
-        val resolvedAdCode = location.adCode.ifBlank { previousCity.adCode }
+        val resolvedAdCode = location.adCode
+            .takeIf { it.isNotBlank() }
+            ?.let(::normalizeSearchCityAdCode)
+            ?: previousCity.adCode
         val locatedCity = ExploreCity(
             id = "located-${resolvedAdCode.ifBlank { location.cityName }}",
             name = location.cityName,
@@ -682,5 +685,24 @@ class ExploreViewModel(
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }
+    }
+}
+
+internal fun normalizeSearchCityAdCode(adCode: String): String {
+    val normalized = adCode.trim()
+    if (normalized.length != 6 || normalized.any { !it.isDigit() }) return normalized
+    if (normalized.endsWith("00")) {
+        return when (normalized) {
+            "110100" -> "110000"
+            "120100" -> "120000"
+            "310100" -> "310000"
+            "500100" -> "500000"
+            else -> normalized
+        }
+    }
+    return if (normalized.take(2) in setOf("11", "12", "31", "50")) {
+        normalized.take(2) + "0000"
+    } else {
+        normalized.take(4) + "00"
     }
 }

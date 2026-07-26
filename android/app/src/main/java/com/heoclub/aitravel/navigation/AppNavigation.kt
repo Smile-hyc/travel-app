@@ -47,6 +47,7 @@ import com.heoclub.aitravel.data.repository.CloudTravelPlanRepository
 import kotlinx.coroutines.launch
 import com.heoclub.aitravel.data.repository.toJournalEntry
 import com.heoclub.aitravel.data.repository.toCreateRequest
+import com.heoclub.aitravel.data.repository.toUpdateRequest
 import com.heoclub.aitravel.ui.components.AddPlaceToPlanDialog
 import com.heoclub.aitravel.ui.assistant.AiAssistantScreen
 import com.heoclub.aitravel.ui.assistant.AiAssistantViewModel
@@ -79,7 +80,7 @@ import com.heoclub.aitravel.ui.profile.ProfileScreen
 private object Routes {
     const val createPlan = "create-plan"
     const val journeyJournal = "journey-journal"
-    const val journeyJournalEditor = "journey-journal-editor"
+    const val journeyJournalEditorPattern = "journey-journal-editor?entryId={entryId}"
     const val journeyJournalDetailPattern = "journey-journal-detail/{entryId}"
     const val journeyJournalSharePattern = "journey-journal-share/{entryId}"
     const val planDetailPattern = "plan-detail/{planId}"
@@ -96,6 +97,11 @@ private object Routes {
     fun placeDetail(placeId: String): String = "place-detail/$placeId"
     fun journeyJournalDetail(entryId: String): String = "journey-journal-detail/${Uri.encode(entryId)}"
     fun journeyJournalShare(entryId: String): String = "journey-journal-share/${Uri.encode(entryId)}"
+    fun journeyJournalEditor(entryId: String? = null): String = if (entryId.isNullOrBlank()) {
+        "journey-journal-editor"
+    } else {
+        "journey-journal-editor?entryId=${Uri.encode(entryId)}"
+    }
 
     fun aiPlanGeneration(
         destination: String,
@@ -280,7 +286,11 @@ fun AiTravelNavHost() {
             application.container.journalRepository.getJournals()
                 .onSuccess { responses ->
                     journalEntries.clear()
-                    journalEntries.addAll(responses.map { it.toJournalEntry() }.sortedByDescending { it.date })
+                    journalEntries.addAll(
+                        responses
+                            .map { it.toJournalEntry(application.container.journalPhotoStore) }
+                            .sortedByDescending { it.date },
+                    )
                 }
         }
     }
@@ -450,7 +460,7 @@ fun AiTravelNavHost() {
                 JourneyJournalScreen(
                     entries = journalEntries,
                     onBack = { navController.popBackStack() },
-                    onWriteJourney = { navController.navigate(Routes.journeyJournalEditor) },
+                    onWriteJourney = { navController.navigate(Routes.journeyJournalEditor()) },
                     onAddEntry = { entry ->
                         journalEntries.add(0, entry)
                         scope.launch {
@@ -461,9 +471,25 @@ fun AiTravelNavHost() {
                     onShareEntry = { entryId -> navController.navigate(Routes.journeyJournalShare(entryId)) },
                 )
             }
-            composable(Routes.journeyJournalEditor) {
+            composable(
+                route = Routes.journeyJournalEditorPattern,
+                arguments = listOf(
+                    navArgument("entryId") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
+            ) { backStackEntry ->
                 val scope = rememberCoroutineScope()
+                val editingEntryId = backStackEntry.arguments?.getString("entryId")
+                val initialEntry = journalEntries.firstOrNull { it.id == editingEntryId }
                 JourneyJournalEditorScreen(
+                    initialEntry = initialEntry,
+                    locationState = currentLocationState,
+                    onLocate = requestCurrentLocation,
+                    exploreRepository = application.container.exploreRepository,
+                    photoStore = application.container.journalPhotoStore,
                     onBack = {
                         pendingShareDraft = null
                         navController.popBackStack()
@@ -478,7 +504,17 @@ fun AiTravelNavHost() {
                         pendingShareDraft = null
                         navController.popBackStack()
                         scope.launch {
-                            application.container.journalRepository.createJournal(entry.toCreateRequest())
+                            if (existingIndex >= 0) {
+                                application.container.journalRepository.updateJournal(entry.id, entry.toUpdateRequest())
+                            } else {
+                                application.container.journalRepository.createJournal(entry.toCreateRequest())
+                                    .onSuccess { created ->
+                                        val localIndex = journalEntries.indexOfFirst { it.id == entry.id }
+                                        if (localIndex >= 0) {
+                                            journalEntries[localIndex] = entry.copy(id = created.id)
+                                        }
+                                    }
+                            }
                         }
                     },
                     onShareDraft = { entry ->
@@ -491,6 +527,7 @@ fun AiTravelNavHost() {
                 route = Routes.journeyJournalDetailPattern,
                 arguments = listOf(navArgument("entryId") { type = NavType.StringType }),
             ) { backStackEntry ->
+                val scope = rememberCoroutineScope()
                 val entryId = backStackEntry.arguments?.getString("entryId").orEmpty()
                 val entry = journalEntries.firstOrNull { it.id == entryId }
                     ?: pendingShareDraft?.takeIf { it.id == entryId }
@@ -498,6 +535,21 @@ fun AiTravelNavHost() {
                     JourneyJournalDetailScreen(
                         entry = entry,
                         onBack = { navController.popBackStack() },
+                        onEdit = { navController.navigate(Routes.journeyJournalEditor(entry.id)) },
+                        onDelete = {
+                            scope.launch {
+                                application.container.journalRepository.deleteJournal(entry.id)
+                                    .onSuccess {
+                                        entry.photos.forEach { application.container.journalPhotoStore.delete(it.storedFileName) }
+                                        journalEntries.removeAll { it.id == entry.id }
+                                        pendingShareDraft = pendingShareDraft?.takeUnless { it.id == entry.id }
+                                        navController.popBackStack()
+                                    }
+                                    .onFailure {
+                                        Toast.makeText(application, "删除失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                                    }
+                            }
+                        },
                         onShare = { navController.navigate(Routes.journeyJournalShare(entry.id)) },
                     )
                 }

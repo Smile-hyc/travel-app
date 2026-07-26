@@ -421,3 +421,27 @@ def test_comprehensive_search_requires_keyword() -> None:
         )
 
     assert excinfo.value.status_code == 422
+
+
+def test_district_adcode_is_promoted_to_municipality_for_text_search() -> None:
+    captured: dict = {}
+
+    class CapturingClient:
+        async def get(self, path, params):
+            captured["path"] = path
+            captured["params"] = params
+            return {"count": "0", "pois": []}
+
+    asyncio.run(
+        AmapPoiService(CapturingClient()).search_pois(
+            keyword="五大道",
+            adcode="120112",
+            category="all",
+            page=1,
+            page_size=20,
+            city_limit=True,
+        ),
+    )
+
+    assert captured["path"] == "/v5/place/text"
+    assert captured["params"]["region"] == "120000"

@@ -26,6 +26,7 @@ from app.schemas.ai import (
 from app.schemas.explore import PlaceSummary
 from app.services.amap_poi_service import AmapPoiService
 from app.services.deepseek_client import DeepSeekClient
+from app.services.popular_poi_catalog import popular_seed_priority
 
 
 class TravelAiService:
@@ -279,11 +280,14 @@ class TravelAiService:
                         continue
                     seen.add(place.id)
                     collected.append(place)
+            original_order = {place.id: index for index, place in enumerate(collected)}
             collected.sort(
-                key=lambda place: (
-                    0 if place.coverImageUrl else 1,
-                    -self._safe_float(place.rating),
+                key=lambda place: self._recommendation_rank(
+                    place,
+                    city_result.name,
+                    original_order.get(place.id, 10_000),
                 ),
+                reverse=True,
             )
             return collected[:6], city_result.name
         except Exception:
@@ -450,6 +454,29 @@ class TravelAiService:
             return float(value or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    def _recommendation_rank(
+        self,
+        place: PlaceSummary,
+        city_name: str,
+        original_order: int,
+    ) -> tuple[float, float, float, int]:
+        """Rank already-retrieved places locally; this adds no provider or model calls."""
+        rating = min(5.0, max(0.0, self._safe_float(place.rating)))
+        rating_signal = min(1.0, max(0.0, (rating - 3.8) / 1.2))
+        seed_signal = popular_seed_priority(city_name, place.name) / 100.0
+        official_signal = 1.0 if place.officialScenicGrade else 0.0
+        evidence_signal = min(1.0, (place.experienceEvidenceCount or 0) / 20.0)
+        completeness = (0.06 if place.coverImageUrl else 0.0) + (0.03 if place.address else 0.0)
+        score = (
+            seed_signal * 0.52
+            + rating_signal * 0.25
+            + official_signal * 0.10
+            + evidence_signal * 0.07
+            + completeness
+        )
+        # AMap relevance order remains a deterministic tie-breaker.
+        return score, seed_signal, rating, -original_order
 
     def _system_prompt(self) -> str:
         return (

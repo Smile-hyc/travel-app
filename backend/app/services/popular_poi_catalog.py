@@ -44,6 +44,11 @@ POPULAR_POI_SEEDS: tuple[PopularPoiSeed, ...] = (
     PopularPoiSeed("长沙市", "岳麓山", 90),
     PopularPoiSeed("武汉市", "黄鹤楼", 93),
     PopularPoiSeed("开封市", "清明上河园", 90),
+    PopularPoiSeed("天津市", "五大道文化旅游区", 99),
+    PopularPoiSeed("天津市", "天津之眼摩天轮", 98),
+    PopularPoiSeed("天津市", "天津古文化街旅游区", 97),
+    PopularPoiSeed("天津市", "意大利风情旅游区", 95),
+    PopularPoiSeed("天津市", "国家海洋博物馆", 94),
 )
 
 
@@ -170,6 +175,19 @@ class PopularPoiCatalogService:
 
 def seed_by_official_source(source_id: str) -> PopularPoiSeed | None:
     return next((seed for seed in POPULAR_POI_SEEDS if seed.official_source_id == source_id), None)
+
+
+def popular_seed_priority(city_name: str | None, place_name: str) -> int:
+    """Return curated landmark priority without performing any network request."""
+    normalized_city = _normalize(city_name or "")
+    normalized_name = _normalize(place_name)
+    priorities = [
+        seed.priority
+        for seed in POPULAR_POI_SEEDS
+        if (not normalized_city or _normalize(seed.city) == normalized_city)
+        and _name_match_score(_normalize(seed.name), normalized_name) >= 0.72
+    ]
+    return max(priorities, default=0)
 
 
 def _normalize(value: str) -> str:

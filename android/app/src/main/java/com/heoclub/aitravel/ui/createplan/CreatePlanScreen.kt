@@ -693,7 +693,7 @@ fun CreatePlanScreen(
             ) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
                 Text(
-                    text = if (optimizationMode == "FAST") "开始快速规划" else "开始智能规划",
+                    text = if (optimizationMode == "FAST") "开始快速规划" else "智能规划",
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }

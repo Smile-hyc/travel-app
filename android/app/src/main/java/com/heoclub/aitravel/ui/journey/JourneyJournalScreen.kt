@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Publish
@@ -62,6 +63,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -105,12 +110,7 @@ internal fun JourneyJournalScreen(
 
     val filteredEntries = remember(entries.toList(), query, groupMode) {
         entries
-            .filter { entry ->
-                query.isBlank() ||
-                    entry.title.contains(query, ignoreCase = true) ||
-                    entry.location.contains(query, ignoreCase = true) ||
-                    entry.body.contains(query, ignoreCase = true)
-            }
+            .filter { entry -> entry.matchesSearchQuery(query) }
             .let { list ->
                 when (groupMode) {
                     JournalGroupMode.Time -> list.sortedWith(compareByDescending<JournalEntry> { it.date }.thenBy { it.title })
@@ -182,9 +182,30 @@ internal fun JourneyJournalScreen(
                     )
                 }
 
+                if (query.isNotBlank()) {
+                    item {
+                        Text(
+                            text = if (filteredEntries.isEmpty()) "没有找到相关游记" else "找到 ${filteredEntries.size} 篇相关游记",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF657384),
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                    }
+                }
+
+                if (query.isNotBlank() && filteredEntries.isEmpty()) {
+                    item {
+                        JournalSearchEmptyState(
+                            query = query.trim(),
+                            onClear = { query = "" },
+                        )
+                    }
+                }
+
                 items(filteredEntries, key = { it.id }) { entry ->
                     JournalEntryCard(
                         entry = entry,
+                        searchQuery = query,
                         selecting = selecting,
                         selected = entry.id in selectedIds,
                         onSelectedChange = { checked ->
@@ -242,6 +263,7 @@ private fun JournalTopBar(
     onQueryChange: (String) -> Unit,
     onBack: () -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -271,6 +293,18 @@ private fun JournalTopBar(
                     contentDescription = null,
                 )
             },
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { onQueryChange("") }) {
+                        Icon(
+                            imageVector = Icons.Outlined.Close,
+                            contentDescription = "清除搜索内容",
+                        )
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
             singleLine = true,
             shape = RoundedCornerShape(28.dp),
             colors = OutlinedTextFieldDefaults.colors(
@@ -280,6 +314,43 @@ private fun JournalTopBar(
                 unfocusedBorderColor = Color.Transparent,
             ),
         )
+    }
+}
+
+@Composable
+private fun JournalSearchEmptyState(
+    query: String,
+    onClear: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = Color.White,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 36.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Search,
+                contentDescription = null,
+                tint = Color(0xFF8A98A8),
+                modifier = Modifier.size(42.dp),
+            )
+            Text(
+                text = "没有找到“$query”",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF10243D),
+            )
+            Text(
+                text = "可以尝试搜索标题、正文、地点、日期或照片说明",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF657384),
+            )
+            TextButton(onClick = onClear) { Text("清除搜索") }
+        }
     }
 }
 
@@ -410,6 +481,7 @@ private fun JournalActionTile(
 @Composable
 private fun JournalEntryCard(
     entry: JournalEntry,
+    searchQuery: String,
     selecting: Boolean,
     selected: Boolean,
     onSelectedChange: (Boolean) -> Unit,
@@ -451,7 +523,7 @@ private fun JournalEntryCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = entry.title,
+                        text = buildJournalSearchAnnotatedString(entry.title, entry.titleSpans, searchQuery),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = if (entry.titleStyle.bold) FontWeight.ExtraBold else FontWeight.SemiBold,
                         textDecoration = if (entry.titleStyle.underline) TextDecoration.Underline else TextDecoration.None,
@@ -475,7 +547,7 @@ private fun JournalEntryCard(
                 }
                 if (entry.body.isNotBlank()) {
                     Text(
-                        text = entry.body,
+                        text = buildJournalSearchAnnotatedString(entry.body, entry.bodySpans, searchQuery),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = if (entry.bodyStyle.bold) FontWeight.Bold else FontWeight.Normal,
                         textDecoration = if (entry.bodyStyle.underline) TextDecoration.Underline else TextDecoration.None,

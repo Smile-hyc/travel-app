@@ -21,15 +21,22 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,9 +53,12 @@ import java.time.format.DateTimeFormatter
 internal fun JourneyJournalDetailScreen(
     entry: JournalEntry,
     onBack: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
     onShare: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
@@ -82,6 +92,21 @@ internal fun JourneyJournalDetailScreen(
                     color = Color(0xFF081F3A),
                     modifier = Modifier.weight(1f),
                 )
+                TextButton(onClick = onEdit) {
+                    Icon(
+                        imageVector = Icons.Outlined.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text("编辑")
+                }
+                IconButton(onClick = { showDeleteConfirmation = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = "删除游记",
+                        tint = Color(0xFFD64545),
+                    )
+                }
                 TextButton(onClick = onShare) {
                     Icon(
                         imageVector = Icons.Outlined.Share,
@@ -105,7 +130,7 @@ internal fun JourneyJournalDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     Text(
-                        text = entry.title,
+                        text = buildJournalAnnotatedString(entry.title, entry.titleSpans),
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = if (entry.titleStyle.bold) FontWeight.ExtraBold else FontWeight.SemiBold,
                         textDecoration = if (entry.titleStyle.underline) TextDecoration.Underline else TextDecoration.None,
@@ -130,7 +155,7 @@ internal fun JourneyJournalDetailScreen(
                     }
                     if (entry.body.isNotBlank()) {
                         Text(
-                            text = entry.body,
+                            text = buildJournalAnnotatedString(entry.body, entry.bodySpans),
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = if (entry.bodyStyle.bold) FontWeight.Bold else FontWeight.Normal,
                             textDecoration = if (entry.bodyStyle.underline) TextDecoration.Underline else TextDecoration.None,
@@ -159,6 +184,25 @@ internal fun JourneyJournalDetailScreen(
                 }
             }
         }
+    }
+
+    if (showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { Text("删除这篇游记？") },
+            text = { Text("删除后无法恢复，游记中的本地照片也会一并删除。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirmation = false
+                        onDelete()
+                    },
+                ) { Text("删除", color = Color(0xFFD64545)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmation = false }) { Text("取消") }
+            },
+        )
     }
 }
 

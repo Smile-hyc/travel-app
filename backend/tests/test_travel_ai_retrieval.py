@@ -228,3 +228,21 @@ def test_plan_places_become_valid_links_and_unknown_links_are_not_clickable() ->
     )
 
     assert result == "[外滩](aitravel://place/amap:PLAN001)和不存在地点"
+
+
+def test_recommendation_rank_prioritizes_famous_city_landmark() -> None:
+    service = TravelAiService(FakeModelClient(), FakePoiService())
+    famous = PlaceSummary(
+        id="famous", sourcePoiId="famous", name="五大道文化旅游区",
+        category="scenic", categoryCode="scenic", cityName="天津市",
+        latitude=39.12, longitude=117.20, rating="4.6",
+    )
+    generic = PlaceSummary(
+        id="generic", sourcePoiId="generic", name="城市景观体验馆",
+        category="scenic", categoryCode="scenic", cityName="天津市",
+        latitude=39.13, longitude=117.21, rating="5.0", coverImageUrl="https://example.com/generic.jpg",
+    )
+
+    assert service._recommendation_rank(famous, "天津市", 1) > service._recommendation_rank(
+        generic, "天津市", 0,
+    )

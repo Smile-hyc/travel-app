@@ -2441,6 +2441,28 @@ def test_beijing_first_visit_landmarks_outrank_generic_high_rated_scenic() -> No
     assert "square" in {place.sourcePoiId for place in monday_selected}
 
 
+def test_tianjin_famous_landmark_outranks_generic_high_rated_scenic() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="天津", dateRange="2026.07.26", dayCount=1, pace="BALANCED",
+    )
+    famous = PlaceSummary(
+        id="wudadao", sourcePoiId="wudadao", name="五大道文化旅游区",
+        category="scenic", categoryCode="scenic", latitude=39.116, longitude=117.196,
+        rating="4.6", openingHoursWeek="周一至周日 全天开放",
+    )
+    generic = PlaceSummary(
+        id="generic-tj", sourcePoiId="generic-tj", name="城市景观体验馆",
+        category="scenic", categoryCode="scenic", latitude=39.118, longitude=117.198,
+        rating="5.0", coverImageUrl="https://example.com/generic.jpg",
+        openingHoursWeek="周一至周日 09:00-20:00",
+    )
+
+    assert service._candidate_score(request, famous, None, None).total > service._candidate_score(
+        request, generic, None, None,
+    ).total
+
+
 def test_low_crowd_preference_overrides_default_landmark_protection() -> None:
     service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
     square = PlaceSummary(

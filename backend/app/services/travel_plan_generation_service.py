@@ -1038,16 +1038,18 @@ class TravelPlanGenerationService:
             rating = min(5.0, max(0.0, float(place.rating or 0.0)))
         except ValueError:
             rating = 0.0
+        rating_signal = min(1.0, max(0.0, (rating - 3.8) / 1.2))
         landmark_hint = any(
             word in f"{place.name} {place.typeName or ''}"
             for word in ("博物馆", "风景名胜", "世界遗产", "古城", "名胜", "故宫", "国家")
         )
         return (
-            rating / 5.0
+            rating_signal
             + (0.35 if place.officialScenicGrade else 0.0)
             + (0.18 if landmark_hint else 0.0)
+            + (0.10 if place.coverImageUrl else 0.0)
             + min(0.25, math.log1p(place.experienceEvidenceCount) / 14.0)
-            + self._first_visit_landmark_score(place) * 0.55
+            + self._first_visit_landmark_score(place) * 0.70
         )
 
     def _first_visit_landmark_score(self, place: PlaceSummary) -> float:
@@ -1149,8 +1151,8 @@ class TravelPlanGenerationService:
         text = f"{place.name} {place.typeName or ''}"
         preference_raw = self._preference_place_score(request, place)
         has_preferences = bool(self._clean_preferences(request.preferences) or (request.freeText or "").strip())
-        preference = min(1.0, preference_raw / 6.0) if has_preferences else 0.5
-        recognition = min(1.0, self._popular_place_score(place) / 1.60)
+        recognition = min(1.0, self._popular_place_score(place) / 1.45)
+        preference = min(1.0, preference_raw / 6.0) if has_preferences else 0.35 + recognition * 0.65
         review_confidence = min(
             1.0,
             (0.48 if rating > 0 else 0.20)

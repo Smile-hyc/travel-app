@@ -666,12 +666,18 @@ def _dedupe_cities(cities: list[CitySearchResult]) -> list[CitySearchResult]:
 
 
 def _normalize_amap_city_adcode(adcode: str) -> str:
-    return {
+    adcode = adcode.strip()
+    normalized = {
         "110100": "110000",
         "120100": "120000",
         "310100": "310000",
         "500100": "500000",
     }.get(adcode, adcode)
+    if len(normalized) != 6 or not normalized.isdigit() or normalized.endswith("00"):
+        return normalized
+    if normalized[:2] in {"11", "12", "31", "50"}:
+        return f"{normalized[:2]}0000"
+    return f"{normalized[:4]}00"
 
 
 def _adcode_belongs_to_city(candidate: str, selected: str) -> bool:
