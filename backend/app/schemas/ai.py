@@ -260,6 +260,13 @@ class AiGeneratedPlace(BaseModel):
     officialTicketNote: str | None = None
     crowdRisk: float = Field(default=0.0, ge=0, le=1)
     contentUpdatedAt: str | None = None
+    visitUnitId: str | None = None
+    visitUnitName: str | None = None
+    visitUnitPolicy: Literal["BUNDLE", "COLOCATE", "MULTI_DAY_ALLOWED"] | None = None
+    visitUnitMemberOrder: int | None = Field(default=None, ge=0)
+    visitUnitTransferMinutes: int | None = Field(default=None, ge=0)
+    visitUnitSourceUrl: str | None = None
+    recommendedVisitMinutes: int | None = Field(default=None, ge=30, le=720)
     scheduleVerified: bool = False
     suggestedStart: str
     suggestedEnd: str
@@ -320,6 +327,11 @@ class AiPlanQuality(BaseModel):
     minimumClosingMarginMinutes: int | None = Field(default=None, ge=0)
     requiredPlaceCoverage: float = Field(default=1.0, ge=0, le=1)
     comfortScore: int = Field(default=100, ge=0, le=100)
+    mainVisitUnitCountByDay: list[int] = Field(default_factory=list)
+    scheduledVisitMinutesByDay: list[int] = Field(default_factory=list)
+    occupancyRatioByDay: list[float] = Field(default_factory=list)
+    underfilledDayIndexes: list[int] = Field(default_factory=list)
+    underfilledReasons: list[str] = Field(default_factory=list)
 
 
 class AiPlanGenerationResponse(BaseModel):

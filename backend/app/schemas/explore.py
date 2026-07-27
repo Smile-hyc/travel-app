@@ -63,6 +63,13 @@ class PlaceSummary(BaseModel):
     officialTicketNote: str | None = None
     crowdRisk: float = Field(default=0.0, ge=0, le=1)
     contentUpdatedAt: str | None = None
+    visitUnitId: str | None = None
+    visitUnitName: str | None = None
+    visitUnitPolicy: Literal["BUNDLE", "COLOCATE", "MULTI_DAY_ALLOWED"] | None = None
+    visitUnitMemberOrder: int | None = Field(default=None, ge=0)
+    visitUnitTransferMinutes: int | None = Field(default=None, ge=0)
+    visitUnitSourceUrl: str | None = None
+    recommendedVisitMinutes: int | None = Field(default=None, ge=30, le=720)
 
 
 class ReviewHighlight(BaseModel):

@@ -675,6 +675,16 @@ private fun ReadyPlanContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF2F6657),
                         )
+                        if (state.result.quality.mainVisitUnitCountByDay.isNotEmpty()) {
+                            Text(
+                                state.result.quality.mainVisitUnitCountByDay.mapIndexed { index, count ->
+                                    val minutes = state.result.quality.scheduledVisitMinutesByDay.getOrNull(index) ?: 0
+                                    "D${index + 1} ${count} 个主要游览 / ${minutes} 分钟"
+                                }.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF47766A),
+                            )
+                        }
                         val routeRisks = buildList {
                             if (state.result.quality.crossRegionTransferCount > 0) {
                                 add("跨区 ${state.result.quality.crossRegionTransferCount} 次")

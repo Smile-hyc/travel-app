@@ -210,3 +210,68 @@ def test_comfort_policy_rejects_small_value_gain_from_very_long_transfer() -> No
 
     assert result.ordered_place_ids == ("near",)
     assert result.longest_leg_minutes == 15
+
+
+def test_underfilled_day_accepts_a_compact_slightly_negative_insertion() -> None:
+    candidates = [
+        VisitCandidate("main", 5.0, 105, (TimeWindow(9 * 60, 20 * 60),), category="museum"),
+        VisitCandidate("nearby", 0.05, 105, (TimeWindow(9 * 60, 20 * 60),), category="park"),
+    ]
+    edges = {
+        ("hotel", "main"): TravelEdge("hotel", "main", 10, 500, verified=True),
+        ("main", "hotel"): TravelEdge("main", "hotel", 10, 500, verified=True),
+        ("hotel", "nearby"): TravelEdge("hotel", "nearby", 10, 500, verified=True),
+        ("nearby", "hotel"): TravelEdge("nearby", "hotel", 10, 500, verified=True),
+        ("main", "nearby"): TravelEdge("main", "nearby", 10, 500, verified=True),
+        ("nearby", "main"): TravelEdge("nearby", "main", 10, 500, verified=True),
+    }
+
+    result = solve_day_with_time_windows(
+        candidates,
+        edges,
+        DaySolverConfig(
+            day_start=9 * 60,
+            day_end=20 * 60,
+            max_visits=2,
+            minimum_visit_minutes=210,
+            minimum_underfilled_gain=-0.20,
+        ),
+        start_id="hotel",
+        end_id="hotel",
+    )
+
+    assert set(result.ordered_place_ids) == {"main", "nearby"}
+    assert result.visit_minutes == 210
+
+
+def test_underfilled_day_does_not_use_a_long_transfer_as_filler() -> None:
+    candidates = [
+        VisitCandidate("main", 5.0, 105, (TimeWindow(9 * 60, 20 * 60),)),
+        VisitCandidate("remote", 4.9, 105, (TimeWindow(9 * 60, 20 * 60),)),
+    ]
+    edges = {
+        ("hotel", "main"): TravelEdge("hotel", "main", 10, 500, verified=True),
+        ("main", "hotel"): TravelEdge("main", "hotel", 10, 500, verified=True),
+        ("hotel", "remote"): TravelEdge("hotel", "remote", 70, 12000, verified=True),
+        ("remote", "hotel"): TravelEdge("remote", "hotel", 70, 12000, verified=True),
+        ("main", "remote"): TravelEdge("main", "remote", 70, 12000, verified=True),
+        ("remote", "main"): TravelEdge("remote", "main", 70, 12000, verified=True),
+    }
+
+    result = solve_day_with_time_windows(
+        candidates,
+        edges,
+        DaySolverConfig(
+            day_start=9 * 60,
+            day_end=20 * 60,
+            max_visits=2,
+            minimum_visit_minutes=210,
+            minimum_underfilled_gain=-100.0,
+            max_normal_leg_minutes=40,
+        ),
+        start_id="hotel",
+        end_id="hotel",
+    )
+
+    assert result.ordered_place_ids == ("main",)
+    assert result.longest_leg_minutes == 10

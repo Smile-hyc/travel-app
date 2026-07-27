@@ -237,6 +237,13 @@ data class AiGeneratedPlace(
     val officialTicketNote: String? = null,
     val crowdRisk: Double = 0.0,
     val contentUpdatedAt: String? = null,
+    val visitUnitId: String? = null,
+    val visitUnitName: String? = null,
+    val visitUnitPolicy: String? = null,
+    val visitUnitMemberOrder: Int? = null,
+    val visitUnitTransferMinutes: Int? = null,
+    val visitUnitSourceUrl: String? = null,
+    val recommendedVisitMinutes: Int? = null,
     val scheduleVerified: Boolean = false,
     val suggestedStart: String,
     val suggestedEnd: String,
@@ -297,6 +304,11 @@ data class AiPlanQuality(
     val minimumClosingMarginMinutes: Int? = null,
     val requiredPlaceCoverage: Double = 1.0,
     val comfortScore: Int = 100,
+    val mainVisitUnitCountByDay: List<Int> = emptyList(),
+    val scheduledVisitMinutesByDay: List<Int> = emptyList(),
+    val occupancyRatioByDay: List<Double> = emptyList(),
+    val underfilledDayIndexes: List<Int> = emptyList(),
+    val underfilledReasons: List<String> = emptyList(),
 )
 
 data class AiPlanGenerationResponse(

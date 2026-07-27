@@ -1320,6 +1320,212 @@ def test_preferences_affect_scenic_ranking_and_requested_density() -> None:
     assert service._scenic_target_for_request(request) == 2
 
 
+def test_pace_targets_and_soft_workload_make_balanced_distinct_from_intensive() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    balanced = AiPlanGenerationRequest(
+        destination="南京",
+        dateRange="2026.07.27",
+        dayCount=1,
+        pace="BALANCED",
+        dailyStart="09:00",
+        dailyEnd="20:00",
+    )
+    intensive = balanced.model_copy(update={"pace": "INTENSIVE"})
+
+    assert service._scenic_target_for_request(balanced) == 3
+    assert service._scenic_target_for_request(intensive) == 4
+    assert service._minimum_scenic_minutes(balanced, 9 * 60, 20 * 60, 3) == 315
+    assert service._minimum_scenic_minutes(intensive, 9 * 60, 20 * 60, 4) == 360
+
+
+def test_short_partial_day_only_requires_one_normal_scenic_visit() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="南京",
+        dateRange="2026.07.27",
+        dayCount=1,
+        pace="BALANCED",
+        arrivalDay=1,
+        arrivalTime="15:00",
+        dailyEnd="18:00",
+    )
+
+    start, end = service._effective_day_bounds(request, 1)
+
+    assert (start, end) == (15 * 60, 18 * 60)
+    assert service._minimum_scenic_minutes(request, start, end, 3) == 105
+
+
+@pytest.mark.asyncio
+async def test_balanced_full_day_repairs_one_place_with_nearby_open_candidates() -> None:
+    class FakeRouteService:
+        async def best_segment(self, **kwargs):
+            return RouteSegment(
+                originId=kwargs["origin"].id,
+                destinationId=kwargs["destination"].id,
+                originName=kwargs["origin"].name,
+                destinationName=kwargs["destination"].name,
+                mode="walking",
+                distanceMeters=700,
+                durationSeconds=10 * 60,
+            )
+
+    service = TravelPlanGenerationService(
+        object(),
+        object(),
+        FakeRouteService(),
+        reveal_delay_seconds=0,
+    )
+    request = AiPlanGenerationRequest(
+        destination="南京",
+        dateRange="2026.07.27",
+        dayCount=1,
+        pace="BALANCED",
+        dailyStart="09:00",
+        dailyEnd="20:00",
+    )
+    candidates = [
+        PlaceSummary(
+            id=f"place-{index}",
+            sourcePoiId=f"place-{index}",
+            name=f"玄武湖片区景点{index}",
+            category="scenic",
+            categoryCode="scenic",
+            cityName="南京市",
+            districtName="玄武区",
+            latitude=32.06 + index * 0.002,
+            longitude=118.79 + index * 0.002,
+            openingHoursWeek="周一至周日 08:30-20:30",
+        )
+        for index in range(4)
+    ]
+    initial_places = service._schedule_places(request, [candidates[0]], 1)
+    initial = AiGeneratedDay(
+        dayIndex=1,
+        title="DAY 1 · 玄武区",
+        summary="初始路线",
+        places=initial_places,
+    )
+
+    repaired = await service._repair_underfilled_days(
+        request,
+        [initial],
+        candidates,
+        [],
+        None,
+    )
+
+    scenic = [place for place in repaired[0].places if place.category == "scenic"]
+    assert len(scenic) == 3
+    assert len(repaired[0].transfers) == 2
+    assert all(transfer.verified for transfer in repaired[0].transfers)
+    assert service._underfilled_day_reason(request, repaired[0]) is None
+
+
+def test_full_day_scenic_and_short_arrival_day_are_not_marked_underfilled() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    full_request = AiPlanGenerationRequest(
+        destination="上海",
+        dateRange="2026.07.27",
+        dayCount=1,
+        pace="BALANCED",
+        dailyStart="09:00",
+        dailyEnd="20:00",
+    )
+    disney = PlaceSummary(
+        id="disney",
+        sourcePoiId="disney",
+        name="上海迪士尼度假区",
+        category="scenic",
+        categoryCode="scenic",
+        cityName="上海市",
+        districtName="浦东新区",
+        latitude=31.1434,
+        longitude=121.6578,
+        openingHoursWeek="周一至周日 08:30-21:00",
+    )
+    full_day = AiGeneratedDay(
+        dayIndex=1,
+        title="DAY 1",
+        summary="主题乐园",
+        places=service._schedule_places(full_request, [disney], 1),
+    )
+    short_request = full_request.model_copy(
+        update={"arrivalTime": "15:00", "dailyEnd": "19:00"},
+    )
+    short_day = full_day.model_copy(
+        update={
+            "places": [
+                full_day.places[0].model_copy(
+                    update={"name": "城市博物馆", "suggestedStart": "15:00", "suggestedEnd": "17:00"},
+                ),
+            ],
+        },
+        deep=True,
+    )
+
+    assert service._underfilled_day_reason(full_request, full_day) is None
+    assert service._underfilled_day_reason(short_request, short_day) is None
+
+
+def test_quality_report_exposes_unrepaired_balanced_day_load() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="南京",
+        dateRange="2026.07.27",
+        dayCount=1,
+        pace="BALANCED",
+        dailyStart="09:00",
+        dailyEnd="20:00",
+    )
+    place = PlaceSummary(
+        id="museum",
+        sourcePoiId="museum",
+        name="城市博物馆",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=32.05,
+        longitude=118.79,
+        openingHoursWeek="周一至周日 09:00-18:00",
+    )
+    day = AiGeneratedDay(
+        dayIndex=1,
+        title="DAY 1",
+        summary="候选不足",
+        places=service._schedule_places(request, [place], 1),
+    )
+
+    quality = service._evaluate_plan_quality(request, [day], True, ["AMAP"])
+
+    assert quality.mainVisitUnitCountByDay == [1]
+    assert quality.scheduledVisitMinutesByDay == [105]
+    assert quality.underfilledDayIndexes == [1]
+    assert quality.underfilledReasons and "第1天" in quality.underfilledReasons[0]
+
+
+def test_multi_day_selection_does_not_consume_future_region_candidates() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="南京",
+        dateRange="2026.07.27-2026.07.29",
+        dayCount=3,
+    )
+    place = PlaceSummary(
+        id="future",
+        sourcePoiId="future",
+        name="未来片区景点",
+        category="scenic",
+        categoryCode="scenic",
+        latitude=32.0,
+        longitude=118.8,
+    )
+    assignments = {"future": 3}
+
+    assert service._assigned_candidate_available_on_day(request, place, 1, assignments) is False
+    assert service._assigned_candidate_available_on_day(request, place, 3, assignments) is True
+    assert service._assigned_candidate_available_on_day(request, place, 4, assignments) is True
+
+
 def test_map_selected_anchor_keeps_exact_coordinates() -> None:
     service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
     point = AiMapPointInput(
@@ -2515,6 +2721,149 @@ def test_tiananmen_complex_is_deduped_and_keeps_canonical_square() -> None:
     deduped = service._dedupe_candidates([tower, square])
 
     assert [place.name for place in deduped] == ["天安门广场"]
+
+
+def test_five_day_plan_keeps_official_visit_unit_on_one_day() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    complex_places = [
+        PlaceSummary(
+            id="parent", sourcePoiId="parent", name="秦始皇帝陵博物院",
+            category="scenic", categoryCode="scenic", cityName="西安市",
+            latitude=34.3837, longitude=109.2812,
+            openingHoursWeek="周一至周日 08:30-18:30",
+        ),
+        PlaceSummary(
+            id="warriors", sourcePoiId="warriors", name="秦始皇兵马俑博物馆",
+            category="scenic", categoryCode="scenic", cityName="西安市",
+            latitude=34.3841, longitude=109.2785,
+            openingHoursWeek="周一至周日 08:30-18:30",
+        ),
+        PlaceSummary(
+            id="lishan", sourcePoiId="lishan", name="秦始皇帝陵博物院丽山园",
+            category="scenic", categoryCode="scenic", cityName="西安市",
+            latitude=34.3688, longitude=109.2538,
+            openingHoursWeek="周一至周日 08:30-18:30",
+        ),
+    ]
+    other_places = [
+        PlaceSummary(
+            id=f"other-{index}", sourcePoiId=f"other-{index}", name=f"西安景点{index}",
+            category="scenic", categoryCode="scenic", cityName="西安市",
+            latitude=34.20 + index * 0.025, longitude=108.85 + index * 0.02,
+            openingHoursWeek="周一至周日 08:30-20:00",
+        )
+        for index in range(8)
+    ]
+
+    days = service._build_heuristic_days(
+        AiPlanGenerationRequest(
+            destination="西安", dateRange="2026.07.27-2026.07.31", dayCount=5,
+            dailyStart="08:30", dailyEnd="20:00",
+        ),
+        [*complex_places, *other_places],
+        city_name="西安市",
+    )
+    occurrences = {
+        place.sourcePoiId: day.dayIndex
+        for day in days
+        for place in day.places
+        if place.sourcePoiId in {"parent", "warriors", "lishan"}
+    }
+    assert "parent" not in occurrences
+    assert occurrences.keys() == {"warriors", "lishan"}
+    assert occurrences["warriors"] == occurrences["lishan"]
+    bundled = [
+        place
+        for day in days
+        for place in day.places
+        if place.sourcePoiId in {"warriors", "lishan"}
+    ]
+    assert [place.recommendedVisitMinutes for place in bundled] == [90, 90]
+    assert all(place.visitUnitPolicy == "BUNDLE" for place in bundled)
+
+
+def test_ai_review_cannot_move_one_bundle_member_to_another_day() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    warriors = _ai_review_place("warriors", "scenic", "09:00", "10:30").model_copy(
+        update={"visitUnitId": "bmy-main-visit", "visitUnitPolicy": "BUNDLE"},
+    )
+    lishan = _ai_review_place("lishan", "scenic", "11:00", "12:30").model_copy(
+        update={"visitUnitId": "bmy-main-visit", "visitUnitPolicy": "BUNDLE"},
+    )
+    city_wall = _ai_review_place("city-wall", "scenic", "09:00", "10:30")
+    transfer = AiGeneratedTransfer(
+        originPlaceId="warriors",
+        destinationPlaceId="lishan",
+        mode="driving",
+        distanceMeters=2500,
+        durationMinutes=15,
+    )
+    fallback = [
+        AiGeneratedDay(
+            dayIndex=1, title="DAY 1", summary="秦陵",
+            places=[warriors, lishan], transfers=[transfer],
+        ),
+        AiGeneratedDay(dayIndex=2, title="DAY 2", summary="城墙", places=[city_wall]),
+    ]
+    proposal = [
+        AiGeneratedDay(dayIndex=1, title="DAY 1", summary="拆分", places=[warriors]),
+        AiGeneratedDay(dayIndex=2, title="DAY 2", summary="拆分", places=[lishan]),
+    ]
+
+    selected, accepted, notes = service._select_ai_optimized_days(
+        AiPlanGenerationRequest(destination="西安", dateRange="2026.07.27", dayCount=2),
+        fallback,
+        proposal,
+    )
+
+    assert selected == fallback
+    assert accepted == 0
+    assert any("游览单元" in note for note in notes)
+
+
+def test_infeasible_bundle_is_not_partially_scheduled() -> None:
+    service = TravelPlanGenerationService(object(), object(), reveal_delay_seconds=0)
+    request = AiPlanGenerationRequest(
+        destination="西安", dateRange="2026.07.27", dayCount=1,
+        dailyStart="09:00", dailyEnd="18:00",
+    )
+    warriors = PlaceSummary(
+        id="warriors", sourcePoiId="warriors", name="秦始皇兵马俑博物馆",
+        category="scenic", categoryCode="scenic", cityName="西安市",
+        latitude=34.3841, longitude=109.2785,
+        openingHoursWeek="周一至周日 08:30-18:30",
+        visitUnitId="bmy-main-visit", visitUnitName="秦始皇帝陵博物院",
+        visitUnitPolicy="BUNDLE", visitUnitMemberOrder=0,
+        recommendedVisitMinutes=90,
+    )
+    closed_lishan = PlaceSummary(
+        id="lishan", sourcePoiId="lishan", name="秦始皇帝陵博物院丽山园",
+        category="scenic", categoryCode="scenic", cityName="西安市",
+        latitude=34.3688, longitude=109.2538,
+        openingHoursWeek="周一 全天关闭",
+        visitUnitId="bmy-main-visit", visitUnitName="秦始皇帝陵博物院",
+        visitUnitPolicy="BUNDLE", visitUnitMemberOrder=1,
+        visitUnitTransferMinutes=15, recommendedVisitMinutes=90,
+    )
+    alternative = PlaceSummary(
+        id="alternative", sourcePoiId="alternative", name="西安城墙",
+        category="scenic", categoryCode="scenic", cityName="西安市",
+        latitude=34.26, longitude=108.94,
+        openingHoursWeek="周一至周日 08:00-20:00",
+    )
+
+    selected = service._select_time_window_scenic(
+        request,
+        [warriors, closed_lishan, alternative],
+        day_index=1,
+        target=3,
+        weather=None,
+        start_anchor=None,
+        end_anchor=None,
+        required_visit_unit_ids={"bmy-main-visit"},
+    )
+
+    assert {place.sourcePoiId for place in selected} == {"alternative"}
 
 
 def test_nearby_meal_recall_prefers_local_keyword_then_falls_back() -> None:

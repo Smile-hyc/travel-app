@@ -6,6 +6,7 @@ import json
 import math
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any, Callable
@@ -40,6 +41,7 @@ from app.services.itinerary_constraint_solver import (
     solve_day_with_time_windows,
 )
 from app.services.popular_poi_catalog import POPULAR_POI_SEEDS
+from app.services.visit_unit_service import resolve_visit_units
 
 
 PREFERENCE_CATEGORIES = {
@@ -55,7 +57,32 @@ ProgressCallback = Callable[
     [int, str, int, list[AiGeneratedDay] | None, AiPlanProgressEvent | None, int | None],
     None,
 ]
-PACE_PLACE_COUNTS = {"RELAXED": 3, "BALANCED": 4, "INTENSIVE": 5}
+
+@dataclass(frozen=True)
+class PaceProfile:
+    request_place_count: int
+    scenic_target: int
+    minimum_full_day_units: int
+    scenic_visit_minutes: int
+    minimum_visit_ratio: float
+    max_normal_leg_minutes: int
+    max_fill_leg_minutes: int
+    max_idle_minutes: int
+    minimum_underfilled_gain: float
+
+
+PACE_PROFILES = {
+    "RELAXED": PaceProfile(3, 2, 1, 120, 0.25, 30, 30, 55, 0.01),
+    "BALANCED": PaceProfile(4, 3, 2, 105, 0.48, 40, 50, 45, -0.85),
+    "INTENSIVE": PaceProfile(5, 4, 3, 90, 0.60, 50, 60, 35, -1.10),
+}
+PACE_PLACE_COUNTS = {
+    pace: profile.request_place_count for pace, profile in PACE_PROFILES.items()
+}
+PACE_SCENIC_TARGETS = {
+    pace: profile.scenic_target for pace, profile in PACE_PROFILES.items()
+}
+PACE_LABELS = {"RELAXED": "轻松", "BALANCED": "适中", "INTENSIVE": "充实"}
 
 
 class TravelPlanGenerationService:
@@ -254,6 +281,7 @@ class TravelPlanGenerationService:
             )
         ]
         candidates = self._attach_planning_signals(request, candidates)
+        candidates = self._attach_visit_unit_signals(candidates)
         official_candidate_count = sum(
             bool(place.officialScenicGrade or place.officialReservationRequired or place.officialClosedDates)
             for place in candidates
@@ -393,6 +421,13 @@ class TravelPlanGenerationService:
                 weather_forecast,
                 progress,
                 repair_candidates=candidates,
+            )
+            fallback = await self._repair_underfilled_days(
+                request,
+                fallback,
+                candidates,
+                weather_forecast,
+                progress,
             )
             missing_required = self._missing_required_place_queries(request, fallback)
             if missing_required:
@@ -647,7 +682,7 @@ class TravelPlanGenerationService:
         all_places = [place for day in days for place in day.places]
         duplicate_count = len(all_places) - len({place.sourcePoiId for place in all_places})
         quality = self._evaluate_plan_quality(request, days, used_fallback, data_sources)
-        if quality.longestLegMinutes > {"RELAXED": 30, "BALANCED": 40, "INTENSIVE": 50}[request.pace]:
+        if quality.longestLegMinutes > PACE_PROFILES[request.pace].max_normal_leg_minutes:
             warnings.append(
                 f"最长单段通勤约 {quality.longestLegMinutes} 分钟；这是当前热门地点与时段约束下的保留结果，"
                 "可在详情中改用同片区备选。"
@@ -660,6 +695,13 @@ class TravelPlanGenerationService:
         if quality.minimumClosingMarginMinutes is not None and quality.minimumClosingMarginMinutes < 20:
             warnings.append(
                 f"最紧张景点距离闭馆仅余约 {quality.minimumClosingMarginMinutes} 分钟，建议出发前再次确认停止入场时间。"
+            )
+        if quality.underfilledDayIndexes:
+            warnings.append(
+                "第 "
+                + "、".join(str(index) for index in quality.underfilledDayIndexes)
+                + " 天在开放时间、天气和顺路通勤约束下仍低于所选节奏；"
+                "系统没有用远距离或不可执行地点强行凑数，可从同片区备选中继续调整。"
             )
         enrichment_batch_id: str | None = None
         if self._place_detail_service is not None and all_places:
@@ -703,6 +745,13 @@ class TravelPlanGenerationService:
                         officialTicketNote=place.officialTicketNote,
                         crowdRisk=place.crowdRisk,
                         contentUpdatedAt=place.contentUpdatedAt,
+                        visitUnitId=place.visitUnitId,
+                        visitUnitName=place.visitUnitName,
+                        visitUnitPolicy=place.visitUnitPolicy,
+                        visitUnitMemberOrder=place.visitUnitMemberOrder,
+                        visitUnitTransferMinutes=place.visitUnitTransferMinutes,
+                        visitUnitSourceUrl=place.visitUnitSourceUrl,
+                        recommendedVisitMinutes=place.recommendedVisitMinutes,
                     )
                     for place in all_places
                 ]
@@ -1222,6 +1271,16 @@ class TravelPlanGenerationService:
             except Exception:
                 enriched.append(place)
         return enriched
+
+    def _attach_visit_unit_signals(self, candidates: list[PlaceSummary]) -> list[PlaceSummary]:
+        scenic = [place for place in candidates if place.category == "scenic"]
+        normalized_scenic, _ = resolve_visit_units(scenic, distance=self._distance)
+        by_id = {place.sourcePoiId: place for place in normalized_scenic}
+        return [
+            by_id.get(place.sourcePoiId, place)
+            for place in candidates
+            if place.category != "scenic" or place.sourcePoiId in by_id
+        ]
 
     async def _optimize_with_heartbeat(
         self,
@@ -1804,6 +1863,7 @@ class TravelPlanGenerationService:
                 if (
                     self._is_user_mandatory(request, self._generated_to_summary(old))
                     or self._should_protect_core_landmark(request, self._generated_to_summary(old))
+                    or old.visitUnitPolicy == "BUNDLE"
                 ):
                     continue
                 if new_id != old_id and new_id in used_ids:
@@ -1945,6 +2005,44 @@ class TravelPlanGenerationService:
                 notes.append(
                     f"第{baseline.dayIndex}天未采纳：通勤明显增加且没有带来偏好或地点质量收益",
                 )
+        fallback_bundle_days = {
+            place.visitUnitId: day.dayIndex
+            for day in fallback
+            for place in day.places
+            if place.visitUnitPolicy == "BUNDLE" and place.visitUnitId
+        }
+        fallback_bundle_members = {
+            unit_id: {
+                place.sourcePoiId
+                for day in fallback
+                for place in day.places
+                if place.visitUnitId == unit_id
+            }
+            for unit_id in fallback_bundle_days
+        }
+        invalid_bundle_days: set[int] = set()
+        for unit_id, expected_day in fallback_bundle_days.items():
+            occurrences = {
+                day.dayIndex: {
+                    place.sourcePoiId
+                    for place in day.places
+                    if place.visitUnitId == unit_id
+                }
+                for day in selected
+                if any(place.visitUnitId == unit_id for place in day.places)
+            }
+            if occurrences != {expected_day: fallback_bundle_members[unit_id]}:
+                invalid_bundle_days.update(occurrences)
+                invalid_bundle_days.add(expected_day)
+        if invalid_bundle_days:
+            fallback_by_day = {day.dayIndex: day for day in fallback}
+            for index, day in enumerate(selected):
+                if day.dayIndex not in invalid_bundle_days:
+                    continue
+                if day != fallback_by_day[day.dayIndex]:
+                    accepted = max(0, accepted - 1)
+                selected[index] = fallback_by_day[day.dayIndex]
+                notes[day.dayIndex - 1] = f"第{day.dayIndex}天未采纳：建议会拆分或重复同一景区游览单元"
         return selected, accepted, notes
 
     def _ai_day_violations(
@@ -2006,6 +2104,13 @@ class TravelPlanGenerationService:
         }
         if not mandatory_ids.issubset(set(candidate_ids)):
             violations.append("缺少用户必去地点或城市核心热门地标")
+        baseline_bundle_ids = {
+            place.sourcePoiId
+            for place in baseline.places
+            if place.visitUnitPolicy == "BUNDLE"
+        }
+        if not baseline_bundle_ids.issubset(set(candidate_ids)):
+            violations.append("拆分了应在同一次游览中完成的景区组成部分")
         if baseline.places and candidate.places:
             if baseline.places[0].category in {"transport", "lodging"} and (
                 candidate.places[0].sourcePoiId != baseline.places[0].sourcePoiId
@@ -2023,6 +2128,11 @@ class TravelPlanGenerationService:
         expected_transfer_count = max(0, len(candidate.places) - 1)
         if len(candidate.transfers) != expected_transfer_count:
             violations.append("相邻地点缺少完整交通校验")
+        if (
+            self._underfilled_day_reason(request, baseline) is None
+            and self._underfilled_day_reason(request, candidate) is not None
+        ):
+            violations.append("AI 调整会让完整日低于所选旅行节奏的合理负载")
         return violations
 
     def _generated_day_quality(self, day: AiGeneratedDay) -> float:
@@ -2117,6 +2227,13 @@ class TravelPlanGenerationService:
                 officialTicketNote=place.officialTicketNote,
                 crowdRisk=place.crowdRisk,
                 contentUpdatedAt=place.contentUpdatedAt,
+                visitUnitId=place.visitUnitId,
+                visitUnitName=place.visitUnitName,
+                visitUnitPolicy=place.visitUnitPolicy,
+                visitUnitMemberOrder=place.visitUnitMemberOrder,
+                visitUnitTransferMinutes=place.visitUnitTransferMinutes,
+                visitUnitSourceUrl=place.visitUnitSourceUrl,
+                recommendedVisitMinutes=place.recommendedVisitMinutes,
             )
             for place in places
         ]
@@ -2147,6 +2264,7 @@ class TravelPlanGenerationService:
                 or not self._is_low_value_commercial_scenic(place)
             )
         ]
+        scenic, visit_units = resolve_visit_units(scenic, distance=self._distance)
         food = sorted(
             (
                 place
@@ -2165,39 +2283,52 @@ class TravelPlanGenerationService:
         departure_day = request.departureDay or request.dayCount
         scenic_capacity = max(4, scenic_target * 2)
         base_anchor = arrival_anchor or next((place for place in hotel_by_name.values() if place), None)
-        scenic_regions = partition_by_geography(
-            scenic,
+        visit_regions = partition_by_geography(
+            visit_units,
             request.dayCount,
-            score=lambda place: (
+            score=lambda unit: sum(
                 self._candidate_score(request, place, None, base_anchor).total
                 + (100.0 if self._is_user_mandatory(request, place) else 0.0)
+                for place in unit.places
             ),
             distance=self._distance,
             capacity=scenic_capacity,
+            weight=lambda unit: unit.weight,
         )
-        scenic_regions = improve_day_partition(
-            scenic_regions,
-            day_score=lambda place, day_index: (
-                self._candidate_score(
-                    request,
-                    place,
-                    weather_forecast[day_index - 1] if day_index <= len(weather_forecast) else None,
-                    base_anchor,
-                ).total
-                + (120.0 if self._requested_day_for_place(request, place) == day_index else 0.0)
-                - (
-                    120.0
-                    if self._requested_day_for_place(request, place) not in {None, day_index}
-                    else 0.0
+        visit_regions = improve_day_partition(
+            visit_regions,
+            day_score=lambda unit, day_index: sum(
+                (
+                    self._candidate_score(
+                        request,
+                        place,
+                        weather_forecast[day_index - 1] if day_index <= len(weather_forecast) else None,
+                        base_anchor,
+                    ).total
+                    + (120.0 if self._requested_day_for_place(request, place) == day_index else 0.0)
+                    - (
+                        120.0
+                        if self._requested_day_for_place(request, place) not in {None, day_index}
+                        else 0.0
+                    )
                 )
+                for place in unit.places
             ),
             distance=self._distance,
             capacity=scenic_capacity,
+            weight=lambda unit: unit.weight,
         )
+        assigned_day_by_place_id = {
+            place.sourcePoiId: day_index
+            for day_index, region in enumerate(visit_regions, start=1)
+            for unit in region
+            for place in unit.places
+        }
 
         for day_index in range(1, request.dayCount + 1):
             weather = weather_forecast[day_index - 1] if day_index <= len(weather_forecast) else None
-            region = scenic_regions[day_index - 1] if day_index <= len(scenic_regions) else []
+            unit_region = visit_regions[day_index - 1] if day_index <= len(visit_regions) else []
+            region = [place for unit in unit_region for place in unit.places]
             ranked_region = sorted(
                 (place for place in region if place.sourcePoiId not in used),
                 key=lambda place: self._candidate_score(request, place, weather, base_anchor).total,
@@ -2209,6 +2340,12 @@ class TravelPlanGenerationService:
                     place
                     for place in scenic
                     if place.sourcePoiId not in used and place.sourcePoiId not in region_ids
+                    and self._assigned_candidate_available_on_day(
+                        request,
+                        place,
+                        day_index,
+                        assigned_day_by_place_id,
+                    )
                 ),
                 key=lambda place: self._candidate_score(request, place, weather, base_anchor).total,
                 reverse=True,
@@ -2217,7 +2354,14 @@ class TravelPlanGenerationService:
                 (
                     place
                     for place in scenic
-                    if place.sourcePoiId not in used and self._should_protect_core_landmark(request, place)
+                    if place.sourcePoiId not in used
+                    and self._assigned_candidate_available_on_day(
+                        request,
+                        place,
+                        day_index,
+                        assigned_day_by_place_id,
+                    )
+                    and self._should_protect_core_landmark(request, place)
                 ),
                 key=self._first_visit_landmark_score,
                 reverse=True,
@@ -2237,6 +2381,12 @@ class TravelPlanGenerationService:
                         place
                         for place in scenic
                         if place.sourcePoiId not in used
+                        and self._assigned_candidate_available_on_day(
+                            request,
+                            place,
+                            day_index,
+                            assigned_day_by_place_id,
+                        )
                         and self._is_night_experience_candidate(place, request, day_index)
                     ),
                     key=lambda place: (
@@ -2253,7 +2403,27 @@ class TravelPlanGenerationService:
                 )
             seed = ranked_scenic[0] if ranked_scenic else None
             full_day = self._is_full_day_scenic(seed) if seed is not None else False
-            target = 1 if full_day else scenic_target
+            bundled_extra_members = sum(
+                max(0, len(unit.places) - 1)
+                for unit in unit_region
+                if unit.policy == "BUNDLE"
+            )
+            # A bundle's child areas consume real time but represent one main
+            # visit unit. Do not let those child POIs crowd out the rest of the
+            # day's pace budget merely because the official complex has more
+            # than one executable entrance/area.
+            target = 1 if full_day else scenic_target + bundled_extra_members
+            required_visit_unit_ids = {
+                unit.unit_id
+                for unit in unit_region
+                if unit.policy == "BUNDLE"
+            }
+            required_member_count = sum(
+                len(unit.places)
+                for unit in unit_region
+                if unit.policy == "BUNDLE"
+            )
+            target = max(target, required_member_count)
 
             meal_roles: dict[str, str] = {}
             meals: dict[str, PlaceSummary | None] = {"BREAKFAST": None, "LUNCH": None, "DINNER": None}
@@ -2280,6 +2450,7 @@ class TravelPlanGenerationService:
                     weather,
                     day_start_anchor,
                     day_end_anchor,
+                    required_visit_unit_ids=required_visit_unit_ids,
                 )
                 if ranked_scenic
                 else []
@@ -2446,10 +2617,29 @@ class TravelPlanGenerationService:
                     places=generated_places,
                     weather=weather.text if weather is not None else None,
                     estimatedDistanceKm=self._day_distance(generated_places),
-                    intensity=self._intensity_count(len(generated_places)),
+                    intensity=self._intensity(generated_places),
                 ),
             )
         return days
+
+    def _assigned_candidate_available_on_day(
+        self,
+        request: AiPlanGenerationRequest,
+        place: PlaceSummary,
+        day_index: int,
+        assigned_day_by_place_id: dict[str, int],
+    ) -> bool:
+        requested_day = self._requested_day_for_place(request, place)
+        if requested_day is not None:
+            return requested_day == day_index
+        assigned_day = assigned_day_by_place_id.get(place.sourcePoiId)
+        if assigned_day is None:
+            return True
+        if place.visitUnitPolicy == "BUNDLE":
+            return assigned_day == day_index
+        # A day may reuse an unselected candidate from an earlier region, but
+        # must not consume a future day's geographic seed or compact cluster.
+        return assigned_day <= day_index
 
     def _select_time_window_scenic(
         self,
@@ -2460,6 +2650,7 @@ class TravelPlanGenerationService:
         weather: AmapWeatherForecastDay | None,
         start_anchor: PlaceSummary | None,
         end_anchor: PlaceSummary | None,
+        required_visit_unit_ids: set[str] | None = None,
     ) -> list[PlaceSummary]:
         """Solve a compact day before any restaurant is inserted.
 
@@ -2470,6 +2661,15 @@ class TravelPlanGenerationService:
         """
         if not candidates or target <= 0:
             return []
+        required_visit_unit_ids = required_visit_unit_ids or set()
+        expected_bundle_members = {
+            unit_id: {
+                place.sourcePoiId
+                for place in candidates
+                if place.visitUnitId == unit_id and place.visitUnitPolicy == "BUNDLE"
+            }
+            for unit_id in required_visit_unit_ids
+        }
         start_minute, end_minute = self._effective_day_bounds(request, day_index)
         available: list[PlaceSummary] = []
         solver_candidates: list[VisitCandidate] = []
@@ -2487,7 +2687,7 @@ class TravelPlanGenerationService:
                     windows = [TimeWindow(17 * 60 + 30, min(end_minute, 21 * 60 + 30), 20 * 60 + 30)]
                 else:
                     windows = [TimeWindow(9 * 60 + 30, min(end_minute, 17 * 60 + 30))]
-            duration = 360 if self._is_full_day_scenic(place) else self._visit_duration_minutes("scenic", request.pace)
+            duration = self._visit_duration_for_place(place, request.pace)
             windows = self._weather_adjusted_windows(place, windows, weather, duration)
             reserved_window = self._user_visit_window(request, place, day_index, duration)
             if reserved_window is not None:
@@ -2533,12 +2733,32 @@ class TravelPlanGenerationService:
                     mandatory=(
                         self._is_user_mandatory(request, place)
                         or self._should_protect_core_landmark(request, place)
+                        or place.visitUnitId in required_visit_unit_ids
                     ),
                     uncertainty_penalty=0.10 if not (place.openingHoursToday or place.openingHoursWeek) else 0.0,
                     category=self._experience_category(place),
                     region=place.districtName or place.businessArea or "",
                 ),
             )
+        if not solver_candidates:
+            return []
+
+        eligible_ids = {candidate.place_id for candidate in solver_candidates}
+        incomplete_units = {
+            unit_id
+            for unit_id, member_ids in expected_bundle_members.items()
+            if member_ids and not member_ids.issubset(eligible_ids)
+        }
+        if incomplete_units:
+            blocked_ids = {
+                place.sourcePoiId
+                for place in available
+                if place.visitUnitId in incomplete_units
+            }
+            available = [place for place in available if place.sourcePoiId not in blocked_ids]
+            solver_candidates = [
+                candidate for candidate in solver_candidates if candidate.place_id not in blocked_ids
+            ]
         if not solver_candidates:
             return []
 
@@ -2553,17 +2773,20 @@ class TravelPlanGenerationService:
                 if origin.sourcePoiId == destination.sourcePoiId:
                     continue
                 direct_km = self._distance(origin, destination)
+                internal_minutes = self._internal_transfer_minutes(origin, destination)
                 edges[(origin.sourcePoiId, destination.sourcePoiId)] = TravelEdge(
                     origin_id=origin.sourcePoiId,
                     destination_id=destination.sourcePoiId,
                     duration_minutes=(
-                        max(10, round(8 + direct_km * 6))
+                        internal_minutes
+                        if internal_minutes is not None
+                        else max(10, round(8 + direct_km * 6))
                         + self._exit_buffer_minutes(origin)
                         + self._entry_buffer_minutes(destination)
                     ),
-                    distance_meters=max(1, round(direct_km * 1350)),
-                    mode="estimated",
-                    verified=False,
+                    distance_meters=max(1, round(direct_km * (1000 if internal_minutes is not None else 1350))),
+                    mode="official_internal" if internal_minutes is not None else "estimated",
+                    verified=internal_minutes is not None,
                 )
         solution = solve_day_with_time_windows(
             solver_candidates,
@@ -2572,6 +2795,22 @@ class TravelPlanGenerationService:
             start_id=start_anchor.sourcePoiId if start_anchor is not None else None,
             end_id=end_anchor.sourcePoiId if end_anchor is not None else None,
         )
+        if not solution.feasible and required_visit_unit_ids:
+            blocked_ids = {
+                place.sourcePoiId
+                for place in available
+                if place.visitUnitId in required_visit_unit_ids
+            }
+            fallback_candidates = [
+                candidate for candidate in solver_candidates if candidate.place_id not in blocked_ids
+            ]
+            solution = solve_day_with_time_windows(
+                fallback_candidates,
+                edges,
+                self._day_solver_config(request, start_minute, end_minute, target),
+                start_id=start_anchor.sourcePoiId if start_anchor is not None else None,
+                end_id=end_anchor.sourcePoiId if end_anchor is not None else None,
+            )
         by_id = {place.sourcePoiId: place for place in available}
         selected = [by_id[place_id] for place_id in solution.ordered_place_ids if place_id in by_id]
 
@@ -2689,13 +2928,13 @@ class TravelPlanGenerationService:
         return roles
 
     def _scenic_target_for_request(self, request: AiPlanGenerationRequest) -> int:
-        target = {"RELAXED": 2, "BALANCED": 3, "INTENSIVE": 3}[request.pace]
+        target = PACE_PROFILES[request.pace].scenic_target
         instructions = " ".join([*request.preferences, request.freeText or ""])
         if any(word in instructions for word in ("少安排", "不要太累", "慢慢逛", "休闲", "带老人", "带小孩")):
             target -= 1
         if any(word in instructions for word in ("多安排", "尽可能多", "特种兵", "打卡更多")):
             target += 1
-        return min(4, max(1, target))
+        return min(5, max(1, target))
 
     def _preference_place_score(
         self,
@@ -3096,6 +3335,7 @@ class TravelPlanGenerationService:
                     mandatory=(
                         self._is_user_mandatory(request, summary)
                         or self._should_protect_core_landmark(request, summary)
+                        or summary.visitUnitPolicy == "BUNDLE"
                     ),
                     uncertainty_penalty=0.12 if not opening_verified[place.sourcePoiId] else 0.0,
                     category=self._experience_category(summary),
@@ -3110,6 +3350,20 @@ class TravelPlanGenerationService:
         for origin in relevant:
             for destination in relevant:
                 if origin.sourcePoiId == destination.sourcePoiId:
+                    continue
+                internal_minutes = self._internal_transfer_minutes(origin, destination)
+                if internal_minutes is not None:
+                    direct_km = self._distance(
+                        summaries[origin.sourcePoiId], summaries[destination.sourcePoiId],
+                    )
+                    edges[(origin.sourcePoiId, destination.sourcePoiId)] = TravelEdge(
+                        origin.sourcePoiId,
+                        destination.sourcePoiId,
+                        internal_minutes,
+                        max(1, round(direct_km * 1000)),
+                        mode="official_internal",
+                        verified=True,
+                    )
                     continue
                 matrix_value = matrix.get((origin.sourcePoiId, destination.sourcePoiId))
                 if matrix_value is not None:
@@ -3181,6 +3435,259 @@ class TravelPlanGenerationService:
                 ),
             )
         return [*prefix, *ordered, *suffix] if ordered else places
+    def _day_scenic_load(
+        self,
+        request: AiPlanGenerationRequest,
+        day: AiGeneratedDay,
+    ) -> tuple[int, int, float, bool]:
+        scenic = [place for place in day.places if place.category == "scenic"]
+        unit_ids = {
+            place.visitUnitId
+            if place.visitUnitPolicy == "BUNDLE" and place.visitUnitId
+            else place.sourcePoiId
+            for place in scenic
+        }
+        visit_minutes = sum(
+            max(
+                0,
+                self._time_to_minutes(place.suggestedEnd)
+                - self._time_to_minutes(place.suggestedStart),
+            )
+            for place in scenic
+        )
+        start, end = self._effective_day_bounds(request, day.dayIndex)
+        occupancy = visit_minutes / max(1, end - start)
+        full_day = any(
+            self._is_full_day_scenic(self._generated_to_summary(place))
+            for place in scenic
+        )
+        return len(unit_ids), visit_minutes, round(occupancy, 3), full_day
+
+    def _underfilled_day_reason(
+        self,
+        request: AiPlanGenerationRequest,
+        day: AiGeneratedDay,
+    ) -> str | None:
+        start, end = self._effective_day_bounds(request, day.dayIndex)
+        available_minutes = end - start
+        unit_count, visit_minutes, _, full_day = self._day_scenic_load(request, day)
+        if available_minutes <= 5 * 60 or full_day:
+            return None
+        target = self._scenic_target_for_request(request)
+        minimum_minutes = self._minimum_scenic_minutes(request, start, end, target)
+        if unit_count >= target or visit_minutes >= minimum_minutes:
+            return None
+        return (
+            f"仅安排 {unit_count} 个主要游览单元、约 {visit_minutes} 分钟游览，"
+            f"低于{PACE_LABELS[request.pace]}完整日的 {target} 个或约 {minimum_minutes} 分钟参考负载"
+        )
+
+    def _density_insertion_indexes(
+        self,
+        places: list[AiGeneratedPlace],
+        candidate: PlaceSummary,
+    ) -> list[int]:
+        if not places:
+            return [0]
+        first = 1 if places[0].category in {"transport", "lodging"} else 0
+        last = len(places) - 1 if places[-1].category in {"transport", "lodging"} else len(places)
+        indexes = list(range(first, last + 1))
+
+        def insertion_cost(index: int) -> float:
+            previous = self._generated_to_summary(places[index - 1]) if index > 0 else None
+            following = self._generated_to_summary(places[index]) if index < len(places) else None
+            cost = 0.0
+            if previous is not None:
+                cost += self._distance(previous, candidate)
+            if following is not None:
+                cost += self._distance(candidate, following)
+            if previous is not None and following is not None:
+                cost -= self._distance(previous, following)
+            return cost
+
+        return sorted(indexes, key=lambda index: (insertion_cost(index), index))
+
+    async def _repair_underfilled_days(
+        self,
+        request: AiPlanGenerationRequest,
+        days: list[AiGeneratedDay],
+        candidates: list[PlaceSummary],
+        weather_forecast: list[AmapWeatherForecastDay],
+        progress: ProgressCallback | None,
+    ) -> list[AiGeneratedDay]:
+        """Fill clearly sparse complete days without weakening route constraints."""
+        if not days:
+            return days
+        used_ids = {place.sourcePoiId for day in days for place in day.places}
+        repaired_days: list[AiGeneratedDay] = []
+        profile = PACE_PROFILES[request.pace]
+
+        for original_day in days:
+            day = original_day
+            additions = 0
+            while additions < profile.scenic_target:
+                reason = self._underfilled_day_reason(request, day)
+                if reason is None:
+                    break
+                weather = (
+                    weather_forecast[day.dayIndex - 1]
+                    if day.dayIndex <= len(weather_forecast)
+                    else None
+                )
+                scenic = [place for place in day.places if place.category == "scenic"]
+                scenic_summaries = [self._generated_to_summary(place) for place in scenic]
+                districts = {place.districtName for place in scenic if place.districtName}
+
+                def nearby_distance(place: PlaceSummary) -> float:
+                    return min(
+                        (self._distance(place, anchor) for anchor in scenic_summaries),
+                        default=0.0,
+                    )
+
+                pool = [
+                    place
+                    for place in candidates
+                    if place.category == "scenic"
+                    and place.sourcePoiId not in used_ids
+                    and not self._is_explicitly_excluded(request, place)
+                    and not self._is_full_day_scenic(place)
+                    and self._is_open_on_trip_day(place, request, day.dayIndex)
+                    and not self._weather_hard_blocked(place, weather)
+                    and self._requested_day_for_place(request, place) in {None, day.dayIndex}
+                    and (
+                        not scenic_summaries
+                        or (place.districtName and place.districtName in districts)
+                        or nearby_distance(place) <= 4.0
+                    )
+                ]
+                ranked = sorted(
+                    pool,
+                    key=lambda place: (
+                        -self._candidate_score(
+                            request,
+                            place,
+                            weather,
+                            scenic_summaries[0] if scenic_summaries else None,
+                        ).total,
+                        nearby_distance(place),
+                        place.sourcePoiId,
+                    ),
+                )[:6]
+                protected_ids = {
+                    place.sourcePoiId
+                    for place in day.places
+                    if place.category in {"scenic", "transport", "lodging"}
+                }
+                previous_load = self._day_scenic_load(request, day)
+                accepted: AiGeneratedDay | None = None
+                accepted_name = ""
+                accepted_id = ""
+
+                for candidate in ranked:
+                    for insertion_index in self._density_insertion_indexes(day.places, candidate):
+                        slot_start, slot_end = self._default_slot(request, insertion_index)
+                        generated_candidate = self._to_generated_place(
+                            candidate,
+                            insertion_index,
+                            {
+                                "start": slot_start,
+                                "end": slot_end,
+                                "note": "完整日负载复核后加入的同片区顺路地点。",
+                            },
+                            request,
+                        )
+                        sequence = [
+                            *day.places[:insertion_index],
+                            generated_candidate,
+                            *day.places[insertion_index:],
+                        ]
+                        scheduled = self._reschedule_generated_sequence(
+                            request,
+                            sequence,
+                            day.dayIndex,
+                        )
+                        scheduled_ids = {place.sourcePoiId for place in scheduled}
+                        if candidate.sourcePoiId not in scheduled_ids or not protected_ids.issubset(scheduled_ids):
+                            continue
+                        proposed = day.model_copy(
+                            update={"places": scheduled, "transfers": []},
+                            deep=True,
+                        )
+                        if self._route_service is not None:
+                            try:
+                                routed = await self._apply_actual_routes(
+                                    request,
+                                    [proposed],
+                                    weather_forecast,
+                                    None,
+                                    repair_candidates=[
+                                        place
+                                        for place in candidates
+                                        if place.sourcePoiId not in used_ids
+                                        or place.sourcePoiId in scheduled_ids
+                                    ],
+                                )
+                            except HTTPException:
+                                continue
+                            if not routed:
+                                continue
+                            proposed = routed[0]
+                        proposed_ids = {place.sourcePoiId for place in proposed.places}
+                        if candidate.sourcePoiId not in proposed_ids or not protected_ids.issubset(proposed_ids):
+                            continue
+                        longest_leg = max(
+                            (transfer.durationMinutes for transfer in proposed.transfers),
+                            default=0,
+                        )
+                        previous_longest = max(
+                            (transfer.durationMinutes for transfer in day.transfers),
+                            default=0,
+                        )
+                        if longest_leg > max(profile.max_fill_leg_minutes, previous_longest):
+                            continue
+                        new_load = self._day_scenic_load(request, proposed)
+                        if new_load[0] <= previous_load[0] and new_load[1] <= previous_load[1]:
+                            continue
+                        accepted = proposed.model_copy(
+                            update={
+                                "estimatedDistanceKm": round(
+                                    sum(item.distanceMeters for item in proposed.transfers) / 1000,
+                                    1,
+                                ),
+                                "intensity": self._intensity(proposed.places),
+                            },
+                            deep=True,
+                        )
+                        accepted_name = candidate.name
+                        accepted_id = candidate.sourcePoiId
+                        break
+                    if accepted is not None:
+                        break
+
+                if accepted is None:
+                    break
+                day = accepted
+                used_ids.update(place.sourcePoiId for place in day.places)
+                used_ids.add(accepted_id)
+                additions += 1
+                self._notify(
+                    progress,
+                    72,
+                    f"第 {day.dayIndex} 天偏空，已补充同片区的 {accepted_name}",
+                    len(repaired_days),
+                    partial_days=[*repaired_days, day],
+                    event=self._event(
+                        "PLAN_REFINED",
+                        f"第 {day.dayIndex} 天原计划{reason}；已加入 {accepted_name}。",
+                        day_index=day.dayIndex,
+                        evidence=["候选当日开放", "原有主要地点全部保留", "补点后真实路线仍通过"],
+                        decision="只补充同片区且不会引入超长通勤的地点。",
+                    ),
+                    active_day_index=day.dayIndex,
+                )
+            repaired_days.append(day)
+        return repaired_days
+
     async def _apply_actual_routes(
         self,
         request: AiPlanGenerationRequest,
@@ -3318,43 +3825,60 @@ class TravelPlanGenerationService:
                 departure_time = previous.suggestedEnd
                 warning: str | None = None
                 verified = True
-                try:
-                    segment = await self._route_service.best_segment(
-                        origin=self._to_route_place(previous),
-                        destination=self._to_route_place(original),
-                        preference=request.transportPreference,
-                        departure_date=trip_date.strftime("%Y-%m-%d") if trip_date else None,
-                        departure_time=departure_time,
-                        allow_cycling=allow_cycling,
-                    )
-                    distance_meters = max(0, segment.distanceMeters)
-                    duration_minutes = max(1, math.ceil(segment.durationSeconds / 60))
-                    mode = segment.mode
-                    mode_label = self._route_mode_label(segment.mode, segment.steps)
-                    warning = segment.warning
-                    polyline = segment.polyline
-                except HTTPException as exc:
-                    verified = False
+                internal_minutes = self._internal_transfer_minutes(previous, original)
+                if internal_minutes is not None:
                     direct_km = self._distance_coordinates(
                         previous.latitude,
                         previous.longitude,
                         original.latitude,
                         original.longitude,
                     )
-                    distance_meters = max(1, round(direct_km * 1350))
-                    duration_minutes = max(15, round(12 + direct_km * 6))
-                    mode = "walking" if direct_km <= 1.5 else "driving"
-                    mode_label = self._route_mode_label(mode, [])
-                    warning = f"实时路线不可用，采用保守预留：{exc.detail}"
+                    distance_meters = max(1, round(direct_km * 1000))
+                    duration_minutes = internal_minutes
+                    mode = "driving"
+                    mode_label = "景区接驳"
                     polyline = [
                         {"latitude": previous.latitude, "longitude": previous.longitude},
                         {"latitude": original.latitude, "longitude": original.longitude},
                     ]
+                else:
+                    try:
+                        segment = await self._route_service.best_segment(
+                            origin=self._to_route_place(previous),
+                            destination=self._to_route_place(original),
+                            preference=request.transportPreference,
+                            departure_date=trip_date.strftime("%Y-%m-%d") if trip_date else None,
+                            departure_time=departure_time,
+                            allow_cycling=allow_cycling,
+                        )
+                        distance_meters = max(0, segment.distanceMeters)
+                        duration_minutes = max(1, math.ceil(segment.durationSeconds / 60))
+                        mode = segment.mode
+                        mode_label = self._route_mode_label(segment.mode, segment.steps)
+                        warning = segment.warning
+                        polyline = segment.polyline
+                    except HTTPException as exc:
+                        verified = False
+                        direct_km = self._distance_coordinates(
+                            previous.latitude,
+                            previous.longitude,
+                            original.latitude,
+                            original.longitude,
+                        )
+                        distance_meters = max(1, round(direct_km * 1350))
+                        duration_minutes = max(15, round(12 + direct_km * 6))
+                        mode = "walking" if direct_km <= 1.5 else "driving"
+                        mode_label = self._route_mode_label(mode, [])
+                        warning = f"实时路线不可用，采用保守预留：{exc.detail}"
+                        polyline = [
+                            {"latitude": previous.latitude, "longitude": previous.longitude},
+                            {"latitude": original.latitude, "longitude": original.longitude},
+                        ]
 
                 previous_summary = self._generated_to_summary(previous)
                 original_summary = self._generated_to_summary(original)
-                entrance_buffer = self._entry_buffer_minutes(original_summary)
-                exit_buffer = self._exit_buffer_minutes(previous_summary)
+                entrance_buffer = 0 if internal_minutes is not None else self._entry_buffer_minutes(original_summary)
+                exit_buffer = 0 if internal_minutes is not None else self._exit_buffer_minutes(previous_summary)
                 earliest = (
                     self._time_to_minutes(previous.suggestedEnd)
                     + exit_buffer
@@ -3369,6 +3893,7 @@ class TravelPlanGenerationService:
                     if (
                         original.category == "scenic"
                         and repair_candidates
+                        and original.visitUnitPolicy != "BUNDLE"
                         and not self._should_protect_core_landmark(request, original_summary)
                     ):
                         repaired = await self._try_actual_route_replacement(
@@ -3411,6 +3936,7 @@ class TravelPlanGenerationService:
                     elif (
                         original.category in {"transport", "lodging"}
                         or self._is_user_mandatory(request, original_summary)
+                        or original.visitUnitPolicy == "BUNDLE"
                     ):
                         raise HTTPException(
                             status_code=422,
@@ -3997,6 +4523,13 @@ class TravelPlanGenerationService:
             officialTicketNote=place.officialTicketNote,
             crowdRisk=place.crowdRisk,
             contentUpdatedAt=place.contentUpdatedAt,
+            visitUnitId=place.visitUnitId,
+            visitUnitName=place.visitUnitName,
+            visitUnitPolicy=place.visitUnitPolicy,
+            visitUnitMemberOrder=place.visitUnitMemberOrder,
+            visitUnitTransferMinutes=place.visitUnitTransferMinutes,
+            visitUnitSourceUrl=place.visitUnitSourceUrl,
+            recommendedVisitMinutes=place.recommendedVisitMinutes,
         )
 
     def _normalized_hotel_stays(self, request: AiPlanGenerationRequest) -> list[tuple[str, int, int]]:
@@ -4449,10 +4982,16 @@ class TravelPlanGenerationService:
 
         for position, place in enumerate(places):
             if previous is not None:
-                transfer_minutes = min(55, max(15, round(self._distance(previous, place) * 8)))
-                current += self._exit_buffer_minutes(previous) + transfer_minutes
-            duration = 360 if self._is_full_day_scenic(place) else self._visit_duration_minutes(place.category, request.pace)
-            if place.category == "scenic":
+                internal_minutes = self._internal_transfer_minutes(previous, place)
+                if internal_minutes is not None:
+                    current += internal_minutes
+                else:
+                    transfer_minutes = min(55, max(15, round(self._distance(previous, place) * 8)))
+                    current += self._exit_buffer_minutes(previous) + transfer_minutes
+            duration = self._visit_duration_for_place(place, request.pace)
+            if place.category == "scenic" and not (
+                previous is not None and self._internal_transfer_minutes(previous, place) is not None
+            ):
                 current += self._entry_buffer_minutes(place)
             confirmed_opening_windows = self._opening_windows_for_day(place, request, day_index)
             opening_windows = confirmed_opening_windows or self._opening_hint_windows_for_day(
@@ -4604,8 +5143,17 @@ class TravelPlanGenerationService:
         replay: bool = False,
     ) -> DaySolverConfig:
         """Translate pace into traveler-comfort costs, not visit-count alone."""
-        max_leg = {"RELAXED": 30, "BALANCED": 40, "INTENSIVE": 50}[request.pace]
-        max_idle = {"RELAXED": 55, "BALANCED": 45, "INTENSIVE": 35}[request.pace]
+        profile = PACE_PROFILES[request.pace]
+        minimum_visit_minutes = (
+            0
+            if replay
+            else self._minimum_scenic_minutes(
+                request,
+                day_start,
+                day_end,
+                max_visits,
+            )
+        )
         return DaySolverConfig(
             day_start=day_start,
             day_end=day_end,
@@ -4613,13 +5161,48 @@ class TravelPlanGenerationService:
             travel_minute_penalty=0.018 if replay else 0.014,
             waiting_minute_penalty=0.006 if replay else 0.005,
             minimum_optional_gain=-1000.0 if replay else 0.01,
-            max_normal_leg_minutes=max_leg,
-            max_idle_minutes=max_idle,
+            minimum_underfilled_gain=(
+                -1000.0
+                if replay
+                else profile.minimum_underfilled_gain
+            ),
+            minimum_visit_minutes=minimum_visit_minutes,
+            max_normal_leg_minutes=profile.max_normal_leg_minutes,
+            max_fill_leg_minutes=profile.max_fill_leg_minutes,
+            max_idle_minutes=profile.max_idle_minutes,
             excess_leg_minute_penalty={"RELAXED": 0.060, "BALANCED": 0.045, "INTENSIVE": 0.030}[request.pace],
             long_idle_minute_penalty=0.020,
             cross_region_penalty={"RELAXED": 0.32, "BALANCED": 0.24, "INTENSIVE": 0.16}[request.pace],
             repeated_category_penalty=0.16,
         )
+
+    def _minimum_scenic_minutes(
+        self,
+        request: AiPlanGenerationRequest,
+        day_start: int,
+        day_end: int,
+        max_visits: int,
+    ) -> int:
+        """Return a soft visit-time floor for a usable sightseeing day.
+
+        This is deliberately not a hard POI minimum. Short arrival/departure
+        windows need only one normal visit, while complete BALANCED and
+        INTENSIVE days aim for roughly three and four normal visits. Opening
+        hours, route feasibility and the compact-filler guard remain stronger.
+        """
+        if max_visits <= 1 or day_end <= day_start:
+            return 0
+        profile = PACE_PROFILES[request.pace]
+        normal_visit = profile.scenic_visit_minutes
+        available_minutes = day_end - day_start
+        if available_minutes <= 5 * 60:
+            return min(normal_visit, available_minutes)
+
+        desired = max(
+            normal_visit * profile.minimum_full_day_units,
+            round(available_minutes * profile.minimum_visit_ratio),
+        )
+        return min(max_visits * normal_visit, desired)
 
     @staticmethod
     def _experience_category(place: PlaceSummary) -> str:
@@ -4640,8 +5223,30 @@ class TravelPlanGenerationService:
         if category in {"food", "drink"}:
             return 75
         if category == "scenic":
-            return {"RELAXED": 120, "BALANCED": 105, "INTENSIVE": 90}[pace]
+            return PACE_PROFILES[pace].scenic_visit_minutes
         return 60
+
+    def _visit_duration_for_place(self, place: PlaceSummary, pace: str) -> int:
+        if self._is_full_day_scenic(place):
+            return 360
+        if place.recommendedVisitMinutes is None:
+            return self._visit_duration_minutes(place.category, pace)
+        factor = {"RELAXED": 1.15, "BALANCED": 1.0, "INTENSIVE": 0.85}[pace]
+        return max(30, round(place.recommendedVisitMinutes * factor / 5) * 5)
+
+    @staticmethod
+    def _internal_transfer_minutes(
+        origin: PlaceSummary | AiGeneratedPlace,
+        destination: PlaceSummary | AiGeneratedPlace,
+    ) -> int | None:
+        if (
+            origin.visitUnitPolicy == "BUNDLE"
+            and destination.visitUnitPolicy == "BUNDLE"
+            and origin.visitUnitId
+            and origin.visitUnitId == destination.visitUnitId
+        ):
+            return max(1, destination.visitUnitTransferMinutes or 10)
+        return None
 
     def _transport_anchor_buffer_minutes(self, place: PlaceSummary, *, departing: bool) -> int:
         text = f"{place.name} {place.typeName or ''}"
@@ -4826,7 +5431,7 @@ class TravelPlanGenerationService:
             return True
         day_chars = "一二三四五六日"
         day_char = day_chars[trip_date.weekday()]
-        if re.search(rf"周{day_char}[^；;。]*(?:闭馆|休息|不开放)", text):
+        if re.search(rf"周{day_char}[^；;。]*(?:闭馆|闭园|全天关闭|关闭|休息|不开放)", text):
             return False
         allowed: set[str] = set()
         for start, end in re.findall(r"周([一二三四五六日])\s*至\s*周?([一二三四五六日])", text):
@@ -5035,6 +5640,13 @@ class TravelPlanGenerationService:
             officialTicketNote=place.officialTicketNote,
             crowdRisk=place.crowdRisk,
             contentUpdatedAt=place.contentUpdatedAt,
+            visitUnitId=place.visitUnitId,
+            visitUnitName=place.visitUnitName,
+            visitUnitPolicy=place.visitUnitPolicy,
+            visitUnitMemberOrder=place.visitUnitMemberOrder,
+            visitUnitTransferMinutes=place.visitUnitTransferMinutes,
+            visitUnitSourceUrl=place.visitUnitSourceUrl,
+            recommendedVisitMinutes=place.recommendedVisitMinutes,
             scheduleVerified=(
                 schedule_verified
                 if schedule_verified is not None
@@ -5194,14 +5806,28 @@ class TravelPlanGenerationService:
         return 6371.0 * 2 * math.asin(math.sqrt(value))
 
     def _intensity(self, places: list[AiGeneratedPlace]) -> str:
-        return self._intensity_count(len(places))
-
-    def _intensity_count(self, count: int) -> str:
-        if count <= 3:
-            return "轻松"
-        if count == 4:
+        scenic = [place for place in places if place.category == "scenic"]
+        unit_count = len(
+            {
+                place.visitUnitId
+                if place.visitUnitPolicy == "BUNDLE" and place.visitUnitId
+                else place.sourcePoiId
+                for place in scenic
+            },
+        )
+        visit_minutes = sum(
+            max(
+                0,
+                self._time_to_minutes(place.suggestedEnd)
+                - self._time_to_minutes(place.suggestedStart),
+            )
+            for place in scenic
+        )
+        if unit_count >= 4 or visit_minutes >= 330:
+            return "充实"
+        if unit_count >= 2 or visit_minutes >= 180:
             return "适中"
-        return "充实"
+        return "轻松"
 
     def _evaluate_plan_quality(
         self,
@@ -5221,7 +5847,14 @@ class TravelPlanGenerationService:
         long_idle = 0
         meal_deviation = 0
         closing_margins: list[int] = []
-        max_idle = {"RELAXED": 55, "BALANCED": 45, "INTENSIVE": 35}[request.pace]
+        profile = PACE_PROFILES[request.pace]
+        max_idle = profile.max_idle_minutes
+        daily_loads = [self._day_scenic_load(request, day) for day in days]
+        underfilled = [
+            (day.dayIndex, reason)
+            for day in days
+            if (reason := self._underfilled_day_reason(request, day)) is not None
+        ]
 
         for day in days:
             transfer_by_pair = {
@@ -5281,7 +5914,7 @@ class TravelPlanGenerationService:
         required = self._named_constraint_queries(request, required=True)
         missing = self._missing_required_place_queries(request, days)
         required_coverage = 1.0 if not required else (len(required) - len(missing)) / len(required)
-        max_leg = {"RELAXED": 30, "BALANCED": 40, "INTENSIVE": 50}[request.pace]
+        max_leg = profile.max_normal_leg_minutes
         comfort_penalty = (
             max(0, longest_leg - max_leg) * 0.45
             + cross_region * 5
@@ -5307,6 +5940,11 @@ class TravelPlanGenerationService:
             minimumClosingMarginMinutes=min(closing_margins) if closing_margins else None,
             requiredPlaceCoverage=round(required_coverage, 3),
             comfortScore=max(0, min(100, round(100 - comfort_penalty))),
+            mainVisitUnitCountByDay=[load[0] for load in daily_loads],
+            scheduledVisitMinutesByDay=[load[1] for load in daily_loads],
+            occupancyRatioByDay=[load[2] for load in daily_loads],
+            underfilledDayIndexes=[day_index for day_index, _ in underfilled],
+            underfilledReasons=[f"第{day_index}天：{reason}" for day_index, reason in underfilled],
         )
 
     def _notify(

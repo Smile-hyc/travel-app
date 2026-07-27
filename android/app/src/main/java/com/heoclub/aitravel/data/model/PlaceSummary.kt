@@ -54,6 +54,13 @@ data class PlaceSummary(
     val officialTicketNote: String? = null,
     val crowdRisk: Double = 0.0,
     val contentUpdatedAt: String? = null,
+    val visitUnitId: String? = null,
+    val visitUnitName: String? = null,
+    val visitUnitPolicy: String? = null,
+    val visitUnitMemberOrder: Int? = null,
+    val visitUnitTransferMinutes: Int? = null,
+    val visitUnitSourceUrl: String? = null,
+    val recommendedVisitMinutes: Int? = null,
     val isFavorite: Boolean = false,
 ) {
     val categoryId: String

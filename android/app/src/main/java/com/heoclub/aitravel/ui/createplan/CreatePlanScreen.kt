@@ -564,6 +564,15 @@ fun CreatePlanScreen(
                 )
             }
         }
+        Text(
+            when (pace) {
+                "RELAXED" -> "每天约 1～2 个主要游览，保留较多休息时间"
+                "INTENSIVE" -> "每天约 3～4 个主要游览，适合早出晚归"
+                else -> "每天约 2～3 个主要游览，兼顾体验、用餐与通勤"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text("优先交通方式", fontWeight = FontWeight.SemiBold)
         Text(
             "公共交通会依据当地高德实时路线自动识别地铁、公交、轮渡等实际可用方式。",

@@ -91,6 +91,7 @@ class DaySolution:
     visits: tuple[ScheduledVisit, ...] = ()
     objective: float = 0.0
     total_value: float = 0.0
+    visit_minutes: int = 0
     travel_minutes: int = 0
     waiting_minutes: int = 0
     distance_meters: int = 0
@@ -113,7 +114,10 @@ class DaySolverConfig:
     unverified_edge_penalty: float = 0.08
     waiting_minute_penalty: float = 0.004
     minimum_optional_gain: float = 0.01
+    minimum_underfilled_gain: float = 0.01
+    minimum_visit_minutes: int = 0
     max_normal_leg_minutes: int = 40
+    max_fill_leg_minutes: int | None = None
     max_idle_minutes: int = 45
     excess_leg_minute_penalty: float = 0.035
     long_idle_minute_penalty: float = 0.018
@@ -134,7 +138,9 @@ def solve_day_with_time_windows(
     The solver is deliberately deterministic. It never repairs an unavailable
     edge or a closed time window with invented travel/opening data. Mandatory
     candidates are inserted first; optional candidates are admitted only when
-    the complete anchored route remains feasible and improves the objective.
+    the complete anchored route remains feasible. A slightly negative gain is
+    accepted while a day is underfilled, but only when it does not introduce a
+    new leg beyond the pace's normal comfort range.
     """
     if config.day_end <= config.day_start or config.max_visits <= 0:
         return DaySolution(feasible=False, violations=("invalid_day_window",))
@@ -160,6 +166,7 @@ def solve_day_with_time_windows(
     # instead of consuming those slots by raw score order alone.
     while len(route) < config.max_visits:
         current = _evaluate(route, by_id, edges, config, start_id, end_id)
+        underfilled = current.visit_minutes < config.minimum_visit_minutes
         choices: list[tuple[float, float, str, list[str]]] = []
         for candidate in ranked:
             if candidate.mandatory or candidate.place_id in route:
@@ -169,6 +176,16 @@ def solve_day_with_time_windows(
             )
             if not options:
                 continue
+            if route and underfilled:
+                fill_leg_limit = config.max_fill_leg_minutes or config.max_normal_leg_minutes
+                normal_longest_leg = max(fill_leg_limit, current.longest_leg_minutes)
+                options = [
+                    option
+                    for option in options
+                    if option[1].longest_leg_minutes <= normal_longest_leg
+                ]
+                if not options:
+                    continue
             best_route, best_result = options[0]
             second_score = options[1][1].objective if len(options) > 1 else current.objective
             gain = best_result.objective - current.objective
@@ -177,7 +194,12 @@ def solve_day_with_time_windows(
         if not choices:
             break
         _, gain, _, inserted = max(choices, key=lambda item: (item[0], item[1], item[2]))
-        if route and gain < config.minimum_optional_gain:
+        minimum_gain = (
+            config.minimum_underfilled_gain
+            if underfilled
+            else config.minimum_optional_gain
+        )
+        if route and gain < minimum_gain:
             break
         route = inserted
 
@@ -190,6 +212,7 @@ def solve_day_with_time_windows(
             visits=result.visits,
             objective=result.objective,
             total_value=result.total_value,
+            visit_minutes=result.visit_minutes,
             travel_minutes=result.travel_minutes,
             distance_meters=result.distance_meters,
             feasible=False,
@@ -369,6 +392,9 @@ def _evaluate(
                 violations.append("end_anchor_late")
 
     total_value = sum(candidates[place_id].value for place_id in route if place_id in candidates)
+    visit_minutes = sum(
+        candidates[place_id].duration_minutes for place_id in route if place_id in candidates
+    )
     uncertainty = sum(candidates[place_id].uncertainty_penalty for place_id in route if place_id in candidates)
     objective = (
         total_value
@@ -387,6 +413,7 @@ def _evaluate(
         visits=tuple(visits),
         objective=objective,
         total_value=total_value,
+        visit_minutes=visit_minutes,
         travel_minutes=travel_minutes,
         waiting_minutes=waiting_minutes,
         distance_meters=distance_meters,
@@ -412,6 +439,7 @@ def partition_by_geography(
     score: Callable[[PlaceT], float],
     distance: Callable[[PlaceT, PlaceT], float],
     capacity: int,
+    weight: Callable[[PlaceT], int] = lambda _: 1,
 ) -> list[list[PlaceT]]:
     """Create balanced, compact day regions before choosing visit order.
 
@@ -442,7 +470,12 @@ def partition_by_geography(
     groups.extend([] for _ in range(day_count - len(groups)))
     seed_ids = {seed.sourcePoiId for seed in seeds}
     for place in (item for item in ranked if item.sourcePoiId not in seed_ids):
-        eligible = [index for index, group in enumerate(groups) if len(group) < capacity]
+        place_weight = max(1, weight(place))
+        eligible = [
+            index
+            for index, group in enumerate(groups)
+            if sum(max(1, weight(member)) for member in group) + place_weight <= capacity
+        ]
         if not eligible:
             break
 
@@ -451,7 +484,8 @@ def partition_by_geography(
             if not group:
                 return -score(place)
             mean_distance = sum(distance(place, member) for member in group) / len(group)
-            load_penalty = (len(group) / max(capacity, 1)) * 2.0
+            group_weight = sum(max(1, weight(member)) for member in group)
+            load_penalty = (group_weight / max(capacity, 1)) * 2.0
             return mean_distance + load_penalty - score(place) * 0.12
 
         groups[min(eligible, key=assignment_cost)].append(place)
@@ -465,6 +499,7 @@ def improve_day_partition(
     distance: DistanceFn,
     capacity: int,
     compactness_penalty: float = 0.10,
+    weight: Callable[[PlaceT], int] = lambda _: 1,
 ) -> list[list[PlaceT]]:
     """Improve a geographic partition with deterministic day-move and swap steps."""
     best = [list(group) for group in groups]
@@ -490,7 +525,11 @@ def improve_day_partition(
                 if len(source) <= 1:
                     continue
                 for target_index, target in enumerate(best):
-                    if source_index == target_index or len(target) >= capacity:
+                    if (
+                        source_index == target_index
+                        or sum(max(1, weight(item)) for item in target) + max(1, weight(source[place_index]))
+                        > capacity
+                    ):
                         continue
                     proposal = [list(group) for group in best]
                     moved = proposal[source_index].pop(place_index)
@@ -505,7 +544,11 @@ def improve_day_partition(
                             proposal[right_index][right_place_index],
                             proposal[left_index][left_place_index],
                         )
-                        proposals.append(proposal)
+                        if all(
+                            sum(max(1, weight(item)) for item in group) <= capacity
+                            for group in proposal
+                        ):
+                            proposals.append(proposal)
 
         improved: list[list[PlaceT]] | None = None
         improved_score = best_score
