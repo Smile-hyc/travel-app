@@ -9,6 +9,7 @@ from app.api.content import router as content_router
 from app.api.explore import router as explore_router
 from app.api.health import router as health_router
 from app.api.routes import router as routes_router
+from app.api.upload import router as upload_router
 from app.api.user import router as user_router
 from app.core.config import get_settings
 from app.core.database import init_db
@@ -52,6 +53,7 @@ def read_root() -> dict[str, str]:
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(user_router)
+app.include_router(upload_router)
 app.include_router(content_router)
 app.include_router(explore_router)
 app.include_router(routes_router)

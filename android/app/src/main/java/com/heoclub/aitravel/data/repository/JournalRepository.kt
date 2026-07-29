@@ -8,6 +8,9 @@ import com.heoclub.aitravel.data.model.UserJournalResponse
 import com.heoclub.aitravel.data.model.UserJournalUpdateRequest
 import com.heoclub.aitravel.data.remote.ApiService
 import com.heoclub.aitravel.ui.journey.JournalEntry
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import com.heoclub.aitravel.ui.journey.JournalPhoto
 import com.heoclub.aitravel.ui.journey.JournalTextSpan
 import com.heoclub.aitravel.ui.journey.JournalTextStyle
@@ -31,6 +34,33 @@ class JournalRepository(
     suspend fun deleteJournal(id: String): Result<Unit> = runCatching {
         apiService.deleteUserJournal(id)
     }
+
+    internal suspend fun syncPhotos(entry: JournalEntry, photoStore: JournalPhotoStore): JournalEntry {
+        val updatedPhotos = entry.photos.map { photo ->
+            if (photo.remoteUrl != null || photo.storedFileName == null) {
+                photo
+            } else {
+                val bytes = photoStore.readBytes(photo.storedFileName)
+                if (bytes != null) {
+                    uploadPhoto(photo.storedFileName, bytes)
+                        .fold(
+                            onSuccess = { url -> photo.copy(remoteUrl = url) },
+                            onFailure = { photo },
+                        )
+                } else {
+                    photo
+                }
+            }
+        }
+        return entry.copy(photos = updatedPhotos)
+    }
+
+    suspend fun uploadPhoto(fileName: String, imageBytes: ByteArray): Result<String> = runCatching {
+        val requestBody = imageBytes.toRequestBody("image/jpeg".toMediaTypeOrNull())
+        val part = MultipartBody.Part.createFormData("file", fileName, requestBody)
+        val response = apiService.uploadImage(part)
+        response.url
+    }
 }
 
 // ── Conversion helpers between API models and UI JournalEntry ──
@@ -44,6 +74,7 @@ data class JournalPhotoMeta(
     val label: String = "",
     val colorHex: String = "",
     val storedFileName: String? = null,
+    val remoteUrl: String? = null,
 )
 
 data class JournalTextSpanMeta(
@@ -86,6 +117,7 @@ internal fun UserJournalResponse.toJournalEntry(photoStore: JournalPhotoStore? =
                 label = it.label,
                 color = parseColorHex(it.colorHex),
                 storedFileName = it.storedFileName,
+                remoteUrl = it.remoteUrl,
             )
         },
     titleSpans = document.titleSpans.mapNotNull(::toTextSpan),
@@ -115,6 +147,7 @@ private fun JournalEntry.toDocumentMeta() = JournalDocumentMeta(
             label = it.label,
             colorHex = colorToHex(it.color),
             storedFileName = it.storedFileName,
+            remoteUrl = it.remoteUrl,
         )
     },
     titleSpans = titleSpans.map(::toTextSpanMeta),

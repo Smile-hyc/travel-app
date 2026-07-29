@@ -35,12 +35,16 @@ import com.heoclub.aitravel.data.model.UserPlanResponse
 import com.heoclub.aitravel.data.model.UserPlanUpdateRequest
 import com.heoclub.aitravel.data.model.UserUpdateRequest
 import com.heoclub.aitravel.data.model.ReverseGeocodePoint
+import com.heoclub.aitravel.data.model.ImageUploadResponse
+import okhttp3.MultipartBody
 import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.PUT
+import retrofit2.http.Part
 import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Streaming
@@ -201,4 +205,9 @@ interface ApiService {
 
     @DELETE("api/user/journals/{journalId}")
     suspend fun deleteUserJournal(@retrofit2.http.Path("journalId") journalId: String)
+
+    // ── Upload ──
+    @Multipart
+    @POST("api/upload/image")
+    suspend fun uploadImage(@Part image: MultipartBody.Part): ImageUploadResponse
 }

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     content_admin_token: str = ""
     mediacrawler_data_dir: str = "../tools/MediaCrawler/data/xhs/jsonl"
     user_database_path: str = "data/users.sqlite3"
+    database_url: str = ""
+    upload_dir: str = "uploads"
+    upload_max_size_mb: int = 10
+    upload_base_url: str = ""
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
@@ -60,6 +64,8 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins(self) -> list[str]:
+        if self.dev_cors_origins.strip() == "*":
+            return ["*"]
         return [
             origin.strip()
             for origin in self.dev_cors_origins.split(",")
@@ -106,6 +112,8 @@ class Settings(BaseSettings):
 
     @property
     def user_database_url(self) -> str:
+        if self.database_url:
+            return self.database_url
         return f"sqlite+aiosqlite:///{self.user_database_path}"
 
 

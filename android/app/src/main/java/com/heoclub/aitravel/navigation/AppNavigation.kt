@@ -464,7 +464,8 @@ fun AiTravelNavHost() {
                     onAddEntry = { entry ->
                         journalEntries.add(0, entry)
                         scope.launch {
-                            application.container.journalRepository.createJournal(entry.toCreateRequest())
+                            val synced = application.container.journalRepository.syncPhotos(entry, application.container.journalPhotoStore)
+                            application.container.journalRepository.createJournal(synced.toCreateRequest())
                         }
                     },
                     onOpenEntry = { entryId -> navController.navigate(Routes.journeyJournalDetail(entryId)) },
@@ -504,14 +505,15 @@ fun AiTravelNavHost() {
                         pendingShareDraft = null
                         navController.popBackStack()
                         scope.launch {
+                            val synced = application.container.journalRepository.syncPhotos(entry, application.container.journalPhotoStore)
                             if (existingIndex >= 0) {
-                                application.container.journalRepository.updateJournal(entry.id, entry.toUpdateRequest())
+                                application.container.journalRepository.updateJournal(synced.id, synced.toUpdateRequest())
                             } else {
-                                application.container.journalRepository.createJournal(entry.toCreateRequest())
+                                application.container.journalRepository.createJournal(synced.toCreateRequest())
                                     .onSuccess { created ->
                                         val localIndex = journalEntries.indexOfFirst { it.id == entry.id }
                                         if (localIndex >= 0) {
-                                            journalEntries[localIndex] = entry.copy(id = created.id)
+                                            journalEntries[localIndex] = synced.copy(id = created.id)
                                         }
                                     }
                             }

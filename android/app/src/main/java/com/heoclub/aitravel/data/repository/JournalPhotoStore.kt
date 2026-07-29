@@ -40,4 +40,13 @@ class JournalPhotoStore(context: Context) {
             ?: return
         runCatching { File(directory, safeName).delete() }
     }
+
+    fun readBytes(fileName: String?): ByteArray? {
+        val safeName = fileName
+            ?.takeIf { it.isNotBlank() && it == File(it).name }
+            ?: return null
+        val file = File(directory, safeName)
+        if (!file.isFile) return null
+        return runCatching { file.readBytes() }.getOrNull()
+    }
 }

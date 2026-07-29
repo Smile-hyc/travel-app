@@ -7,11 +7,22 @@ from app.models.user import Base
 
 _settings = get_settings()
 
-_engine = create_async_engine(
-    _settings.user_database_url,
-    echo=False,
-    connect_args={"check_same_thread": False},
-)
+_db_url = _settings.user_database_url
+
+if _db_url.startswith("sqlite"):
+    _engine = create_async_engine(
+        _db_url,
+        echo=False,
+        connect_args={"check_same_thread": False},
+    )
+else:
+    _engine = create_async_engine(
+        _db_url,
+        echo=False,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+    )
 
 _async_session_factory = async_sessionmaker(
     _engine,

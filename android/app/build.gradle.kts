@@ -35,7 +35,7 @@ val localDeviceApiBaseUrl = localConfigValue(
 )
 val releaseApiBaseUrl = localConfigValue(
     key = "API_BASE_URL",
-    fallback = "https://example.invalid/",
+    fallback = "http://152.136.27.117:8020/",
 )
 val amapAndroidKey = localConfigValue(
     key = "AMAP_ANDROID_KEY",
@@ -61,6 +61,19 @@ android {
         }
     }
 
+    val keystoreProperties = Properties().apply {
+        loadIfExists(rootProject.file("keystore.properties"))
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("travel-app-release.jks")
+            storePassword = keystoreProperties.getProperty("KEYSTORE_PASSWORD") ?: ""
+            keyAlias = keystoreProperties.getProperty("KEY_ALIAS") ?: ""
+            keyPassword = keystoreProperties.getProperty("KEY_PASSWORD") ?: ""
+        }
+    }
+
     buildTypes {
         debug {
             // A USB-connected device reaches the host through `adb reverse`.
@@ -69,6 +82,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

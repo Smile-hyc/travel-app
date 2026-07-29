@@ -13,6 +13,7 @@ internal data class JournalPhoto(
     val label: String,
     val color: Color,
     val storedFileName: String? = null,
+    val remoteUrl: String? = null,
 )
 
 internal data class JournalTextStyle(
