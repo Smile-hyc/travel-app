@@ -1,6 +1,5 @@
 package com.heoclub.aitravel.ui.createplan
 
-import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,7 +29,6 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -40,7 +38,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -68,24 +65,7 @@ import com.heoclub.aitravel.ui.components.PlaceCoverImage
 import com.heoclub.aitravel.ui.explore.ExploreMap
 import com.heoclub.aitravel.ui.explore.MapCameraCommand
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.delay
 import androidx.compose.foundation.rememberScrollState
-
-internal const val CURRENT_PLAN_FALLBACK_DELAY_SECONDS = 30
-
-internal fun canUseCurrentPlan(
-    waitingForAi: Boolean,
-    waitingSeconds: Int,
-    partialDayCount: Int,
-    completedDays: Int,
-    totalDays: Int,
-): Boolean {
-    return waitingForAi &&
-        waitingSeconds >= CURRENT_PLAN_FALLBACK_DELAY_SECONDS &&
-        partialDayCount > 0 &&
-        totalDays > 0 &&
-        completedDays >= totalDays
-}
 
 @Composable
 fun AiPlanGenerationScreen(
@@ -212,7 +192,6 @@ fun AiPlanGenerationScreen(
                         followActiveDay = false
                     },
                     onOpenPlace = onOpenPlace,
-                    onUseCurrentDraft = { viewModel.useCurrentDraftWithoutAi() },
                     onCancel = {
                         viewModel.cancel()
                         onBack()
@@ -229,6 +208,10 @@ fun AiPlanGenerationScreen(
 
                 is AiPlanGenerationUiState.Error -> ErrorPlanContent(
                     message = state.message,
+                    completedDays = state.completedDays,
+                    totalDays = state.totalDays,
+                    partialDays = state.partialDays,
+                    onUseDraft = viewModel::useCurrentDraftWithoutAi,
                     onRetry = viewModel::retry,
                     onBack = onBack,
                 )
@@ -294,7 +277,6 @@ private fun LoadingPlanContent(
     selectedDayIndex: Int,
     onSelectDay: (Int) -> Unit,
     onOpenPlace: (String) -> Unit,
-    onUseCurrentDraft: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val selectedDay = partialDays.firstOrNull { it.dayIndex == selectedDayIndex }
@@ -304,37 +286,11 @@ private fun LoadingPlanContent(
     } else {
         listOfNotNull(selectedDay ?: fallbackDay)
     }
-    val waitingForAi = (progress == 74 && completedDays >= totalDays) ||
-        stage.contains("等待 AI") || stage.contains("AI 深度优化")
-    var aiWaitingSeconds by rememberSaveable { mutableIntStateOf(0) }
-    var aiWaitingStartedAtMillis by rememberSaveable { mutableStateOf(0L) }
-    var showUseDraftDialog by rememberSaveable { mutableStateOf(false) }
-    val canUseCurrentPlan = canUseCurrentPlan(
-        waitingForAi = waitingForAi,
-        waitingSeconds = aiWaitingSeconds,
-        partialDayCount = partialDays.size,
-        completedDays = completedDays,
-        totalDays = totalDays,
-    )
-    LaunchedEffect(waitingForAi) {
-        if (!waitingForAi) {
-            aiWaitingSeconds = 0
-            aiWaitingStartedAtMillis = 0L
-            return@LaunchedEffect
-        }
-        if (aiWaitingStartedAtMillis == 0L) {
-            aiWaitingStartedAtMillis = SystemClock.elapsedRealtime()
-        }
-        while (true) {
-            val elapsedMillis = (SystemClock.elapsedRealtime() - aiWaitingStartedAtMillis).coerceAtLeast(0L)
-            aiWaitingSeconds = (elapsedMillis / 1_000L).toInt()
-            delay(1_000L - (elapsedMillis % 1_000L))
-        }
-    }
+    val waitingForAi = isAiPlanningStage(stage, progress, completedDays, totalDays)
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp)) {
         Text("正在规划行程", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
-            planningStageText(progress, completedDays, totalDays, waitingForAi, aiWaitingSeconds),
+            planningStageText(progress, completedDays, totalDays, waitingForAi),
             modifier = Modifier
                 .padding(top = 8.dp)
                 .semantics { liveRegion = LiveRegionMode.Polite },
@@ -376,7 +332,7 @@ private fun LoadingPlanContent(
             if (events.isNotEmpty()) {
                 item {
                     PlanningTimeline(
-                        events = events.takeLast(4),
+                        events = deduplicatedPlanningEvents(events).takeLast(4),
                         places = partialDays.flatMap { it.places },
                     )
                 }
@@ -462,42 +418,13 @@ private fun LoadingPlanContent(
         ) {
             OutlinedButton(
                 onClick = onCancel,
-                modifier = Modifier.weight(if (canUseCurrentPlan) 0.42f else 1f).height(52.dp),
+                modifier = Modifier.weight(1f).height(52.dp),
                 shape = RoundedCornerShape(18.dp),
             ) {
                 Icon(Icons.Outlined.Close, contentDescription = null)
                 Text("取消规划", modifier = Modifier.padding(start = 8.dp))
             }
-            if (canUseCurrentPlan) {
-                Button(
-                    onClick = { showUseDraftDialog = true },
-                    modifier = Modifier.weight(0.58f).height(52.dp),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Text("使用当前方案")
-                }
-            }
         }
-    }
-    if (showUseDraftDialog) {
-        AlertDialog(
-            onDismissRequest = { showUseDraftDialog = false },
-            title = { Text("使用当前方案？") },
-            text = {
-                Text("将结束本次智能优化，并保存已结合天气、开放时间与实际路线安排的当前方案。")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showUseDraftDialog = false
-                        onUseCurrentDraft()
-                    },
-                ) { Text("确认使用") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUseDraftDialog = false }) { Text("继续优化") }
-            },
-        )
     }
 }
 
@@ -621,8 +548,8 @@ private fun PlanningTimeline(
                 ) {
                     if (eventPlace != null) {
                         PlaceCoverImage(
-                            imageUrl = eventPlace.thumbnailUrl?.takeIf(String::isNotBlank)
-                                ?: eventPlace.imageUrls.firstOrNull { it.isNotBlank() },
+                            imageUrl = eventPlace.thumbnailUrl?.takeIf(String::isNotBlank),
+                            fallbackImageUrls = eventPlace.imageUrls,
                             placeName = eventPlace.name,
                             category = eventPlace.category,
                             modifier = Modifier.size(44.dp),
@@ -631,7 +558,7 @@ private fun PlanningTimeline(
                     } else {
                         Icon(
                             imageVector = when (event.type) {
-                                "DAY_COMPLETED", "PLAN_REFINED" -> Icons.Outlined.CheckCircle
+                                "DAY_COMPLETED", "PLAN_REFINED", "AI_REVIEW" -> Icons.Outlined.CheckCircle
                                 else -> Icons.Outlined.AutoAwesome
                             },
                             contentDescription = null,
@@ -741,6 +668,44 @@ private fun ReadyPlanContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF2F6657),
                         )
+                        Text(
+                            "舒适度 ${state.result.quality.comfortScore} · " +
+                                "总通勤 ${state.result.quality.totalCommuteMinutes} 分钟 · " +
+                                "最长单段 ${state.result.quality.longestLegMinutes} 分钟",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF2F6657),
+                        )
+                        if (state.result.quality.mainVisitUnitCountByDay.isNotEmpty()) {
+                            Text(
+                                state.result.quality.mainVisitUnitCountByDay.mapIndexed { index, count ->
+                                    val minutes = state.result.quality.scheduledVisitMinutesByDay.getOrNull(index) ?: 0
+                                    "D${index + 1} ${count} 个主要游览 / ${minutes} 分钟"
+                                }.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF47766A),
+                            )
+                        }
+                        val routeRisks = buildList {
+                            if (state.result.quality.crossRegionTransferCount > 0) {
+                                add("跨区 ${state.result.quality.crossRegionTransferCount} 次")
+                            }
+                            if (state.result.quality.backtrackingLegCount > 0) {
+                                add("疑似折返 ${state.result.quality.backtrackingLegCount} 处")
+                            }
+                            if (state.result.quality.longIdleGapCount > 0) {
+                                add("长空档 ${state.result.quality.longIdleGapCount} 处")
+                            }
+                            if (state.result.quality.estimatedWalkingKm > 0) {
+                                add("路线步行约 ${state.result.quality.estimatedWalkingKm} km")
+                            }
+                        }
+                        if (routeRisks.isNotEmpty()) {
+                            Text(
+                                routeRisks.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF47766A),
+                            )
+                        }
                     }
                 }
             }
@@ -791,10 +756,9 @@ private fun planningStageText(
     completedDays: Int,
     totalDays: Int,
     waitingForAi: Boolean,
-    waitingSeconds: Int,
 ): String {
     return when {
-        waitingForAi -> "正在优化行程节奏与每日主题 · ${waitingSeconds} 秒"
+        waitingForAi -> "正在优化行程节奏与每日主题"
         progress < 20 -> "正在确认目的地与出行日期"
         progress < 45 -> "正在结合天气和偏好筛选地点"
         progress < 74 -> "正在安排每日景点、用餐与住宿衔接"
@@ -804,18 +768,38 @@ private fun planningStageText(
     }
 }
 
-private fun planningFeatureText(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
+internal fun isAiPlanningStage(
+    stage: String,
+    progress: Int,
+    completedDays: Int,
+    totalDays: Int,
+): Boolean {
+    if (totalDays > 0 && completedDays >= totalDays && progress in 74..89) return true
+    return listOf(
+        "智能规划",
+        "等待 AI",
+        "AI 优化",
+        "AI 审阅",
+        "AI 调整",
+        "深度优化",
+    ).any(stage::contains)
+}
+
+internal fun planningFeatureText(event: AiPlanProgressEvent, place: AiGeneratedPlace?): String {
     return when (event.type) {
         "WEATHER_CHECK" -> "已结合天气调整室内外游览安排"
+        "CANDIDATE_SCREENED" -> "已筛选目的城市内的真实地点"
         "ANCHOR_APPLIED" -> "已设置到达、离开与住宿衔接"
+        "TIME_WINDOW_CHECK" -> place?.let { "已核对 ${it.name} 的开放时段" } ?: "已核对景点开放时段"
         "DAY_STARTED" -> "正在安排第 ${event.dayIndex ?: 1} 天行程"
         "PLACE_ADDED" -> place?.let { "已安排 ${it.name} 的到访时间" } ?: "已加入合适的地点"
         "ROUTE_CHECK" -> place?.let { "已确认前往 ${it.name} 的通勤安排" } ?: "已确认相邻地点的通勤安排"
-        "TIME_WINDOW_CHECK" -> place?.let { "已调整 ${it.name} 的开放时间冲突" } ?: "已处理开放时间冲突"
         "MEAL_PLACED" -> "已安排顺路且符合用餐时段的餐馆"
         "DAY_COMPLETED" -> "第 ${event.dayIndex ?: 1} 天行程已可查看"
         "PLAN_REFINED" -> "行程节奏与每日主题已完成优化"
-        else -> "正在完善行程安排"
+        "AI_REVIEW" -> "AI 建议已完成规则验收"
+        "MODEL_REASON", "ANALYSIS" -> event.message.ifBlank { "正在核对行程依据" }
+        else -> event.message.ifBlank { "正在完善行程安排" }
     }
 }
 
@@ -830,8 +814,23 @@ private fun planningFeatureOutcome(event: AiPlanProgressEvent, place: AiGenerate
         "MEAL_PLACED" -> "用餐位置会兼顾特色、营业时段和顺路程度"
         "DAY_COMPLETED" -> "可以在地图和下方方案中查看当天内容"
         "PLAN_REFINED" -> "已兼顾偏好、天气、开放时间与通勤节奏"
-        else -> "当前结果会持续显示，可随时查看"
+        "AI_REVIEW", "MODEL_REASON", "ANALYSIS" -> event.decision?.takeIf(String::isNotBlank)
+            ?: event.evidence.firstOrNull()?.takeIf(String::isNotBlank)
+            ?: "当前草案保持可见，只有通过约束检查的建议才会采用"
+        else -> event.decision?.takeIf(String::isNotBlank) ?: "当前结果会持续显示，可随时查看"
     }
+}
+
+internal fun deduplicatedPlanningEvents(events: List<AiPlanProgressEvent>): List<AiPlanProgressEvent> {
+    return events.asReversed()
+        .distinctBy { event ->
+            listOf(
+                event.dayIndex?.toString().orEmpty(),
+                event.placeId.orEmpty(),
+                event.message.trim().ifBlank { event.type },
+            ).joinToString("|")
+        }
+        .asReversed()
 }
 
 private fun formatGeneratedDistance(meters: Int): String {
@@ -862,7 +861,8 @@ private fun GeneratedPlaceCard(
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
             PlaceCoverImage(
-                imageUrl = place.thumbnailUrl,
+                imageUrl = place.thumbnailUrl?.takeIf(String::isNotBlank),
+                fallbackImageUrls = place.imageUrls,
                 placeName = place.name,
                 category = place.category,
                 modifier = Modifier.size(78.dp),
@@ -927,7 +927,16 @@ private fun GeneratedPlaceCard(
 }
 
 @Composable
-private fun ErrorPlanContent(message: String, onRetry: () -> Unit, onBack: () -> Unit) {
+private fun ErrorPlanContent(
+    message: String,
+    completedDays: Int,
+    totalDays: Int,
+    partialDays: List<com.heoclub.aitravel.data.model.AiGeneratedDay>,
+    onUseDraft: () -> Boolean,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val canUseDraft = partialDays.any { it.places.isNotEmpty() } && completedDays >= totalDays && totalDays > 0
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -943,9 +952,28 @@ private fun ErrorPlanContent(message: String, onRetry: () -> Unit, onBack: () ->
             modifier = Modifier.padding(top = 10.dp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
-            Icon(Icons.Outlined.Refresh, contentDescription = null)
-            Text("重新规划", modifier = Modifier.padding(start = 8.dp))
+        if (canUseDraft) {
+            Button(
+                onClick = { onUseDraft() },
+                modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Outlined.CheckCircle, contentDescription = null)
+                Text("使用已生成草案", modifier = Modifier.padding(start = 8.dp))
+            }
+            OutlinedButton(
+                onClick = onRetry,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Text("重新尝试智能规划", modifier = Modifier.padding(start = 8.dp))
+            }
+        } else {
+            Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 24.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Text("重新规划", modifier = Modifier.padding(start = 8.dp))
+            }
         }
         OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(52.dp), shape = RoundedCornerShape(18.dp)) {
             Text("返回修改")

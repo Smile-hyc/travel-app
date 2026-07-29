@@ -10,5 +10,5 @@ class HealthResponse(BaseModel):
 class ReviewProviderHealthResponse(BaseModel):
     configured: bool
     activeProvider: str | None = None
-    rnoteConfigured: bool
-    tikhubConfigured: bool
+    authorizedUgcConfigured: bool
+    authorized: bool

@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote, unquote
 
 from pydantic import ValidationError
 
@@ -15,24 +16,49 @@ from app.schemas.ai import (
     AiCardPlaceRef,
     AiChatRequest,
     AiChatResponse,
+    AiHistoryMessage,
     AiItineraryCard,
     AiLinkCard,
     AiPlanContext,
+    AiRecommendedPlace,
     AiSuggestedAction,
 )
-from app.services.ark_client import ArkClient
+from app.schemas.explore import PlaceSummary
+from app.services.amap_poi_service import AmapPoiService
+from app.services.deepseek_client import DeepSeekClient
+from app.services.popular_poi_catalog import popular_seed_priority
 
 
 class TravelAiService:
-    def __init__(self, ark_client: ArkClient):
-        self._ark_client = ark_client
+    def __init__(self, model_client: DeepSeekClient, poi_service: AmapPoiService | None = None):
+        self._model_client = model_client
+        self._poi_service = poi_service
 
-    def _build_messages(self, request: AiChatRequest) -> list[dict[str, str]]:
+    def _build_messages(
+        self,
+        request: AiChatRequest,
+        retrieved_places: list[PlaceSummary] | None = None,
+        retrieval_city: str | None = None,
+    ) -> list[dict[str, str]]:
         context_text = self._format_plan_context(request.context)
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._system_prompt()},
         ]
-        if context_text:
+        if request.planContexts:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "以下是用户计划页面中的全部旅行计划和每日行程。"
+                        "你必须把这些内容作为每轮对话的长期计划记忆。"
+                        "用户询问今天时，使用 todayDayIndex 不为空的计划；"
+                        "用户询问某个目的地、日期或计划名称时，从全部计划中匹配，不能声称没有绑定计划。"
+                        f"当前用于调整操作的计划 ID：{request.planId or '无'}。\n"
+                        f"{self._format_all_plan_contexts(request.planContexts)}"
+                    ),
+                },
+            )
+        elif context_text:
             messages.append(
                 {
                     "role": "system",
@@ -43,81 +69,439 @@ class TravelAiService:
                     ),
                 },
             )
+        if retrieved_places:
+            place_lines = []
+            for place in retrieved_places:
+                place_lines.append(
+                    " | ".join(
+                        filter(
+                            None,
+                            [
+                                f"id={place.id}",
+                                f"name={place.name}",
+                                f"category={place.typeName or place.category}",
+                                f"address={place.address or '暂无'}",
+                                f"district={place.districtName or '暂无'}",
+                                f"rating={place.rating or '暂无'}",
+                                f"cost={place.costAverage or '暂无'}",
+                            ],
+                        ),
+                    ),
+                )
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"以下是刚刚从高德地图检索到的{retrieval_city or ''}真实地点。"
+                        "回答涉及具体店铺或景点时，只能推荐这份列表里的地点，不得编造店名。"
+                        "凡是在正文中提到列表里的地点，必须使用 Markdown 内部链接格式："
+                        "[地点名称](aitravel://place/地点id)。"
+                        "先回答用户真正问的知识或建议，再自然推荐 3 至 6 个最匹配地点；"
+                        "不用在正文重复卡片里的全部地址和评分。\n"
+                        + "\n".join(place_lines)
+                    ),
+                },
+            )
         for item in request.history[-4:]:
             messages.append({"role": item.role, "content": item.content[:500]})
         messages.append({"role": "user", "content": request.message.strip()[:800]})
         return messages
 
+    def _format_all_plan_contexts(self, contexts: list[AiPlanContext]) -> str:
+        sections: list[str] = []
+        for index, context in enumerate(contexts, start=1):
+            sections.append(
+                f"===== 计划页计划 {index}/{len(contexts)} =====\n"
+                f"{self._format_plan_context(context)}"
+            )
+        return "\n".join(sections)
+
     async def chat_stream(self, request: AiChatRequest) -> AsyncGenerator[str, None]:
         """流式对话：逐 chunk yield SSE 事件字符串。"""
         conversation_id = request.conversationId or str(uuid.uuid4())
         message_id = str(uuid.uuid4())
-        messages = self._build_messages(request)
+        retrieved_places, retrieval_city = await self._retrieve_places(request.message, request.history)
+        messages = self._build_messages(request, retrieved_places, retrieval_city)
 
         full_text = ""
-        async for chunk in self._ark_client.chat_stream_chunks(messages):
+        async for chunk in self._model_client.chat_stream_chunks(messages):
             full_text += chunk
             yield json.dumps({"type": "chunk", "content": chunk}, ensure_ascii=False)
 
         parsed_reply, raw_actions, raw_cards, parse_warnings = self._parse_ai_reply(full_text)
         actions, validation_warnings = self._validate_actions(raw_actions, request.context)
         cards, card_warnings = self._validate_cards(raw_cards, request.context, actions)
-        visible_reply = parsed_reply or full_text
+        visible_reply = self._linkify_places(
+            parsed_reply or full_text,
+            retrieved_places,
+            request.planContexts,
+        )
         all_warnings = parse_warnings + validation_warnings + card_warnings
-
+        recommended_places = self._to_recommended_places(retrieved_places)
 
         done_payload = {
             "type": "done",
             "fullText": visible_reply,
             "conversationId": conversation_id,
             "messageId": message_id,
-            "quickReplies": self._build_quick_replies(request.context),
+            "quickReplies": self._build_quick_replies(request.context, retrieval_city, recommended_places),
             "referencedPlaceItemIds": self._find_referenced_places(visible_reply, request.context),
             "actionSetId": str(uuid.uuid4()) if actions else None,
             "planRevision": request.context.revision if request.context else None,
             "suggestedActions": [a.model_dump(mode="json") for a in actions],
             "actionWarnings": all_warnings,
             "cards": [c.model_dump(mode="json") for c in cards],
+            "recommendedPlaces": [place.model_dump(mode="json") for place in recommended_places],
+            "retrievalCity": retrieval_city,
+            "offerPlan": bool(recommended_places) and request.context is None,
+            "dataSources": ["DEEPSEEK"] + (["AMAP"] if recommended_places else []),
             "createdAt": datetime.now(timezone.utc).isoformat(),
-            "model": self._ark_client.model_name,
+            "model": self._model_client.model_name,
         }
         yield json.dumps(done_payload, ensure_ascii=False)
 
     async def chat(self, request: AiChatRequest) -> AiChatResponse:
         conversation_id = request.conversationId or str(uuid.uuid4())
         message_id = str(uuid.uuid4())
-        messages = self._build_messages(request)
-        raw_reply = await self._ark_client.chat(messages)
+        retrieved_places, retrieval_city = await self._retrieve_places(request.message, request.history)
+        messages = self._build_messages(request, retrieved_places, retrieval_city)
+        raw_reply = await self._model_client.chat(messages)
         parsed_reply, raw_actions, raw_cards, parse_warnings = self._parse_ai_reply(raw_reply)
         actions, validation_warnings = self._validate_actions(raw_actions, request.context)
         cards, card_warnings = self._validate_cards(raw_cards, request.context, actions)
-        visible_reply = parsed_reply or raw_reply
+        visible_reply = self._linkify_places(
+            parsed_reply or raw_reply,
+            retrieved_places,
+            request.planContexts,
+        )
+        recommended_places = self._to_recommended_places(retrieved_places)
 
         return AiChatResponse(
             conversationId=conversation_id,
             messageId=message_id,
             message=visible_reply,
-            quickReplies=self._build_quick_replies(request.context),
+            quickReplies=self._build_quick_replies(request.context, retrieval_city, recommended_places),
             referencedPlaceItemIds=self._find_referenced_places(visible_reply, request.context),
             actionSetId=str(uuid.uuid4()) if actions else None,
             planRevision=request.context.revision if request.context else None,
             suggestedActions=actions,
             actionWarnings=parse_warnings + validation_warnings + card_warnings,
             cards=cards,
+            recommendedPlaces=recommended_places,
+            retrievalCity=retrieval_city,
+            offerPlan=bool(recommended_places) and request.context is None,
+            dataSources=["DEEPSEEK"] + (["AMAP"] if recommended_places else []),
             createdAt=datetime.now(timezone.utc).isoformat(),
-            model=self._ark_client.model_name,
+            model=self._model_client.model_name,
         )
+
+    async def _retrieve_places(
+        self,
+        message: str,
+        history: list[AiHistoryMessage] | None = None,
+    ) -> tuple[list[PlaceSummary], str | None]:
+        if self._poi_service is None:
+            return [], None
+        planner_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是旅行检索规划器。判断用户问题是否需要查询中国境内真实店铺、景点、酒店、购物或饮品地点。"
+                    "只要用户询问具体目的地的玩法、推荐，或者要求生成某地行程，都应 search=true；"
+                    "行李清单、通用知识等不涉及具体地点的问题才 search=false。"
+                    "只输出一个 JSON 对象，不要解释："
+                    '{"search":true,"city":"天津","queries":'
+                    '[{"category":"scenic","keyword":"天津经典景点"},'
+                    '{"category":"food","keyword":"天津特色美食"}]}。'
+                    "category 只能是 scenic、food、drink、shopping、lodging、transport；"
+                    "普通单类问题给 1 至 3 个 queries，多日游同时给 scenic 和 food，最多 4 个；"
+                    "keyword 必须适合高德地图检索。如果不需要地点检索，search=false。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": self._retrieval_conversation_text(message, history or []),
+            },
+        ]
+        try:
+            raw_plan = await self._model_client.chat(
+                planner_messages,
+                max_tokens=280,
+                temperature=0.05,
+                timeout_seconds=30,
+            )
+            match = re.search(r"\{.*\}", raw_plan, flags=re.DOTALL)
+            plan = json.loads(match.group(0) if match else raw_plan)
+            if not plan.get("search"):
+                return [], None
+            city = str(plan.get("city") or "").strip()[:30]
+            allowed_categories = {"scenic", "food", "drink", "shopping", "lodging", "transport"}
+            queries: list[tuple[str, str]] = []
+            raw_queries = plan.get("queries")
+            if isinstance(raw_queries, list):
+                for raw_query in raw_queries[:4]:
+                    if not isinstance(raw_query, dict):
+                        continue
+                    category = str(raw_query.get("category") or "scenic").strip()
+                    if category not in allowed_categories:
+                        category = "scenic"
+                    keyword = str(raw_query.get("keyword") or "").strip()[:40]
+                    if keyword:
+                        queries.append((category, keyword))
+            else:
+                # Backward-compatible with the original single-category protocol.
+                category = str(plan.get("category") or "scenic").strip()
+                if category not in allowed_categories:
+                    category = "scenic"
+                queries.extend(
+                    (category, str(value).strip()[:40])
+                    for value in (plan.get("keywords") or [])[:3]
+                    if str(value).strip()
+                )
+            if not city or not queries:
+                return [], None
+            city_results = await self._poi_service.search_cities(keyword=city, limit=3)
+            if not city_results:
+                return [], city
+            city_result = city_results[0]
+            collected: list[PlaceSummary] = []
+            seen: set[str] = set()
+            for category, keyword in queries:
+                page = await self._poi_service.search_pois(
+                    keyword=keyword,
+                    adcode=city_result.adCode,
+                    category=category,
+                    page=1,
+                    page_size=6,
+                    city_limit=True,
+                )
+                for place in page.items:
+                    if place.id in seen:
+                        continue
+                    seen.add(place.id)
+                    collected.append(place)
+            original_order = {place.id: index for index, place in enumerate(collected)}
+            collected.sort(
+                key=lambda place: self._recommendation_rank(
+                    place,
+                    city_result.name,
+                    original_order.get(place.id, 10_000),
+                ),
+                reverse=True,
+            )
+            return collected[:6], city_result.name
+        except Exception:
+            return [], None
+
+    def _retrieval_conversation_text(
+        self,
+        message: str,
+        history: list[AiHistoryMessage],
+    ) -> str:
+        context_lines = [
+            f"{item.role}: {item.content[:220]}"
+            for item in history[-4:]
+        ]
+        context_lines.append(f"current_user: {message[:500]}")
+        return (
+            "请结合最近对话判断当前问题中的省略城市、商圈和地点指代。\n"
+            + "\n".join(context_lines)
+        )[:1400]
+
+    def _linkify_places(
+        self,
+        reply: str,
+        places: list[PlaceSummary],
+        plan_contexts: list[AiPlanContext] | None = None,
+    ) -> str:
+        # Models sometimes wrap a complete Markdown link in **bold**. That
+        # creates overlapping spans in lightweight mobile Markdown renderers
+        # and can expose both the raw URL and a duplicate blue label. Internal
+        # place links own their visual emphasis, so remove the outer wrapper.
+        linked = re.sub(
+            r"\*\*([^\n]*?\[[^\]\n]+\]\(aitravel://place/[^)\s]+\)[^\n]*?)\*\*",
+            r"\1",
+            reply,
+        )
+        linked = re.sub(
+            r"__([^\n]*?\[[^\]\n]+\]\(aitravel://place/[^)\s]+\)[^\n]*?)__",
+            r"\1",
+            linked,
+        )
+        link_targets: list[tuple[str, str]] = [
+            (place.name, place.id) for place in places if place.name and place.id
+        ]
+        for context in plan_contexts or []:
+            for day in context.days:
+                link_targets.extend(
+                    (place.name, place.itemId)
+                    for place in day.places
+                    if place.name and place.itemId
+                )
+            link_targets.extend(
+                (place.name, place.itemId)
+                for place in context.unplannedPlaces
+                if place.name and place.itemId
+            )
+        link_targets = list(dict.fromkeys(link_targets))
+        allowed_place_ids = {place_id for _, place_id in link_targets}
+
+        internal_link_pattern = re.compile(
+            r"\[([^\]\n]+)\]\(aitravel://place/([^)\s]+)\)"
+        )
+        linked = internal_link_pattern.sub(
+            lambda match: (
+                match.group(0)
+                if unquote(match.group(2)) in allowed_place_ids
+                else match.group(1)
+            ),
+            linked,
+        )
+
+        for place_name, place_id in sorted(link_targets, key=lambda value: len(value[0]), reverse=True):
+            if place_name not in linked:
+                continue
+            internal_url = f"aitravel://place/{quote(place_id, safe=':')}"
+            markdown = f"[{place_name}]({internal_url})"
+            if markdown in linked:
+                continue
+            # DeepSeek often bolds landmark names. Remove the outer emphasis so
+            # Android's lightweight Markdown renderer sees one unambiguous link.
+            linked = linked.replace(f"**{place_name}**", markdown)
+            linked = linked.replace(f"__{place_name}__", markdown)
+            if markdown in linked:
+                pass
+            else:
+                linked = linked.replace(place_name, markdown)
+
+            # Keep a single clickable label when the model emits the same
+            # place as adjacent plain text and Markdown, or repeats the link.
+            escaped_name = re.escape(place_name)
+            escaped_markdown = re.escape(markdown)
+            linked = re.sub(
+                rf"(?:{escaped_name}\s*)?{escaped_markdown}(?:\s*{escaped_name})?",
+                markdown,
+                linked,
+            )
+            linked = re.sub(
+                rf"{escaped_markdown}(?:\s*{escaped_markdown})+",
+                markdown,
+                linked,
+            )
+        return self._dedupe_internal_place_links(linked)
+
+    def _dedupe_internal_place_links(self, reply: str) -> str:
+        link_pattern = re.compile(
+            r"\[([^\]\n]+)\]\((aitravel://place/[^)\s]+)\)"
+        )
+        normalized_lines: list[str] = []
+        for line in reply.split("\n"):
+            unique_links = list(dict.fromkeys(match.group(0) for match in link_pattern.finditer(line)))
+            if not unique_links:
+                normalized_lines.append(line)
+                continue
+
+            normalized = line
+            link_details: list[tuple[str, str, str, str]] = []
+            for index, markdown in enumerate(unique_links):
+                match = link_pattern.fullmatch(markdown)
+                if match is None:
+                    continue
+                label, url = match.groups()
+                token = f"\ue000PLACE_LINK_{index}\ue001"
+                normalized = normalized.replace(markdown, token)
+                link_details.append((markdown, label, url, token))
+
+            for _, label, url, token in link_details:
+                normalized = normalized.replace(f"**{label}**", "")
+                normalized = normalized.replace(f"__{label}__", "")
+                normalized = normalized.replace(label, "")
+                normalized = re.sub(rf"\(?{re.escape(url)}\)?", "", normalized)
+                first_token = normalized.find(token)
+                if first_token >= 0:
+                    after_first = first_token + len(token)
+                    normalized = (
+                        normalized[:after_first]
+                        + normalized[after_first:].replace(token, "")
+                    )
+
+            for markdown, _, _, token in link_details:
+                normalized = normalized.replace(token, markdown)
+            normalized_lines.append(normalized.strip())
+
+        return "\n".join(normalized_lines)
+
+    def _to_recommended_places(self, places: list[PlaceSummary]) -> list[AiRecommendedPlace]:
+        recommendations: list[AiRecommendedPlace] = []
+        for place in places[:6]:
+            description_parts = [place.typeName or "高德真实地点"]
+            if place.businessArea:
+                description_parts.append(f"位于{place.businessArea}")
+            elif place.districtName:
+                description_parts.append(f"位于{place.districtName}")
+            if place.rating:
+                description_parts.append(f"高德评分 {place.rating}")
+            recommendations.append(
+                AiRecommendedPlace(
+                    **place.model_dump(),
+                    description="，".join(description_parts) + "。",
+                ),
+            )
+        return recommendations
+
+    def _safe_float(self, value: str | None) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _recommendation_rank(
+        self,
+        place: PlaceSummary,
+        city_name: str,
+        original_order: int,
+    ) -> tuple[float, float, float, int]:
+        """Rank already-retrieved places locally; this adds no provider or model calls."""
+        rating = min(5.0, max(0.0, self._safe_float(place.rating)))
+        rating_signal = min(1.0, max(0.0, (rating - 3.8) / 1.2))
+        seed_signal = popular_seed_priority(city_name, place.name) / 100.0
+        official_signal = 1.0 if place.officialScenicGrade else 0.0
+        evidence_signal = min(1.0, (place.experienceEvidenceCount or 0) / 20.0)
+        completeness = (0.06 if place.coverImageUrl else 0.0) + (0.03 if place.address else 0.0)
+        score = (
+            seed_signal * 0.52
+            + rating_signal * 0.25
+            + official_signal * 0.10
+            + evidence_signal * 0.07
+            + completeness
+        )
+        # AMap relevance order remains a deterministic tie-breaker.
+        return score, seed_signal, rating, -original_order
 
     def _system_prompt(self) -> str:
         return (
-            "你是 AI 旅行助手。请用自然、具体、中文友好的方式回答，语气温和。"
-            "普通问题尽量简洁；涉及行程调整、路线分析和计划建议时可以适当详细，但不要写成超长文章。"
-            "你可以分析行程节奏、路线安排、天气提醒、待规划地点放入哪一天、顺序调整建议和行程总结。"
+            "你是一个旅行领域的专业聊天顾问，产品名称是 AI 旅行助手。"
+            "你的核心职责是通过自然对话解决各种旅行问题，而不是代替智能规划 Agent。"
+            "你尤其擅长目的地选择、本地美食与文化、景点取舍、交通衔接、住宿区域、预算、季节天气、"
+            "行前准备、安全注意事项、签证常识以及已有行程的解释和优化。"
+            "始终紧密围绕旅行场景展开。对于明显与旅行无关的问题，简短说明你专注于旅行，并主动给出一个可继续咨询的旅行方向；"
+            "但如果通用问题与一次具体旅行有关，例如摄影、穿搭、健康准备、亲子需求或语言沟通，应结合旅行场景正常回答。"
+            "回答应自然、具体、中文友好，优先给出可执行建议；普通问题尽量简洁，复杂问题用清晰的小标题或列表。"
+            "信息不足且会显著影响答案时，只追问一个最关键的问题，不要一次抛出很多表单问题。"
+            "涉及实时价格、营业时间、天气、交通班次、签证法规或安全政策时，要说明信息可能变化并建议用户再次核实。"
+            "严禁编造不存在的地点、营业时间、价格、路线、政策或用户未提供的个人信息。"
+            "智能规划是另一项专用能力：它负责收集日期、节奏等条件，并自动生成可保存、可编辑的完整旅行计划。"
+            "当用户明确要求制定或生成完整旅行计划/多日行程时，不要在聊天回复里自行编造一份完整日程；"
+            "应简短说明将交给智能规划，并输出 LINK 卡片，让前端展示日期和旅行节奏选择。"
+            "当用户只是问美食、景点、交通、住宿、天气、预算、文化或准备清单时，直接回答，绝不要求先选日期和节奏。"
+            "如果用户已经绑定一个计划，你可以分析行程节奏、路线安排、天气提醒、待规划地点放入哪一天、"
+            "顺序调整建议和行程总结，但任何修改都必须由用户确认。"
             "你不能直接修改计划，不能声称已经添加、删除、移动或应用优化。"
             "如果缺少路线、天气、营业时间、价格等真实数据，必须说明当前暂无可用数据，不能编造。"
             "回答要优先引用用户计划中的真实地点名称。"
-            "当用户要求调整、安排、优化、重新排序时，你必须在中文回复末尾追加 JSON 代码块。"
-            "当用户说「好的」「同意」「可以」「执行」「确认」等确认词时，你必须立刻输出包含 actions 和 cards 的 JSON 代码块。"
+            "只有在用户已绑定计划，并明确要求调整、安排、优化或重新排序该计划时，才在中文回复末尾追加 JSON 代码块。"
+            "只有在已绑定计划的调整对话中，用户说「好的」「同意」「可以」「执行」「确认」等确认词时，"
+            "才输出包含 actions 和 cards 的 JSON 代码块。普通旅行问答绝不输出 actions。"
             "JSON 必须严格用 ```json 包裹，示例：\n"
             "```json\n"
             "{\"actions\":[{\"type\":\"MOVE_PLACE_TO_DAY\",\"placeItemId\":\"计划中的itemId\",\"toDayIndex\":1,\"toPosition\":1,\"reason\":\"原因\"}],"
@@ -130,6 +514,8 @@ class TravelAiService:
             "\n"
             "## 卡片类型补充\n"
             "### LINK 卡片（用户无绑定计划时要求创建旅行）\n"
+            "只有用户明确要求制定、生成或安排完整旅行计划/多日行程时才能输出 LINK 卡片。"
+            "如果用户只是咨询某地美食、景点、交通、天气、准备清单或其他普通问题，禁止输出 LINK 卡片，直接正常回答。\n"
             "{\"cards\":[{\"id\":\"card-link\",\"type\":\"LINK\",\"title\":\"创建旅行计划\",\"subtitle\":\"引导文案\",\"payload\":{\"action_type\":\"NAVIGATE_TO_CREATE_PLAN\"}}]}\n"
             "### ITINERARY 卡片（用户确认优化后必须输出，需同时输出对应的 actions）"
         )
@@ -391,7 +777,15 @@ class TravelAiService:
             f"计划：{context.title or '未命名计划'}",
             f"目的地：{context.destination or '未知'}",
             f"日期：{context.dateRange or '未设置'}",
+            f"当前日期：{context.currentDate or '未知'}",
         ]
+        if context.todayDayIndex is not None:
+            lines.append(
+                f"今天对应计划中的 DAY {context.todayDayIndex}。"
+                "用户询问今天的行程时，只介绍这一天的真实安排，不要说没有绑定计划。"
+            )
+        else:
+            lines.append("当前日期不在该计划日期范围内。")
         if context.weather and context.weather.text:
             lines.append(f"天气：{context.weather.text}（{context.weather.reportTime or '无报告时间'}）")
         else:
@@ -441,7 +835,26 @@ class TravelAiService:
 
         return "\n".join(lines)[:6000]
 
-    def _build_quick_replies(self, context: AiPlanContext | None) -> list[str]:
+    def _build_quick_replies(
+        self,
+        context: AiPlanContext | None,
+        retrieval_city: str | None = None,
+        recommended_places: list[AiRecommendedPlace] | None = None,
+    ) -> list[str]:
+        if recommended_places:
+            category = recommended_places[0].category
+            city = retrieval_city or "这里"
+            if category == "food":
+                return [
+                    f"{city}还有哪些本地人常去的店",
+                    "这些店分别适合吃什么",
+                    "怎样避开用餐排队高峰",
+                ]
+            return [
+                "这些地点应该怎么选",
+                f"再推荐几个{city}的小众地点",
+                "这些地方适合带家人吗",
+            ]
         if context is None:
             return ["推荐一个周末旅行目的地", "帮我做旅行准备清单", "怎么规划一天行程"]
 

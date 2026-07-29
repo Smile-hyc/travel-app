@@ -23,18 +23,23 @@ fun localConfigValue(key: String, fallback: String = ""): String {
     return localProperties.getProperty(key)
         ?: backendEnvProperties.getProperty(key)
         ?: providers.gradleProperty(key).orNull
+        ?: providers.environmentVariable(key).orNull
         ?: fallback
 }
 
-val debugApiBaseUrl = localConfigValue(
-    key = "API_BASE_URL",
+val localDeviceApiBaseUrl = localConfigValue(
+    key = "LOCAL_DEVICE_API_BASE_URL",
     fallback = providers.gradleProperty("AI_TRAVEL_API_BASE_URL")
         .orElse("http://127.0.0.1:8000/")
         .get(),
 )
+val releaseApiBaseUrl = localConfigValue(
+    key = "API_BASE_URL",
+    fallback = "http://152.136.27.117:8020/",
+)
 val amapAndroidKey = localConfigValue(
     key = "AMAP_ANDROID_KEY",
-    fallback = backendEnvProperties.getProperty("AMAP_WEB_SERVICE_KEY", ""),
+    fallback = "",
 )
 
 android {
@@ -56,13 +61,29 @@ android {
         }
     }
 
+    val keystoreProperties = Properties().apply {
+        loadIfExists(rootProject.file("keystore.properties"))
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("travel-app-release.jks")
+            storePassword = keystoreProperties.getProperty("KEYSTORE_PASSWORD") ?: ""
+            keyAlias = keystoreProperties.getProperty("KEY_ALIAS") ?: ""
+            keyPassword = keystoreProperties.getProperty("KEY_PASSWORD") ?: ""
+        }
+    }
+
     buildTypes {
         debug {
-            buildConfigField("String", "API_BASE_URL", "\"$debugApiBaseUrl\"")
+            // A USB-connected device reaches the host through `adb reverse`.
+            // Keep Debug independent from the shared/cloud server.
+            buildConfigField("String", "API_BASE_URL", "\"$localDeviceApiBaseUrl\"")
         }
         release {
             isMinifyEnabled = false
-            buildConfigField("String", "API_BASE_URL", "\"https://example.invalid/\"")
+            signingConfig = signingConfigs.getByName("release")
+            buildConfigField("String", "API_BASE_URL", "\"$releaseApiBaseUrl\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -86,6 +107,32 @@ android {
 
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
+    }
+}
+
+val validateAmapAndroidKey by tasks.registering {
+    group = "verification"
+    description = "Checks that an AMap Android SDK key is configured before packaging the app."
+
+    doLast {
+        check(amapAndroidKey.isNotBlank()) {
+            "AMAP_ANDROID_KEY is missing. Add the Android-platform key to " +
+                "android/local.properties (do not use AMAP_WEB_SERVICE_KEY). " +
+                "The key must be bound to package com.heoclub.aitravel and this build's signing SHA-1."
+        }
+    }
+}
+
+tasks.configureEach {
+    val packagesApp = name.startsWith("package", ignoreCase = true) &&
+        !name.endsWith("Resources", ignoreCase = true) &&
+        !name.endsWith("Assets", ignoreCase = true)
+    if (name.startsWith("assemble", ignoreCase = true) ||
+        name.startsWith("bundle", ignoreCase = true) ||
+        packagesApp ||
+        name.startsWith("install", ignoreCase = true)
+    ) {
+        dependsOn(validateAmapAndroidKey)
     }
 }
 

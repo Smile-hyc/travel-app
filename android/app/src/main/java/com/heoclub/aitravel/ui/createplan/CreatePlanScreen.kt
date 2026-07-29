@@ -63,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.heoclub.aitravel.data.model.AiHotelStayInput
 import com.heoclub.aitravel.data.model.AiMapPointInput
+import com.heoclub.aitravel.data.model.ExploreCity
 import com.heoclub.aitravel.data.model.PlaceSuggestion
 import java.time.LocalDate
 import java.time.Instant
@@ -128,6 +129,8 @@ fun CreatePlanScreen(
     val citySuggestions by viewModel.citySuggestions.collectAsState()
     val arrivalSuggestions by viewModel.arrivalSuggestions.collectAsState()
     val departureSuggestions by viewModel.departureSuggestions.collectAsState()
+    val hotelSuggestions by viewModel.hotelSuggestions.collectAsState()
+    val hotelSuggestionTarget by viewModel.hotelSuggestionTarget.collectAsState()
     val selectedPreferences = remember { mutableStateListOf<String>() }
     val preferences = listOf(
         "经典必玩",
@@ -205,6 +208,18 @@ fun CreatePlanScreen(
                 selectedCityAdCode = null
                 selectedCityLatitude = null
                 selectedCityLongitude = null
+                arrivalStation = ""
+                arrivalPoint = null
+                departureStation = ""
+                departurePoint = null
+                hotelName = ""
+                hotelPoint = null
+                hotelStays.indices.forEach { index ->
+                    hotelStays[index] = hotelStays[index].copy(name = "", mapPoint = null)
+                }
+                viewModel.clearStationSuggestions(arrival = true)
+                viewModel.clearStationSuggestions(arrival = false)
+                viewModel.clearHotelSuggestions()
                 destinationError = false
                 viewModel.searchCities(it)
             },
@@ -216,7 +231,7 @@ fun CreatePlanScreen(
             placeholder = { Text("例如 成都") },
             isError = destinationError,
             supportingText = if (destinationError) {
-                { Text("请输入并选择一个城市后再开始规划") }
+                { Text("请输入并选择具体城市；选择省份后会列出下辖城市") }
             } else {
                 null
             },
@@ -231,6 +246,13 @@ fun CreatePlanScreen(
                 shadowElevation = 3.dp,
             ) {
                 Column {
+                    Text(
+                        text = destinationSuggestionTitle(destination, citySuggestions),
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     citySuggestions.forEach { city ->
                         Row(
                             modifier = Modifier
@@ -250,7 +272,7 @@ fun CreatePlanScreen(
                             Column(modifier = Modifier.padding(start = 10.dp)) {
                                 Text(city.name, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    city.provinceName,
+                                    cityRegionLabel(city),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -339,14 +361,23 @@ fun CreatePlanScreen(
                     placeholder = { Text("例如 北京南站") },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
+                    enabled = selectedCityAdCode != null,
+                    supportingText = if (selectedCityAdCode == null) {
+                        { Text("请先选择目的城市") }
+                    } else {
+                        null
+                    },
                 )
-                MapPickerButton("选择到达位置") { openMapPicker(MapPickerTarget.Arrival) }
+                MapPickerButton("选择到达位置", enabled = selectedCityAdCode != null) {
+                    openMapPicker(MapPickerTarget.Arrival)
+                }
             }
             StationSuggestionList(arrivalSuggestions) { suggestion ->
                 arrivalStation = suggestion.name
                 arrivalPoint = suggestion.toMapPointInput()
                 viewModel.clearStationSuggestions(arrival = true)
             }
+            arrivalPoint?.let { SelectedAnchorSummary("到达 · 第 $arrivalDay 天", it) }
             DayAndTimeSelector(
                 label = "到达",
                 day = arrivalDay,
@@ -375,14 +406,23 @@ fun CreatePlanScreen(
                     placeholder = { Text("例如 北京西站") },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
+                    enabled = selectedCityAdCode != null,
+                    supportingText = if (selectedCityAdCode == null) {
+                        { Text("请先选择目的城市") }
+                    } else {
+                        null
+                    },
                 )
-                MapPickerButton("选择离开位置") { openMapPicker(MapPickerTarget.Departure) }
+                MapPickerButton("选择离开位置", enabled = selectedCityAdCode != null) {
+                    openMapPicker(MapPickerTarget.Departure)
+                }
             }
             StationSuggestionList(departureSuggestions) { suggestion ->
                 departureStation = suggestion.name
                 departurePoint = suggestion.toMapPointInput()
                 viewModel.clearStationSuggestions(arrival = false)
             }
+            departurePoint?.let { SelectedAnchorSummary("离开 · 第 $departureDay 天", it) }
             DayAndTimeSelector(
                 label = "离开",
                 day = departureDay,
@@ -404,6 +444,7 @@ fun CreatePlanScreen(
                     onValueChange = {
                         hotelName = it.take(80)
                         hotelPoint = null
+                        viewModel.searchHotels(hotelName, selectedCityAdCode, "main")
                     },
                     modifier = Modifier.weight(1f),
                     label = { Text("全程同一住宿") },
@@ -413,6 +454,14 @@ fun CreatePlanScreen(
                 )
                 MapPickerButton("选择住宿位置") { openMapPicker(MapPickerTarget.Hotel) }
             }
+            if (hotelSuggestionTarget == "main") {
+                StationSuggestionList(hotelSuggestions) { suggestion ->
+                    hotelName = suggestion.name
+                    hotelPoint = suggestion.toMapPointInput()
+                    viewModel.clearHotelSuggestions()
+                }
+            }
+            hotelPoint?.let { SelectedAnchorSummary("住宿 · 全程", it) }
             hotelStays.forEachIndexed { index, stay ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -429,7 +478,10 @@ fun CreatePlanScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             OutlinedTextField(
                                 value = stay.name,
-                                onValueChange = { hotelStays[index] = stay.copy(name = it.take(80), mapPoint = null) },
+                                onValueChange = {
+                                    hotelStays[index] = stay.copy(name = it.take(80), mapPoint = null)
+                                    viewModel.searchHotels(it, selectedCityAdCode, "stay:$index")
+                                },
                                 modifier = Modifier.weight(1f),
                                 label = { Text("酒店或民宿") },
                                 singleLine = true,
@@ -437,6 +489,21 @@ fun CreatePlanScreen(
                             MapPickerButton("选择第 ${index + 1} 段住宿位置") {
                                 openMapPicker(MapPickerTarget.HotelStay(index))
                             }
+                        }
+                        if (hotelSuggestionTarget == "stay:$index") {
+                            StationSuggestionList(hotelSuggestions) { suggestion ->
+                                hotelStays[index] = stay.copy(
+                                    name = suggestion.name,
+                                    mapPoint = suggestion.toMapPointInput(),
+                                )
+                                viewModel.clearHotelSuggestions()
+                            }
+                        }
+                        hotelStays[index].mapPoint?.let { point ->
+                            SelectedAnchorSummary(
+                                "住宿 · 第 ${hotelStays[index].checkInDay} 天入住 · 第 ${hotelStays[index].checkOutDay} 天退房",
+                                point,
+                            )
                         }
                         StayDateSelector(
                             stay = stay,
@@ -497,6 +564,15 @@ fun CreatePlanScreen(
                 )
             }
         }
+        Text(
+            when (pace) {
+                "RELAXED" -> "每天约 1～2 个主要游览，保留较多休息时间"
+                "INTENSIVE" -> "每天约 3～4 个主要游览，适合早出晚归"
+                else -> "每天约 2～3 个主要游览，兼顾体验、用餐与通勤"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text("优先交通方式", fontWeight = FontWeight.SemiBold)
         Text(
             "公共交通会依据当地高德实时路线自动识别地铁、公交、轮渡等实际可用方式。",
@@ -541,8 +617,8 @@ fun CreatePlanScreen(
 
         StepTitle(number = "6", title = "规划方式")
         SelectableOptionCard(
-            title = "智能优化",
-            description = "先生成可浏览的基础行程，再结合偏好、天气、开放时间与实际通勤进一步优化。",
+            title = "智能规划",
+            description = "先生成可执行草案，再由 AI 审稿、局部调整，并重新校验开放时间与真实路线。",
             selected = optimizationMode == "REQUIRED",
             onClick = { optimizationMode = "REQUIRED" },
         )
@@ -585,7 +661,10 @@ fun CreatePlanScreen(
             Button(
                 onClick = {
                     when {
-                        destination.isBlank() -> destinationError = true
+                        destination.isBlank() || selectedCityAdCode == null -> {
+                            destinationError = true
+                            Toast.makeText(context, "请先从联想结果中选择具体目的城市", Toast.LENGTH_SHORT).show()
+                        }
                         dateRange.isBlank() -> Toast.makeText(context, "请先填写出行日期", Toast.LENGTH_SHORT).show()
                         else -> onStartAiPlanning(
                             AiPlanDraftInput(
@@ -623,7 +702,7 @@ fun CreatePlanScreen(
             ) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
                 Text(
-                    text = if (optimizationMode == "REQUIRED") "开始智能规划" else "开始快速规划",
+                    text = if (optimizationMode == "FAST") "开始快速规划" else "智能规划",
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
@@ -709,6 +788,17 @@ fun CreatePlanScreen(
             },
             initialLatitude = mapCenterLatitude,
             initialLongitude = mapCenterLongitude,
+            expectedCityName = destination,
+            expectedCityAdCode = selectedCityAdCode ?: return@let,
+            roleLabel = when (target) {
+                MapPickerTarget.Arrival -> "到达点（第 $arrivalDay 天）"
+                MapPickerTarget.Departure -> "离开点（第 $departureDay 天）"
+                MapPickerTarget.Hotel -> "住宿点（全程）"
+                is MapPickerTarget.HotelStay -> hotelStays.getOrNull(target.index)?.let {
+                    "住宿点（第 ${it.checkInDay} 天入住，第 ${it.checkOutDay} 天退房）"
+                } ?: "住宿点"
+            },
+            resolvePoint = viewModel::reverseGeocodePoint,
             onDismiss = { mapPickerTarget = null },
             onConfirm = { point ->
                 when (target) {
@@ -772,9 +862,14 @@ private fun PlanningAnchorSection(
 }
 
 @Composable
-private fun MapPickerButton(contentDescription: String, onClick: () -> Unit) {
+private fun MapPickerButton(
+    contentDescription: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier.height(56.dp),
         shape = RoundedCornerShape(16.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
@@ -842,7 +937,7 @@ private fun defaultDateRange(dayCount: Int): String {
 }
 
 private fun formatDateRange(start: LocalDate, end: LocalDate): String {
-    val formatter = DateTimeFormatter.ofPattern("MM.dd")
+    val formatter = DateTimeFormatter.ofPattern("yyyy.MM.dd")
     return "${start.format(formatter)} - ${end.format(formatter)}"
 }
 
@@ -851,6 +946,10 @@ private fun PickedMapPoint.toInput(): AiMapPointInput = AiMapPointInput(
     address = address,
     latitude = latitude,
     longitude = longitude,
+    adCode = adCode,
+    provinceName = provinceName,
+    cityName = cityName,
+    districtName = districtName,
 )
 
 private fun PlaceSuggestion.toMapPointInput(): AiMapPointInput? {
@@ -861,7 +960,27 @@ private fun PlaceSuggestion.toMapPointInput(): AiMapPointInput? {
         address = address,
         latitude = lat,
         longitude = lng,
+        adCode = adCode,
+        cityName = cityName,
+        districtName = district,
     )
+}
+
+@Composable
+private fun SelectedAnchorSummary(role: String, point: AiMapPointInput) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
+            Text(role, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(point.name, fontWeight = FontWeight.SemiBold)
+            point.address?.takeIf(String::isNotBlank)?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -916,7 +1035,11 @@ private fun StationSuggestionList(
                     Column(modifier = Modifier.padding(start = 10.dp)) {
                         Text(suggestion.name, fontWeight = FontWeight.SemiBold)
                         Text(
-                            listOfNotNull(suggestion.district, suggestion.address).joinToString(" · ").ifBlank { "交通枢纽" },
+                            listOfNotNull(
+                                transportSuggestionLabel(suggestion),
+                                suggestion.district,
+                                suggestion.address,
+                            ).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -926,6 +1049,13 @@ private fun StationSuggestionList(
             }
         }
     }
+}
+
+private fun transportSuggestionLabel(suggestion: PlaceSuggestion): String = when {
+    suggestion.name.contains("机场") || suggestion.name.contains("航站楼") -> "机场"
+    suggestion.name.contains("高铁") -> "高铁站"
+    suggestion.name.endsWith("站") -> "火车站"
+    else -> "交通枢纽"
 }
 
 @Composable
@@ -999,6 +1129,18 @@ private fun StepTitle(number: String, title: String) {
             fontWeight = FontWeight.Bold,
         )
     }
+}
+
+internal fun destinationSuggestionTitle(query: String, suggestions: List<ExploreCity>): String {
+    val normalized = query.trim()
+    val provinces = suggestions.map { it.provinceName }.distinct()
+    val selectedProvince = provinces.singleOrNull()?.takeIf { province ->
+        normalized.isNotBlank() && (
+            province.contains(normalized, ignoreCase = true) ||
+                normalized.contains(province.removeSuffix("省").removeSuffix("市"), ignoreCase = true)
+            )
+    }
+    return selectedProvince?.let { "选择 $it 下的城市" } ?: "选择目的城市"
 }
 
 @Composable

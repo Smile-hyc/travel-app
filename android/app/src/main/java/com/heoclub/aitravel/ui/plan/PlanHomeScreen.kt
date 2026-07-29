@@ -1,6 +1,5 @@
 package com.heoclub.aitravel.ui.plan
 
-import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -43,7 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -52,9 +50,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import com.heoclub.aitravel.R
 import com.heoclub.aitravel.data.location.CurrentLocationUiState
+import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.data.model.findPlanForDate
 import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
 import com.heoclub.aitravel.ui.components.PlaceCoverImage
+import java.time.LocalDate
 
 @Composable
 fun PlanHomeScreen(
@@ -63,12 +64,13 @@ fun PlanHomeScreen(
     onLocate: () -> Unit,
     onCreatePlan: () -> Unit,
     onOpenPlan: (String) -> Unit,
-    onAskAi: (String) -> Unit,
+    onOpenPlanItem: (PlanItem) -> Unit,
+    onAskAi: (String, String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val plans by viewModel.plans.collectAsState()
-    val context = LocalContext.current
     var planPendingDeletion by remember { mutableStateOf<TravelPlan?>(null) }
+    var searchVisible by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = modifier
@@ -80,9 +82,7 @@ fun PlanHomeScreen(
         item {
             Spacer(modifier = Modifier.height(12.dp))
             PlanHeader(
-                onSearch = {
-                    Toast.makeText(context, "搜索功能后续接入", Toast.LENGTH_SHORT).show()
-                },
+                onSearch = { searchVisible = true },
                 onCreatePlan = onCreatePlan,
             )
         }
@@ -90,7 +90,11 @@ fun PlanHomeScreen(
             WelcomeSection(
                 locationState = locationState,
                 onLocate = onLocate,
-                onAskAi = onAskAi,
+                onAskToday = {
+                    val todayPlan = findPlanForDate(plans, LocalDate.now())
+                    onAskAi("帮我介绍今天的行程", todayPlan?.plan?.id)
+                },
+                onAskAi = { question -> onAskAi(question, null) },
             )
         }
         item {
@@ -107,6 +111,21 @@ fun PlanHomeScreen(
         item {
             Spacer(modifier = Modifier.height(92.dp))
         }
+    }
+
+    if (searchVisible) {
+        PlanSearchScreen(
+            plans = plans,
+            onOpenPlan = { planId ->
+                searchVisible = false
+                onOpenPlan(planId)
+            },
+            onOpenPlanItem = { item ->
+                searchVisible = false
+                onOpenPlanItem(item)
+            },
+            onDismiss = { searchVisible = false },
+        )
     }
 
     planPendingDeletion?.let { plan ->
@@ -169,12 +188,22 @@ private fun PlanHeader(
 private fun WelcomeSection(
     locationState: CurrentLocationUiState,
     onLocate: () -> Unit,
+    onAskToday: () -> Unit,
     onAskAi: (String) -> Unit,
 ) {
     val cityText = locationState.location?.cityName ?: when {
         locationState.isLocating -> "定位中…"
         locationState.errorMessage != null -> "点击获取定位"
         else -> "等待定位"
+    }
+    val foodCity = locationState.location?.cityName
+        ?.trim()
+        ?.removeSuffix("市")
+        ?.takeIf { it.isNotBlank() }
+    val foodQuestion = if (foodCity != null) {
+        "介绍一下${foodCity}知名的特色美食"
+    } else {
+        "介绍一下当地知名的特色美食"
     }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
@@ -206,15 +235,15 @@ private fun WelcomeSection(
         Column {
             AiActionRow(
                 text = "介绍一下今天的行程",
-                onClick = { onAskAi("帮我介绍今天的行程") },
+                onClick = onAskToday,
             )
             HorizontalDivider(
                 modifier = Modifier.padding(start = 48.dp),
                 color = Color(0xFFDDE5EE),
             )
             AiActionRow(
-                text = "发现目的地值得去的地方",
-                onClick = { onAskAi("目的地有哪些值得去的地方？") },
+                text = foodQuestion,
+                onClick = { onAskAi(foodQuestion) },
             )
         }
     }
@@ -395,7 +424,8 @@ private fun TravelPlanCover(
     height: androidx.compose.ui.unit.Dp,
 ) {
     val shape = RoundedCornerShape(20.dp)
-    val remoteCover = plan.firstRemoteCoverUrl()
+    val remoteCovers = plan.remoteCoverUrls()
+    val remoteCover = remoteCovers.firstOrNull()
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -406,6 +436,7 @@ private fun TravelPlanCover(
         when {
             remoteCover != null -> PlaceCoverImage(
                 imageUrl = remoteCover,
+                fallbackImageUrls = remoteCovers.drop(1),
                 placeName = plan.destination,
                 modifier = Modifier.fillMaxSize(),
                 shape = shape,
@@ -429,17 +460,19 @@ private fun TravelPlanCover(
     }
 }
 
-private fun TravelPlan.firstRemoteCoverUrl(): String? {
+private fun TravelPlan.remoteCoverUrls(): List<String> {
     val items = days
         .sortedBy { it.dayIndex }
         .flatMap { day -> day.items.sortedBy { it.visitOrder } } + unplannedItems
     return items.asSequence()
         .flatMap { item -> (item.imageUrls + listOfNotNull(item.thumbnailUrl)).asSequence() }
         .map(String::trim)
-        .firstOrNull { url ->
+        .filter { url ->
             url.startsWith("http://", ignoreCase = true) ||
                 url.startsWith("https://", ignoreCase = true)
         }
+        .distinct()
+        .toList()
 }
 
 @Composable

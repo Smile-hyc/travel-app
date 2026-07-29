@@ -10,22 +10,42 @@ import com.heoclub.aitravel.data.model.AiPlaceContext
 import com.heoclub.aitravel.data.model.AiPlanContext
 import com.heoclub.aitravel.data.model.AiCard
 import com.heoclub.aitravel.data.model.AiSuggestedAction
+import com.heoclub.aitravel.data.model.AiGeneratedDay
+import com.heoclub.aitravel.data.model.AiGeneratedPlace
+import com.heoclub.aitravel.data.model.AiPlanGenerationRequest
+import com.heoclub.aitravel.data.model.AiPlanGenerationResponse
+import com.heoclub.aitravel.data.model.AiRecommendedPlace
 import com.heoclub.aitravel.data.model.PlanItem
+import com.heoclub.aitravel.data.model.PlaceSummary
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.data.model.dayIndexForDate
+import com.heoclub.aitravel.data.model.findPlanForDate
 import com.heoclub.aitravel.data.repository.AiRepository
+import com.heoclub.aitravel.data.repository.AiConversationHistoryStore
+import com.heoclub.aitravel.data.repository.AiConversationMessageRecord
+import com.heoclub.aitravel.data.repository.AiConversationRecord
+import com.heoclub.aitravel.data.repository.ExploreRepository
 import com.heoclub.aitravel.data.repository.TravelPlanRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import android.util.Log
+import java.time.LocalDate
 import java.util.UUID
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val text: String,
     val fromUser: Boolean,
+    val recommendedPlaces: List<AiRecommendedPlace> = emptyList(),
+    val retrievalCity: String? = null,
+    val offerPlan: Boolean = false,
+    val originalQuestion: String? = null,
 )
 
 data class AiActionCardUi(
@@ -57,6 +77,16 @@ data class AiAssistantUiState(
     val actionWarnings: List<String> = emptyList(),
     val undoToken: String? = null,
     val cards: List<AiCard> = emptyList(),
+    val generatedPlan: AiPlanGenerationResponse? = null,
+    val generatedPlanExpanded: Boolean = false,
+    val isGeneratingPlan: Boolean = false,
+    val generationProgress: Int = 0,
+    val generationStage: String? = null,
+    val planningError: String? = null,
+    val savedGeneratedPlanId: String? = null,
+    val planSetupRequest: String? = null,
+    val conversationHistories: List<AiConversationRecord> = emptyList(),
+    val activeConversationId: String? = null,
 )
 
 private val defaultQuickReplies = listOf(
@@ -70,24 +100,82 @@ class AiAssistantViewModel(
     private val planId: String?,
     private val travelPlanRepository: TravelPlanRepository,
     private val aiRepository: AiRepository,
+    private val exploreRepository: ExploreRepository,
+    private val conversationHistoryStore: AiConversationHistoryStore,
     private val onNavigateToCreatePlan: () -> Unit = {},
     private val onNavigateToPlaceDetail: (String) -> Unit = {},
+    private val onNavigateToPlanDetail: (String) -> Unit = {},
 ) : ViewModel() {
     private var conversationId: String? = null
     private var lastFailedInput: String? = null
+    private var activePlanId: String? = preferredPlanId()
+    private var activeHistoryId: String = UUID.randomUUID().toString()
+    private var historyReady = false
 
     private val _uiState = MutableStateFlow(
         AiAssistantUiState(
-            currentPlan = planId?.let(travelPlanRepository::getPlan),
-            messages = listOf(buildGreeting(planId?.let(travelPlanRepository::getPlan))),
+            currentPlan = activePlanId?.let(travelPlanRepository::getPlan),
+            messages = listOf(buildGreeting(activePlanId?.let(travelPlanRepository::getPlan))),
         ),
     )
     val uiState: StateFlow<AiAssistantUiState> = _uiState.asStateFlow()
 
     init {
+        restoreConversationHistory()
+        observeConversationPersistence()
         observePlanChanges()
         if (!initialQuestion.isNullOrBlank()) {
+            startNewConversation()
             sendMessage(initialQuestion)
+        }
+    }
+
+    fun startNewConversation() {
+        historyReady = false
+        activeHistoryId = UUID.randomUUID().toString()
+        conversationId = null
+        activePlanId = preferredPlanId()
+        val currentPlan = activePlanId?.let(travelPlanRepository::getPlan)
+        _uiState.update { state ->
+            AiAssistantUiState(
+                currentPlan = currentPlan,
+                messages = listOf(buildGreeting(currentPlan)),
+                conversationHistories = state.conversationHistories,
+                activeConversationId = activeHistoryId,
+            )
+        }
+        historyReady = true
+    }
+
+    fun openConversation(conversationIdToOpen: String) {
+        val record = conversationHistoryStore.loadAll().firstOrNull { it.id == conversationIdToOpen } ?: return
+        historyReady = false
+        activeHistoryId = record.id
+        conversationId = record.remoteConversationId
+        activePlanId = record.planId
+            ?.takeIf { travelPlanRepository.getPlan(it) != null }
+            ?: preferredPlanId()
+        val currentPlan = activePlanId?.let(travelPlanRepository::getPlan)
+        val restoredMessages = record.messages.map { it.toChatMessage() }
+        restoredMessages.flatMap { it.recommendedPlaces }.forEach { exploreRepository.upsertPlace(it.toPlaceSummary()) }
+        _uiState.update {
+            AiAssistantUiState(
+                currentPlan = currentPlan,
+                messages = restoredMessages.ifEmpty { listOf(buildGreeting(currentPlan)) },
+                conversationHistories = conversationHistoryStore.loadAll(),
+                activeConversationId = activeHistoryId,
+            )
+        }
+        historyReady = true
+    }
+
+    fun deleteConversation(conversationIdToDelete: String) {
+        conversationHistoryStore.delete(conversationIdToDelete)
+        if (conversationIdToDelete == activeHistoryId) {
+            startNewConversation()
+        }
+        _uiState.update {
+            it.copy(conversationHistories = conversationHistoryStore.loadAll())
         }
     }
 
@@ -103,17 +191,19 @@ class AiAssistantViewModel(
                 errorMessage = null,
                 actionMessage = null,
                 actionSet = null,
+                planSetupRequest = null,
             )
         }
 
         viewModelScope.launch {
-            val currentPlan = planId?.let(travelPlanRepository::getPlan)
+            val currentPlan = activePlanId?.let(travelPlanRepository::getPlan)
             val request = AiChatRequest(
                 conversationId = conversationId,
-                planId = planId,
+                planId = activePlanId,
                 message = cleanInput,
                 history = history,
                 context = buildPlanContext(currentPlan),
+                planContexts = travelPlanRepository.plans.value.mapNotNull(::buildPlanContext),
             )
 
             _uiState.update { it.copy(isStreaming = true, streamingText = "") }
@@ -127,7 +217,7 @@ class AiAssistantViewModel(
                     Log.e("AiAssistant", "Stream done: cards=${response.cards.size}, actions=${response.suggestedActions.size}, textLen=${response.message.length}")
                     conversationId = response.conversationId
                     lastFailedInput = null
-                    val latestPlan = planId?.let(travelPlanRepository::getPlan)
+                    val latestPlan = activePlanId?.let(travelPlanRepository::getPlan)
                     val actionSet = buildActionSet(
                         plan = latestPlan,
                         actionSetId = response.actionSetId,
@@ -147,6 +237,9 @@ class AiAssistantViewModel(
                     }
 
                     val responseCards = if (staleWarning == null) response.cards else emptyList()
+                    val shouldOfferPlanSetup = activePlanId == null && isExplicitPlanCreationRequest(cleanInput)
+                    val setupRequest = buildPlanningHandoff(cleanInput, response.retrievalCity, response.recommendedPlaces)
+                    upsertRecommendedPlaces(response.recommendedPlaces)
 
                     _uiState.update { state ->
                         state.copy(
@@ -154,6 +247,10 @@ class AiAssistantViewModel(
                             messages = state.messages + ChatMessage(
                                 text = response.message,
                                 fromUser = false,
+                                recommendedPlaces = response.recommendedPlaces,
+                                retrievalCity = response.retrievalCity,
+                                offerPlan = response.offerPlan && !shouldOfferPlanSetup,
+                                originalQuestion = cleanInput,
                             ),
                             quickReplies = response.quickReplies.ifEmpty { defaultQuickReplies },
                             isSending = false,
@@ -164,6 +261,7 @@ class AiAssistantViewModel(
                             actionMessage = staleWarning,
                             actionWarnings = response.actionWarnings,
                             cards = responseCards,
+                            planSetupRequest = if (shouldOfferPlanSetup) setupRequest else state.planSetupRequest,
                         )
                     }
                 },
@@ -184,7 +282,7 @@ class AiAssistantViewModel(
             Log.e("AiAssistant", "Non-stream success: cards=${response.cards.size}, actions=${response.suggestedActions.size}")
             conversationId = response.conversationId
             lastFailedInput = null
-            val latestPlan = planId?.let(travelPlanRepository::getPlan)
+            val latestPlan = activePlanId?.let(travelPlanRepository::getPlan)
             val actionSet = buildActionSet(
                 plan = latestPlan,
                 actionSetId = response.actionSetId,
@@ -204,6 +302,9 @@ class AiAssistantViewModel(
             }
 
             val responseCards = if (staleWarning == null) response.cards else emptyList()
+            val shouldOfferPlanSetup = activePlanId == null && isExplicitPlanCreationRequest(cleanInput)
+            val setupRequest = buildPlanningHandoff(cleanInput, response.retrievalCity, response.recommendedPlaces)
+            upsertRecommendedPlaces(response.recommendedPlaces)
 
             _uiState.update { state ->
                 state.copy(
@@ -211,6 +312,10 @@ class AiAssistantViewModel(
                     messages = state.messages + ChatMessage(
                         text = response.message,
                         fromUser = false,
+                        recommendedPlaces = response.recommendedPlaces,
+                        retrievalCity = response.retrievalCity,
+                        offerPlan = response.offerPlan && !shouldOfferPlanSetup,
+                        originalQuestion = cleanInput,
                     ),
                     quickReplies = response.quickReplies.ifEmpty { defaultQuickReplies },
                     isSending = false,
@@ -221,6 +326,7 @@ class AiAssistantViewModel(
                     actionMessage = staleWarning,
                     actionWarnings = response.actionWarnings,
                     cards = responseCards,
+                    planSetupRequest = if (shouldOfferPlanSetup) setupRequest else state.planSetupRequest,
                 )
             }
         }.onFailure { throwable ->
@@ -337,7 +443,7 @@ class AiAssistantViewModel(
     }
 
     fun onItineraryPlaceClicked(placeId: String) {
-        onNavigateToPlaceDetail(placeId)
+        openPlaceDetail(placeId)
     }
 
     fun confirmItineraryCard() {
@@ -353,10 +459,352 @@ class AiAssistantViewModel(
         }
     }
 
+    fun generateTripPlan(
+        destination: String,
+        dateRange: String,
+        dayCount: Int,
+        pace: String,
+        requestText: String,
+    ) {
+        if (destination.isBlank() || dateRange.isBlank() || dayCount !in 1..10 || _uiState.value.isGeneratingPlan) return
+        _uiState.update {
+            it.copy(
+                isGeneratingPlan = true,
+                generationProgress = 0,
+                generationStage = "正在理解你的旅行偏好",
+                planningError = null,
+                generatedPlan = null,
+                savedGeneratedPlanId = null,
+                planSetupRequest = null,
+            )
+        }
+        viewModelScope.launch {
+            val request = AiPlanGenerationRequest(
+                destination = destination.trim(),
+                dateRange = dateRange,
+                dayCount = dayCount,
+                preferences = listOf(
+                    when (pace) {
+                        "RELAXED" -> "轻松悠闲，不赶路"
+                        "INTENSIVE" -> "紧凑充实，多打卡"
+                        else -> "节奏适中，景点与美食兼顾"
+                    },
+                ),
+                freeText = requestText.trim().takeIf { it.isNotBlank() },
+                pace = pace,
+                clientRequestId = UUID.randomUUID().toString(),
+            )
+            var completed: AiPlanGenerationResponse? = null
+            try {
+                aiRepository.streamPlan(request).collect { snapshot ->
+                    when (snapshot.status) {
+                        "COMPLETED" -> completed = snapshot.result
+                        "FAILED" -> throw IllegalStateException(snapshot.error ?: "智能规划失败，请稍后重试。")
+                        "CANCELLED" -> throw IllegalStateException("智能规划已取消。")
+                        else -> {
+                            upsertGeneratedPlaces(snapshot.partialDays)
+                            _uiState.update {
+                                it.copy(
+                                    generationProgress = snapshot.progress,
+                                    generationStage = snapshot.stage,
+                                )
+                            }
+                        }
+                    }
+                }
+                val result = completed ?: throw IllegalStateException("规划已结束，但没有返回可用行程。")
+                if (result.days.isEmpty()) throw IllegalStateException("没有生成可用行程，请调整条件后重试。")
+                upsertGeneratedPlaces(result.days)
+                _uiState.update {
+                    it.copy(
+                        generatedPlan = result,
+                        generatedPlanExpanded = false,
+                        isGeneratingPlan = false,
+                        generationProgress = 100,
+                        generationStage = null,
+                        planningError = null,
+                        messages = it.messages + ChatMessage(
+                            text = "智能规划已经按你确认的日期和旅行节奏生成了「${result.title}」。蓝色地点可以直接查看详情；确认后可一键保存到计划页并继续编辑。",
+                            fromUser = false,
+                        ),
+                    )
+                }
+            } catch (error: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isGeneratingPlan = false,
+                        generationStage = null,
+                        planningError = error.message ?: "智能规划暂时不可用，请稍后重试。",
+                    )
+                }
+            }
+        }
+    }
+
+    fun toggleGeneratedPlanExpanded() {
+        _uiState.update { it.copy(generatedPlanExpanded = !it.generatedPlanExpanded) }
+    }
+
+    fun saveGeneratedPlan() {
+        val generated = _uiState.value.generatedPlan ?: return
+        val existingId = _uiState.value.savedGeneratedPlanId
+        if (existingId != null) {
+            onNavigateToPlanDetail(existingId)
+            return
+        }
+        val plan = travelPlanRepository.importGeneratedPlan(generated)
+        activePlanId = plan.id
+        _uiState.update {
+            it.copy(
+                currentPlan = plan,
+                savedGeneratedPlanId = plan.id,
+                actionMessage = "已加入计划页，你可以继续调整日期、地点和顺序。",
+            )
+        }
+        onNavigateToPlanDetail(plan.id)
+    }
+
+    fun openGeneratedPlace(placeId: String) {
+        openPlaceDetail(placeId)
+    }
+
+    fun openRecommendedPlace(placeId: String) {
+        openPlaceDetail(placeId)
+    }
+
+    private fun openPlaceDetail(placeId: String) {
+        if (exploreRepository.getPlace(placeId) == null) {
+            val planItem = travelPlanRepository.plans.value.asSequence()
+                .flatMap { plan ->
+                    sequence {
+                        plan.days.forEach { day -> yieldAll(day.items) }
+                        yieldAll(plan.unplannedItems)
+                    }
+                }
+                .firstOrNull { item -> item.id == placeId }
+            if (planItem != null) {
+                exploreRepository.upsertPlace(planItem.toPlaceSummary())
+            } else {
+                val recommended = _uiState.value.messages.asSequence()
+                    .flatMap { it.recommendedPlaces.asSequence() }
+                    .firstOrNull { it.id == placeId }
+                if (recommended != null) {
+                    exploreRepository.upsertPlace(recommended.toPlaceSummary())
+                }
+            }
+        }
+
+        if (exploreRepository.getPlace(placeId) != null) {
+            onNavigateToPlaceDetail(placeId)
+        } else {
+            _uiState.update { it.copy(errorMessage = "这个地点缺少可用详情，已阻止打开空白页面。") }
+        }
+    }
+
+    fun requestPlanFromRecommendation(messageId: String) {
+        val message = _uiState.value.messages.firstOrNull { it.id == messageId } ?: return
+        val originalQuestion = message.originalQuestion ?: return
+        val request = buildPlanningHandoff(originalQuestion, message.retrievalCity, message.recommendedPlaces)
+        _uiState.update { state ->
+            state.copy(
+                planSetupRequest = request,
+                messages = state.messages.map {
+                    if (it.id == messageId) it.copy(offerPlan = false) else it
+                },
+            )
+        }
+    }
+
+    fun dismissPlanOffer(messageId: String) {
+        _uiState.update { state ->
+            state.copy(
+                messages = state.messages.map {
+                    if (it.id == messageId) it.copy(offerPlan = false) else it
+                },
+            )
+        }
+    }
+
+    private fun upsertGeneratedPlaces(days: List<AiGeneratedDay>) {
+        days.flatMap { it.places }.forEach { exploreRepository.upsertPlace(it.toPlaceSummary()) }
+    }
+
+    private fun upsertRecommendedPlaces(places: List<AiRecommendedPlace>) {
+        places.forEach { exploreRepository.upsertPlace(it.toPlaceSummary()) }
+    }
+
+    private fun buildPlanningHandoff(
+        originalQuestion: String,
+        retrievalCity: String?,
+        places: List<AiRecommendedPlace>,
+    ): String {
+        if (retrievalCity.isNullOrBlank()) return originalQuestion
+        val placeNames = places.take(6).joinToString("、") { it.name }
+        val placeHint = if (placeNames.isBlank()) "" else "。优先考虑这些高德真实地点：$placeNames"
+        return "去${retrievalCity}旅行。用户原始需求：$originalQuestion$placeHint"
+    }
+
+    private fun AiRecommendedPlace.toPlaceSummary(): PlaceSummary {
+        return PlaceSummary(
+            id = id,
+            source = source,
+            sourcePoiId = sourcePoiId,
+            name = name,
+            category = category,
+            categoryCode = categoryCode,
+            typeName = typeName,
+            typeCode = typeCode,
+            address = address,
+            provinceName = provinceName,
+            cityName = cityName,
+            districtName = districtName,
+            adCode = adCode,
+            cityCode = cityCode,
+            latitude = latitude,
+            longitude = longitude,
+            distanceMeters = distanceMeters,
+            phone = phone,
+            rating = rating,
+            costAverage = costAverage,
+            coverImageUrl = coverImageUrl,
+            imageUrls = imageUrls,
+            businessArea = businessArea,
+            openingHoursToday = openingHoursToday,
+            openingHoursWeek = openingHoursWeek,
+        )
+    }
+
+    private fun AiGeneratedPlace.toPlaceSummary(): PlaceSummary {
+        return PlaceSummary(
+            id = id,
+            source = source,
+            sourcePoiId = sourcePoiId,
+            name = name,
+            category = category,
+            categoryCode = categoryCode,
+            typeName = typeName,
+            typeCode = typeCode,
+            address = address,
+            provinceName = provinceName,
+            cityName = cityName,
+            districtName = districtName,
+            adCode = adCode,
+            cityCode = cityCode,
+            latitude = latitude,
+            longitude = longitude,
+            phone = phone,
+            rating = rating,
+            costAverage = costAverage,
+            coverImageUrl = thumbnailUrl,
+            imageUrls = imageUrls,
+            businessArea = businessArea,
+            openingHoursToday = openingHoursToday,
+            openingHoursWeek = openingHoursWeek,
+        )
+    }
+
+    private fun restoreConversationHistory() {
+        val histories = conversationHistoryStore.loadAll()
+        val resolvedPlanId = preferredPlanId()
+        val restored = if (initialQuestion.isNullOrBlank()) {
+            histories.firstOrNull { it.planId == resolvedPlanId }
+        } else {
+            null
+        }
+        if (restored != null) {
+            activeHistoryId = restored.id
+            conversationId = restored.remoteConversationId
+            activePlanId = restored.planId
+                ?.takeIf { travelPlanRepository.getPlan(it) != null }
+                ?: resolvedPlanId
+            val currentPlan = activePlanId?.let(travelPlanRepository::getPlan)
+            val messages = restored.messages.map { it.toChatMessage() }
+            messages.flatMap { it.recommendedPlaces }.forEach { exploreRepository.upsertPlace(it.toPlaceSummary()) }
+            _uiState.update {
+                it.copy(
+                    currentPlan = currentPlan,
+                    messages = messages.ifEmpty { listOf(buildGreeting(currentPlan)) },
+                    conversationHistories = histories,
+                    activeConversationId = activeHistoryId,
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    conversationHistories = histories,
+                    activeConversationId = activeHistoryId,
+                )
+            }
+        }
+        historyReady = true
+    }
+
+    private fun observeConversationPersistence() {
+        viewModelScope.launch {
+            _uiState
+                .map { it.messages }
+                .distinctUntilChanged()
+                .collect { messages ->
+                    if (!historyReady || messages.none { it.fromUser }) return@collect
+                    val title = messages.firstOrNull { it.fromUser }
+                        ?.text
+                        ?.replace("\n", " ")
+                        ?.trim()
+                        ?.take(26)
+                        ?.ifBlank { "新的旅行对话" }
+                        ?: "新的旅行对话"
+                    conversationHistoryStore.upsert(
+                        AiConversationRecord(
+                            id = activeHistoryId,
+                            title = title,
+                            messages = messages.map { it.toHistoryRecord() },
+                            remoteConversationId = conversationId,
+                            planId = activePlanId,
+                            updatedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                    _uiState.update {
+                        it.copy(
+                            conversationHistories = conversationHistoryStore.loadAll(),
+                            activeConversationId = activeHistoryId,
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun ChatMessage.toHistoryRecord(): AiConversationMessageRecord {
+        return AiConversationMessageRecord(
+            id = id,
+            text = text,
+            fromUser = fromUser,
+            recommendedPlaces = recommendedPlaces,
+            retrievalCity = retrievalCity,
+            offerPlan = offerPlan,
+            originalQuestion = originalQuestion,
+        )
+    }
+
+    private fun AiConversationMessageRecord.toChatMessage(): ChatMessage {
+        return ChatMessage(
+            id = id,
+            text = text,
+            fromUser = fromUser,
+            recommendedPlaces = recommendedPlaces,
+            retrievalCity = retrievalCity,
+            offerPlan = offerPlan,
+            originalQuestion = originalQuestion,
+        )
+    }
+
     private fun observePlanChanges() {
         viewModelScope.launch {
             travelPlanRepository.plans.collect { plans ->
-                val latestPlan = planId?.let { id -> plans.firstOrNull { it.id == id } }
+                val boundPlanStillExists = activePlanId?.let { id -> plans.any { it.id == id } } == true
+                if (!boundPlanStillExists) {
+                    activePlanId = preferredPlanId(plans)
+                }
+                val latestPlan = activePlanId?.let { id -> plans.firstOrNull { it.id == id } }
                 _uiState.update { state ->
                     if (state.currentPlan?.revision == latestPlan?.revision) {
                         state
@@ -368,13 +816,60 @@ class AiAssistantViewModel(
         }
     }
 
+    private fun PlanItem.toPlaceSummary(): PlaceSummary {
+        return PlaceSummary(
+            id = id,
+            source = source,
+            sourcePoiId = sourcePoiId,
+            name = name,
+            category = category,
+            categoryCode = categoryCode,
+            typeName = typeName,
+            typeCode = typeCode,
+            address = address,
+            provinceName = provinceName,
+            cityName = cityName,
+            districtName = districtName,
+            adCode = adCode,
+            cityCode = cityCode,
+            latitude = latitude,
+            longitude = longitude,
+            phone = phone,
+            rating = rating,
+            costAverage = costAverage,
+            coverImageUrl = thumbnailUrl,
+            imageUrls = imageUrls,
+            businessArea = businessArea,
+            openingHoursToday = openingHoursToday,
+            openingHoursWeek = openingHoursWeek,
+        )
+    }
+
+    private fun preferredPlanId(): String? {
+        val explicitlyBoundPlanId = planId?.takeIf { travelPlanRepository.getPlan(it) != null }
+        return explicitlyBoundPlanId ?: preferredPlanId(travelPlanRepository.plans.value)
+    }
+
+    private fun preferredPlanId(plans: List<TravelPlan>): String? {
+        return findPlanForDate(plans)?.plan?.id
+            ?: plans.maxByOrNull { it.updatedAt }?.id
+    }
+
     private fun buildGreeting(plan: TravelPlan?): ChatMessage {
         val text = if (plan != null) {
             "你好，我已经读取「${plan.title}」这个计划。你可以让我分析行程节奏、安排待规划地点，或给出需要你确认的调整建议。"
         } else {
-            "你好，我是你的 AI 旅行助手。你可以问我目的地建议、旅行准备清单，或从某个计划详情页带着上下文来问。"
+            "你好，我是你的 AI 旅行助手。目的地、美食、景点、交通、住宿、预算和旅行准备都可以直接问我；如果你要生成完整计划，我会帮你把需求交给智能规划。"
         }
         return ChatMessage(text = text, fromUser = false)
+    }
+
+    private fun isExplicitPlanCreationRequest(input: String): Boolean {
+        val normalized = input.replace(" ", "")
+        if (Regex("(?:一|二|两|三|四|五|六|七|八|九|十|\\d+)日游").containsMatchIn(normalized)) return true
+        if ("旅游规划" in normalized || "旅行规划" in normalized || "行程计划" in normalized) return true
+        return Regex("(?:制定|生成|规划|安排|设计|做).{0,8}(?:旅行计划|旅游计划|计划|行程)")
+            .containsMatchIn(normalized)
     }
 
     private fun buildHistory(messages: List<ChatMessage>): List<AiHistoryMessage> {
@@ -390,6 +885,7 @@ class AiAssistantViewModel(
 
     private fun buildPlanContext(plan: TravelPlan?): AiPlanContext? {
         if (plan == null) return null
+        val today = LocalDate.now()
         return AiPlanContext(
             id = plan.id,
             title = plan.title,
@@ -397,6 +893,8 @@ class AiAssistantViewModel(
             dateRange = plan.dateRange,
             revision = plan.revision,
             updatedAt = plan.updatedAt,
+            currentDate = today.toString(),
+            todayDayIndex = dayIndexForDate(plan.dateRange, today),
             days = plan.days.map { day ->
                 AiDayContext(
                     dayIndex = day.dayIndex,
@@ -471,8 +969,11 @@ class AiAssistantViewModel(
         private val planId: String?,
         private val travelPlanRepository: TravelPlanRepository,
         private val aiRepository: AiRepository,
+        private val exploreRepository: ExploreRepository,
+        private val conversationHistoryStore: AiConversationHistoryStore,
         private val onNavigateToCreatePlan: () -> Unit = {},
         private val onNavigateToPlaceDetail: (String) -> Unit = {},
+        private val onNavigateToPlanDetail: (String) -> Unit = {},
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -482,8 +983,11 @@ class AiAssistantViewModel(
                     planId = planId,
                     travelPlanRepository = travelPlanRepository,
                     aiRepository = aiRepository,
+                    exploreRepository = exploreRepository,
+                    conversationHistoryStore = conversationHistoryStore,
                     onNavigateToCreatePlan = onNavigateToCreatePlan,
                     onNavigateToPlaceDetail = onNavigateToPlaceDetail,
+                    onNavigateToPlanDetail = onNavigateToPlanDetail,
                 ) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")

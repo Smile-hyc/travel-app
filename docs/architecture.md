@@ -29,6 +29,10 @@ Main packages:
 
 ## Backend
 
+Before multi-day partitioning, scenic POIs pass through a visit-unit resolver. Evidence-backed `BUNDLE` relations suppress non-executable parent POIs, keep executable sub-areas on one feasible day, and carry recommended visit duration and internal-transfer metadata into route replay. Nearby independent POIs remain separate `COLOCATE` units; distance alone never merges identities. Destination-specific evidence lives in visit-unit definitions, while the partition and time-window solvers consume only the generic policy.
+
+Pace is modeled as a soft daily workload rather than a hard POI count. `BALANCED` and `INTENSIVE` target three and four main visit units respectively, while visit durations, opening windows and route costs determine whether those targets are feasible. The day solver can accept a small negative-score insertion while the visit-time floor is unmet, but only when it introduces no leg beyond the pace-specific normal range. Partial arrival/departure windows and full-day attractions are exempt, and candidates assigned to a future geographic region are reserved for that day so earlier days cannot starve later ones.
+
 The backend uses a small FastAPI layout:
 
 ```text

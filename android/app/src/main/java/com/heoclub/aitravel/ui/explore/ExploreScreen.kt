@@ -193,10 +193,23 @@ fun ExploreScreen(
                 cityName = uiState.selectedCity.displayName,
                 query = uiState.placeSearchQuery,
                 suggestions = uiState.placeSuggestions,
-                loading = uiState.isLoadingSuggestions,
+                results = uiState.placeSearchResults,
+                hasSubmittedSearch = uiState.hasSubmittedSearch,
+                isLoadingSuggestions = uiState.isLoadingSuggestions,
+                isSearching = uiState.isSearchingPlaces,
+                notice = uiState.placeSearchNotice,
                 error = uiState.placeSearchError,
+                history = uiState.searchHistory,
+                quickWords = uiState.quickSearchWords,
+                currentLatitude = locationState.location?.latitude,
+                currentLongitude = locationState.location?.longitude,
                 onQueryChange = viewModel::updatePlaceSearchQuery,
+                onSubmitSearch = viewModel::submitPlaceSearch,
                 onSuggestionClick = viewModel::selectSuggestion,
+                onResultClick = viewModel::selectSearchResult,
+                onAddPlace = onAddPlace,
+                onRemoveHistory = viewModel::removeSearchHistory,
+                onClearHistory = viewModel::clearSearchHistory,
                 onDismiss = viewModel::closePlaceSearch,
             )
         }
@@ -551,6 +564,7 @@ private fun PlaceCard(
         ) {
             PlaceCoverImage(
                 imageUrl = place.displayCoverImageUrl,
+                fallbackImageUrls = place.displayImageUrls,
                 placeName = place.name,
                 category = place.category,
                 modifier = Modifier.size(if (compact) 58.dp else 74.dp),

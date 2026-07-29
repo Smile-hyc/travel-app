@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -19,20 +20,21 @@ from app.schemas.ai import (
     AiPlanGenerationResponse,
     AiPlanJobStatusResponse,
 )
-from app.services.ai_plan_job_manager import AiPlanJobManager
+from app.services.ai_plan_job_manager import AiPlanJobManager, planning_event_fingerprint
 from app.services.travel_ai_service import TravelAiService
 from app.services.travel_plan_generation_service import TravelPlanGenerationService
 
 router = APIRouter(prefix="/api", tags=["ai"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health/ai", response_model=AiHealthResponse)
 def ai_health_check(settings: Settings = Depends(get_settings)) -> AiHealthResponse:
     return AiHealthResponse(
-        configured=settings.ark_configured,
-        apiKeyConfigured=settings.ark_api_key_configured,
-        model=settings.ark_model if settings.ark_model.strip() else None,
-        baseUrlConfigured=settings.ark_base_url_configured,
+        configured=settings.deepseek_configured,
+        apiKeyConfigured=settings.deepseek_api_key_configured,
+        model=settings.deepseek_model if settings.deepseek_model.strip() else None,
+        baseUrlConfigured=settings.deepseek_base_url_configured,
     )
 
 
@@ -82,6 +84,7 @@ async def stream_travel_plan(
     created_at = datetime.now(timezone.utc).isoformat()
     queue: asyncio.Queue[AiPlanJobStatusResponse] = asyncio.Queue()
     events = []
+    event_fingerprints: set[str] = set()
     state = {
         "progress": 1,
         "stage": "智能规划流已建立",
@@ -119,9 +122,12 @@ async def stream_travel_plan(
         state["completed_days"] = completed_days
         if partial_days is not None:
             state["partial_days"] = [day.model_copy(deep=True) for day in partial_days]
-        if event is not None and (not events or events[-1].message != event.message):
-            events.append(event.model_copy(update={"sequence": len(events) + 1}, deep=True))
-            del events[:-64]
+        if event is not None:
+            fingerprint = planning_event_fingerprint(event)
+            if fingerprint not in event_fingerprints:
+                events.append(event.model_copy(update={"sequence": len(events) + 1}, deep=True))
+                event_fingerprints.add(fingerprint)
+                del events[:-64]
         if active_day_index is not None:
             state["active_day_index"] = active_day_index
         queue.put_nowait(snapshot())
@@ -137,6 +143,7 @@ async def stream_travel_plan(
             state["stage"] = "智能规划失败"
             queue.put_nowait(snapshot("FAILED", error=str(exc.detail)))
         except Exception:
+            logger.exception("Unexpected error while streaming AI travel plan")
             state["stage"] = "智能规划失败"
             queue.put_nowait(snapshot("FAILED", error="服务发生未预期错误，请稍后重试。"))
 

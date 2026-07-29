@@ -52,6 +52,8 @@ data class AiPlanContext(
     val dateRange: String? = null,
     val revision: Long? = null,
     val updatedAt: Long? = null,
+    val currentDate: String? = null,
+    val todayDayIndex: Int? = null,
     val days: List<AiDayContext> = emptyList(),
     val unplannedPlaces: List<AiPlaceContext> = emptyList(),
     val weather: AiWeatherContext? = null,
@@ -64,6 +66,7 @@ data class AiChatRequest(
     val message: String,
     val history: List<AiHistoryMessage> = emptyList(),
     val context: AiPlanContext? = null,
+    val planContexts: List<AiPlanContext> = emptyList(),
 )
 
 data class AiChatResponse(
@@ -77,8 +80,41 @@ data class AiChatResponse(
     val suggestedActions: List<AiSuggestedAction> = emptyList(),
     val actionWarnings: List<String> = emptyList(),
     val cards: List<AiCard> = emptyList(),
+    val recommendedPlaces: List<AiRecommendedPlace> = emptyList(),
+    val retrievalCity: String? = null,
+    val offerPlan: Boolean = false,
+    val dataSources: List<String> = emptyList(),
     val createdAt: String? = null,
     val model: String? = null,
+)
+
+data class AiRecommendedPlace(
+    val id: String,
+    val source: String = "AMAP",
+    val sourcePoiId: String,
+    val name: String,
+    val category: String,
+    val categoryCode: String,
+    val typeName: String? = null,
+    val typeCode: String? = null,
+    val address: String? = null,
+    val provinceName: String? = null,
+    val cityName: String? = null,
+    val districtName: String? = null,
+    val adCode: String? = null,
+    val cityCode: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val distanceMeters: Int? = null,
+    val phone: String? = null,
+    val rating: String? = null,
+    val costAverage: String? = null,
+    val coverImageUrl: String? = null,
+    val imageUrls: List<String> = emptyList(),
+    val businessArea: String? = null,
+    val openingHoursToday: String? = null,
+    val openingHoursWeek: String? = null,
+    val description: String,
 )
 
 data class AiSuggestedAction(
@@ -157,6 +193,10 @@ data class AiMapPointInput(
     val address: String? = null,
     val latitude: Double,
     val longitude: Double,
+    val adCode: String? = null,
+    val provinceName: String? = null,
+    val cityName: String? = null,
+    val districtName: String? = null,
 )
 
 data class AiGeneratedPlace(
@@ -184,6 +224,26 @@ data class AiGeneratedPlace(
     val businessArea: String? = null,
     val openingHoursToday: String? = null,
     val openingHoursWeek: String? = null,
+    val officialScenicGrade: String? = null,
+    val experienceEvidenceCount: Int = 0,
+    val officialReservationRequired: Boolean = false,
+    val officialReservationNote: String? = null,
+    val officialClosedDates: List<String> = emptyList(),
+    val officialClosureWarning: String? = null,
+    val officialOpeningHoursByDate: Map<String, String> = emptyMap(),
+    val officialAccessNote: String? = null,
+    val officialMaxDailyCapacity: Int? = null,
+    val officialCapacityNote: String? = null,
+    val officialTicketNote: String? = null,
+    val crowdRisk: Double = 0.0,
+    val contentUpdatedAt: String? = null,
+    val visitUnitId: String? = null,
+    val visitUnitName: String? = null,
+    val visitUnitPolicy: String? = null,
+    val visitUnitMemberOrder: Int? = null,
+    val visitUnitTransferMinutes: Int? = null,
+    val visitUnitSourceUrl: String? = null,
+    val recommendedVisitMinutes: Int? = null,
     val scheduleVerified: Boolean = false,
     val suggestedStart: String,
     val suggestedEnd: String,
@@ -197,9 +257,23 @@ data class AiGeneratedDay(
     val summary: String,
     val places: List<AiGeneratedPlace> = emptyList(),
     val transfers: List<AiGeneratedTransfer> = emptyList(),
+    val alternatives: List<AiPlanAlternative> = emptyList(),
     val weather: String? = null,
     val estimatedDistanceKm: Double = 0.0,
     val intensity: String = "适中",
+)
+
+data class AiPlanAlternative(
+    val id: String,
+    val sourcePoiId: String,
+    val name: String,
+    val category: String,
+    val latitude: Double,
+    val longitude: Double,
+    val districtName: String? = null,
+    val openingHoursWeek: String? = null,
+    val officialReservationRequired: Boolean = false,
+    val reason: String,
 )
 
 data class AiGeneratedTransfer(
@@ -220,6 +294,21 @@ data class AiPlanQuality(
     val totalPlaceCount: Int = 0,
     val usedFallback: Boolean = false,
     val dataSources: List<String> = emptyList(),
+    val totalCommuteMinutes: Int = 0,
+    val longestLegMinutes: Int = 0,
+    val crossRegionTransferCount: Int = 0,
+    val backtrackingLegCount: Int = 0,
+    val longIdleGapCount: Int = 0,
+    val estimatedWalkingKm: Double = 0.0,
+    val mealWindowDeviationCount: Int = 0,
+    val minimumClosingMarginMinutes: Int? = null,
+    val requiredPlaceCoverage: Double = 1.0,
+    val comfortScore: Int = 100,
+    val mainVisitUnitCountByDay: List<Int> = emptyList(),
+    val scheduledVisitMinutesByDay: List<Int> = emptyList(),
+    val occupancyRatioByDay: List<Double> = emptyList(),
+    val underfilledDayIndexes: List<Int> = emptyList(),
+    val underfilledReasons: List<String> = emptyList(),
 )
 
 data class AiPlanGenerationResponse(
@@ -235,6 +324,7 @@ data class AiPlanGenerationResponse(
     val generatedAt: String,
     val model: String? = null,
     val quality: AiPlanQuality = AiPlanQuality(),
+    val enrichmentBatchId: String? = null,
 )
 
 data class AiPlanProgressEvent(

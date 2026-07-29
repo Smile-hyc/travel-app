@@ -42,16 +42,24 @@ import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DragHandle
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -100,11 +108,17 @@ import com.heoclub.aitravel.data.model.PlanItem
 import com.heoclub.aitravel.data.model.RouteModes
 import com.heoclub.aitravel.data.model.RouteStep
 import com.heoclub.aitravel.data.model.TravelPlan
+import com.heoclub.aitravel.data.model.parsePlanDateRange
 import com.heoclub.aitravel.R
 import com.heoclub.aitravel.ui.components.DeletePlanConfirmationDialog
 import com.heoclub.aitravel.ui.components.PlaceCoverImage
 import com.heoclub.aitravel.ui.components.loadMapMarkerImage
 import android.graphics.Color as AndroidColor
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 @Composable
 fun PlanDetailScreen(
@@ -164,6 +178,11 @@ fun PlanDetailScreen(
                 onSelectMode = viewModel::selectMode,
                 onReorderItems = viewModel::reorderItems,
                 onSelectSegmentMode = viewModel::updateSegmentTransportMode,
+                onUpdatePlanTitle = viewModel::updatePlanTitle,
+                onUpdatePlanDateRange = viewModel::updatePlanDateRange,
+                onUpdateDayTitle = viewModel::updateDayTitle,
+                onUpdateItemSchedule = viewModel::updateItemSchedule,
+                onRemoveItem = viewModel::removeItem,
                 onMoveUnplannedToDay = viewModel::moveUnplannedItemToDay,
                 onOptimize = viewModel::optimizeRoute,
                 onApplyOptimization = viewModel::applyOptimization,
@@ -236,6 +255,11 @@ private fun PlanDetailSheet(
     onSelectMode: (String) -> Unit,
     onReorderItems: (List<String>) -> Unit,
     onSelectSegmentMode: (String, String) -> Unit,
+    onUpdatePlanTitle: (String) -> Unit,
+    onUpdatePlanDateRange: (String, Int) -> Unit,
+    onUpdateDayTitle: (Int, String) -> Unit,
+    onUpdateItemSchedule: (String, Int, String?, String?, Int) -> Unit,
+    onRemoveItem: (String) -> Unit,
     onMoveUnplannedToDay: (String, Int) -> Unit,
     onOptimize: () -> Unit,
     onApplyOptimization: () -> Unit,
@@ -244,6 +268,10 @@ private fun PlanDetailSheet(
     onOpenPlace: (PlanItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var editingPlanTitle by remember(plan.id) { mutableStateOf(false) }
+    var editingDateRange by remember(plan.id) { mutableStateOf(false) }
+    var editingDay by remember(plan.id) { mutableStateOf<PlanDay?>(null) }
+    var editingItem by remember(plan.id) { mutableStateOf<PlanItem?>(null) }
     val displayRoute = uiState.optimization?.route ?: uiState.route
     val displayItems = orderedPreviewItems(
         items = if (uiState.selectedDayIndex == 0) {
@@ -312,16 +340,32 @@ private fun PlanDetailSheet(
                 )
             }
 
-            Text(
-                text = plan.title,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF071A3D),
-            )
-            Text(
-                text = "${plan.dayCount.coerceAtLeast(1)} 天 · ${plan.placeCount} 个地点 · ${plan.dateRange}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = plan.title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF071A3D),
+                )
+                IconButton(onClick = { editingPlanTitle = true }) {
+                    Icon(Icons.Outlined.Edit, contentDescription = "修改计划名称")
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "${plan.dayCount.coerceAtLeast(1)} 天 · ${plan.placeCount} 个地点 ·",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { editingDateRange = true }) {
+                    Text(plan.dateRange)
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = "修改计划起止日期",
+                        modifier = Modifier.padding(start = 5.dp).size(16.dp),
+                    )
+                }
+            }
 
             DayTabs(
                 days = plan.days,
@@ -366,6 +410,8 @@ private fun PlanDetailSheet(
                     previewing = uiState.optimization != null,
                     onReorderItems = onReorderItems,
                     onSelectSegmentMode = onSelectSegmentMode,
+                    onEditDayTitle = { editingDay = uiState.selectedDay },
+                    onEditItemSchedule = { editingItem = it },
                     onOpenPlace = onOpenPlace,
                 )
             }
@@ -413,6 +459,59 @@ private fun PlanDetailSheet(
 
             Spacer(modifier = Modifier.height(20.dp))
         }
+    }
+
+    if (editingPlanTitle) {
+        SingleTextEditDialog(
+            title = "修改计划名称",
+            label = "计划名称",
+            initialValue = plan.title,
+            onDismiss = { editingPlanTitle = false },
+            onSave = {
+                onUpdatePlanTitle(it)
+                editingPlanTitle = false
+            },
+        )
+    }
+
+    if (editingDateRange) {
+        EditPlanDateRangeDialog(
+            currentDateRange = plan.dateRange,
+            onDismiss = { editingDateRange = false },
+            onSave = { dateRange, dayCount ->
+                onUpdatePlanDateRange(dateRange, dayCount)
+                editingDateRange = false
+            },
+        )
+    }
+
+    editingDay?.let { day ->
+        SingleTextEditDialog(
+            title = "修改 DAY ${day.dayIndex} 标题",
+            label = "例如：DAY ${day.dayIndex} · 静安区",
+            initialValue = day.title,
+            onDismiss = { editingDay = null },
+            onSave = {
+                onUpdateDayTitle(day.dayIndex, it)
+                editingDay = null
+            },
+        )
+    }
+
+    editingItem?.let { item ->
+        EditVisitScheduleDialog(
+            item = item,
+            days = plan.days,
+            onDismiss = { editingItem = null },
+            onSave = { start, end, targetDayIndex ->
+                onUpdateItemSchedule(item.id, item.dayIndex, start, end, targetDayIndex)
+                editingItem = null
+            },
+            onDelete = {
+                onRemoveItem(item.id)
+                editingItem = null
+            },
+        )
     }
 }
 
@@ -593,6 +692,8 @@ private fun DayItinerary(
     previewing: Boolean,
     onReorderItems: (List<String>) -> Unit,
     onSelectSegmentMode: (String, String) -> Unit,
+    onEditDayTitle: () -> Unit,
+    onEditItemSchedule: (PlanItem) -> Unit,
     onOpenPlace: (PlanItem) -> Unit,
 ) {
     var visualItems by remember(day?.id) { mutableStateOf(items) }
@@ -714,6 +815,9 @@ private fun DayItinerary(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
+            IconButton(onClick = onEditDayTitle) {
+                Icon(Icons.Outlined.Edit, contentDescription = "修改当天标题")
+            }
             if (previewing) {
                 Surface(color = Color(0xFFEAF8EF), shape = RoundedCornerShape(50)) {
                     Text(
@@ -783,6 +887,8 @@ private fun DayItinerary(
                         segmentSteps = route?.segments?.getOrNull(index)?.steps.orEmpty(),
                         segmentEditable = !previewing,
                         onSegmentModeChange = { mode -> onSelectSegmentMode(item.id, mode) },
+                        scheduleEditable = !previewing,
+                        onEditSchedule = { onEditItemSchedule(item) },
                         dragEnabled = dragEnabled,
                         isDragging = active,
                         onOpenPlace = { onOpenPlace(item) },
@@ -952,6 +1058,8 @@ private fun PlanItemCard(
     segmentSteps: List<RouteStep> = emptyList(),
     segmentEditable: Boolean = false,
     onSegmentModeChange: (String) -> Unit = {},
+    scheduleEditable: Boolean = false,
+    onEditSchedule: () -> Unit = {},
     dragEnabled: Boolean,
     isDragging: Boolean,
     onOpenPlace: () -> Unit,
@@ -989,8 +1097,8 @@ private fun PlanItemCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 PlaceCoverImage(
-                    imageUrl = item.thumbnailUrl?.takeIf(String::isNotBlank)
-                        ?: item.imageUrls.firstOrNull { it.isNotBlank() },
+                    imageUrl = item.thumbnailUrl?.takeIf(String::isNotBlank),
+                    fallbackImageUrls = item.imageUrls,
                     placeName = item.name,
                     category = item.category,
                     modifier = Modifier.size(64.dp),
@@ -1019,6 +1127,19 @@ private fun PlanItemCard(
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        if (scheduleEditable) {
+                            IconButton(
+                                onClick = onEditSchedule,
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Edit,
+                                    contentDescription = "修改参观时间和所属日期",
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
                     }
                     Text(
                         text = listOfNotNull(item.typeName, item.districtName, item.address).joinToString(" · "),
@@ -1032,12 +1153,14 @@ private fun PlanItemCard(
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
-                Icon(
-                    imageVector = Icons.Outlined.DragHandle,
-                    contentDescription = if (dragEnabled) "长按拖动调整顺序" else "当前不能调整顺序",
-                    modifier = Modifier.size(28.dp),
-                    tint = if (dragEnabled) Color(0xFF667085) else Color(0xFFC4CAD4),
-                )
+                if (dragEnabled) {
+                    Icon(
+                        imageVector = Icons.Outlined.DragHandle,
+                        contentDescription = "长按拖动调整顺序",
+                        modifier = Modifier.size(28.dp),
+                        tint = Color(0xFF667085),
+                    )
+                }
             }
             if (nextPlaceName != null) {
                 Surface(
@@ -1087,6 +1210,215 @@ private fun PlanItemCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SingleTextEditDialog(
+    title: String,
+    label: String,
+    initialValue: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var value by remember(initialValue) { mutableStateOf(initialValue) }
+    val cleanValue = value.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, fontWeight = FontWeight.Bold) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it.take(60) },
+                label = { Text(label) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(cleanValue) },
+                enabled = cleanValue.isNotBlank(),
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditPlanDateRangeDialog(
+    currentDateRange: String,
+    onDismiss: () -> Unit,
+    onSave: (String, Int) -> Unit,
+) {
+    val fallbackStart = LocalDate.now()
+    val (initialStart, initialEnd) = parsePlanDateRange(currentDateRange, fallbackStart)
+        ?: (fallbackStart to fallbackStart)
+    val pickerState = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initialStart.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli(),
+        initialSelectedEndDateMillis = initialEnd.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli(),
+    )
+    val selectedStart = pickerState.selectedStartDateMillis?.let {
+        Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()
+    }
+    val selectedEnd = pickerState.selectedEndDateMillis?.let {
+        Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate()
+    }
+    val selectedDayCount = if (selectedStart != null && selectedEnd != null) {
+        ChronoUnit.DAYS.between(selectedStart, selectedEnd).toInt() + 1
+    } else {
+        0
+    }
+
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (selectedStart != null && selectedEnd != null && selectedDayCount in 1..15) {
+                        val formatter = DateTimeFormatter.ofPattern("MM.dd")
+                        onSave(
+                            "${selectedStart.format(formatter)} - ${selectedEnd.format(formatter)}",
+                            selectedDayCount,
+                        )
+                    }
+                },
+                enabled = selectedDayCount in 1..15,
+            ) { Text("保存日期") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    ) {
+        Column {
+            DateRangePicker(
+                state = pickerState,
+                title = { Text("修改计划起止日期", modifier = Modifier.padding(16.dp)) },
+                showModeToggle = false,
+            )
+            if (selectedDayCount > 15) {
+                Text(
+                    "单个计划最多支持 15 天，请缩短日期范围。",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditVisitScheduleDialog(
+    item: PlanItem,
+    days: List<PlanDay>,
+    onDismiss: () -> Unit,
+    onSave: (String?, String?, Int) -> Unit,
+    onDelete: () -> Unit,
+) {
+    var startText by remember(item.id) { mutableStateOf(item.suggestedStart.orEmpty()) }
+    var endText by remember(item.id) { mutableStateOf(item.suggestedEnd.orEmpty()) }
+    var targetDayIndex by remember(item.id) { mutableIntStateOf(item.dayIndex) }
+    var dayMenuExpanded by remember(item.id) { mutableStateOf(false) }
+    var confirmDelete by remember(item.id) { mutableStateOf(false) }
+    val normalizedStart = normalizeVisitTime(startText)
+    val normalizedEnd = normalizeVisitTime(endText)
+    val startValid = startText.isBlank() || normalizedStart != null
+    val endValid = endText.isBlank() || normalizedEnd != null
+    val rangeValid = normalizedEnd == null || (normalizedStart != null && normalizedStart < normalizedEnd)
+    val canSave = startValid && endValid && rangeValid && days.any { it.dayIndex == targetDayIndex }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑地点安排", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(item.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "时间使用 24 小时制；开始和结束都留空即可清除时间。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = startText,
+                        onValueChange = { startText = it.take(5) },
+                        label = { Text("开始时间") },
+                        placeholder = { Text("09:30") },
+                        isError = !startValid,
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = endText,
+                        onValueChange = { endText = it.take(5) },
+                        label = { Text("结束时间") },
+                        placeholder = { Text("10:45") },
+                        isError = !endValid || !rangeValid,
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (!startValid || !endValid) {
+                    Text("请输入有效时间，例如 9:30 或 09:30。", color = MaterialTheme.colorScheme.error)
+                } else if (!rangeValid) {
+                    Text("结束时间必须晚于开始时间。", color = MaterialTheme.colorScheme.error)
+                }
+                Box {
+                    OutlinedButton(
+                        onClick = { dayMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        val selectedDay = days.firstOrNull { it.dayIndex == targetDayIndex }
+                        Text("所属日期：${selectedDay?.title ?: "DAY $targetDayIndex"}")
+                    }
+                    DropdownMenu(
+                        expanded = dayMenuExpanded,
+                        onDismissRequest = { dayMenuExpanded = false },
+                    ) {
+                        days.sortedBy { it.dayIndex }.forEach { day ->
+                            DropdownMenuItem(
+                                text = { Text(day.title) },
+                                onClick = {
+                                    targetDayIndex = day.dayIndex
+                                    dayMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                TextButton(
+                    onClick = { confirmDelete = true },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                    Text("从计划中移除这个地点", modifier = Modifier.padding(start = 6.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(normalizedStart, normalizedEnd, targetDayIndex) },
+                enabled = canSave,
+            ) { Text("保存安排") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("移除地点？") },
+            text = { Text("将从当前计划中移除「${item.name}」，其他地点安排不受影响。") },
+            confirmButton = {
+                TextButton(
+                    onClick = onDelete,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("确认移除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消") }
+            },
+        )
     }
 }
 
@@ -1300,6 +1632,16 @@ private fun visitTimeLabel(item: PlanItem): String {
         !item.suggestedEnd.isNullOrBlank() -> "${item.suggestedEnd} 前结束"
         else -> "时间待安排"
     }
+}
+
+private fun normalizeVisitTime(value: String): String? {
+    val clean = value.trim()
+    if (clean.isBlank()) return null
+    val match = Regex("^(\\d{1,2}):(\\d{2})$").matchEntire(clean) ?: return null
+    val hour = match.groupValues[1].toIntOrNull() ?: return null
+    val minute = match.groupValues[2].toIntOrNull() ?: return null
+    if (hour !in 0..23 || minute !in 0..59) return null
+    return "%02d:%02d".format(hour, minute)
 }
 
 private fun routeTransportLabel(route: DayRoutePlan): String {

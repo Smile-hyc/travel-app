@@ -34,4 +34,16 @@ data class ExploreUiState(
     val placeSuggestions: List<PlaceSuggestion> = emptyList(),
     val isLoadingSuggestions: Boolean = false,
     val placeSearchError: String? = null,
-)
+    /** 已提交的关键字搜索结果，用户选中之前不会写进 [places]。 */
+    val placeSearchResults: List<PlaceSummary> = emptyList(),
+    /** 产生 [placeSearchResults] 的那次搜索所用的关键字。 */
+    val submittedSearchKeyword: String = "",
+    val isSearchingPlaces: Boolean = false,
+    /** 例如“天津市内没找到，已展示全国结果”。 */
+    val placeSearchNotice: String? = null,
+    val searchHistory: List<String> = emptyList(),
+    val quickSearchWords: List<String> = emptyList(),
+) {
+    val hasSubmittedSearch: Boolean
+        get() = submittedSearchKeyword.isNotBlank()
+}

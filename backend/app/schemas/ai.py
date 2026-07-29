@@ -1,9 +1,10 @@
 from enum import Enum
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.routes import RouteCoordinate
+from app.schemas.explore import PlaceSummary
 
 
 class AiHealthResponse(BaseModel):
@@ -65,6 +66,8 @@ class AiPlanContext(BaseModel):
     dateRange: str | None = None
     revision: int | None = None
     updatedAt: int | None = None
+    currentDate: str | None = None
+    todayDayIndex: int | None = None
     days: list[AiDayContext] = Field(default_factory=list)
     unplannedPlaces: list[AiPlaceContext] = Field(default_factory=list)
     weather: AiWeatherContext | None = None
@@ -77,6 +80,7 @@ class AiChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[AiHistoryMessage] = Field(default_factory=list, max_length=12)
     context: AiPlanContext | None = None
+    planContexts: list[AiPlanContext] = Field(default_factory=list)
 
 
 AiSuggestedActionType = Literal[
@@ -147,6 +151,10 @@ class AiItineraryCard(BaseModel):
 AiCard = AiLinkCard | AiItineraryCard
 
 
+class AiRecommendedPlace(PlaceSummary):
+    description: str
+
+
 class AiChatResponse(BaseModel):
     conversationId: str
     messageId: str
@@ -158,6 +166,10 @@ class AiChatResponse(BaseModel):
     suggestedActions: list[AiSuggestedAction] = Field(default_factory=list)
     actionWarnings: list[str] = Field(default_factory=list)
     cards: list[AiCard] = Field(default_factory=list)
+    recommendedPlaces: list[AiRecommendedPlace] = Field(default_factory=list)
+    retrievalCity: str | None = None
+    offerPlan: bool = False
+    dataSources: list[str] = Field(default_factory=list)
     createdAt: str
     model: str | None = None
 
@@ -174,6 +186,10 @@ class AiMapPointInput(BaseModel):
     address: str | None = Field(default=None, max_length=200)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+    adCode: str | None = Field(default=None, max_length=12)
+    provinceName: str | None = Field(default=None, max_length=40)
+    cityName: str | None = Field(default=None, max_length=40)
+    districtName: str | None = Field(default=None, max_length=60)
 
 
 class AiPlanGenerationRequest(BaseModel):
@@ -193,12 +209,17 @@ class AiPlanGenerationRequest(BaseModel):
     hotelName: str | None = Field(default=None, max_length=80)
     hotelPoint: AiMapPointInput | None = None
     hotelStays: list[AiHotelStayInput] = Field(default_factory=list, max_length=10)
-    optimizationMode: Literal["REQUIRED", "PREFERRED", "FAST"] = "PREFERRED"
+    optimizationMode: Literal["REQUIRED", "FAST"] = "REQUIRED"
     pace: Literal["RELAXED", "BALANCED", "INTENSIVE"] = "BALANCED"
     transportPreference: Literal["MIXED", "WALK", "TRANSIT", "DRIVE"] = "MIXED"
     dailyStart: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     dailyEnd: str = Field(default="20:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     clientRequestId: str | None = Field(default=None, min_length=8, max_length=80)
+
+    @field_validator("optimizationMode", mode="before")
+    @classmethod
+    def merge_legacy_ai_modes(cls, value: object) -> object:
+        return "REQUIRED" if value == "PREFERRED" else value
 
 
 class AiGeneratedPlace(BaseModel):
@@ -226,6 +247,26 @@ class AiGeneratedPlace(BaseModel):
     businessArea: str | None = None
     openingHoursToday: str | None = None
     openingHoursWeek: str | None = None
+    officialScenicGrade: str | None = None
+    experienceEvidenceCount: int = Field(default=0, ge=0)
+    officialReservationRequired: bool = False
+    officialReservationNote: str | None = None
+    officialClosedDates: list[str] = Field(default_factory=list)
+    officialClosureWarning: str | None = None
+    officialOpeningHoursByDate: dict[str, str] = Field(default_factory=dict)
+    officialAccessNote: str | None = None
+    officialMaxDailyCapacity: int | None = Field(default=None, ge=1)
+    officialCapacityNote: str | None = None
+    officialTicketNote: str | None = None
+    crowdRisk: float = Field(default=0.0, ge=0, le=1)
+    contentUpdatedAt: str | None = None
+    visitUnitId: str | None = None
+    visitUnitName: str | None = None
+    visitUnitPolicy: Literal["BUNDLE", "COLOCATE", "MULTI_DAY_ALLOWED"] | None = None
+    visitUnitMemberOrder: int | None = Field(default=None, ge=0)
+    visitUnitTransferMinutes: int | None = Field(default=None, ge=0)
+    visitUnitSourceUrl: str | None = None
+    recommendedVisitMinutes: int | None = Field(default=None, ge=30, le=720)
     scheduleVerified: bool = False
     suggestedStart: str
     suggestedEnd: str
@@ -245,12 +286,26 @@ class AiGeneratedTransfer(BaseModel):
     polyline: list[RouteCoordinate] = Field(default_factory=list)
 
 
+class AiPlanAlternative(BaseModel):
+    id: str
+    sourcePoiId: str
+    name: str
+    category: str
+    latitude: float
+    longitude: float
+    districtName: str | None = None
+    openingHoursWeek: str | None = None
+    officialReservationRequired: bool = False
+    reason: str
+
+
 class AiGeneratedDay(BaseModel):
     dayIndex: int
     title: str
     summary: str
     places: list[AiGeneratedPlace] = Field(default_factory=list)
     transfers: list[AiGeneratedTransfer] = Field(default_factory=list)
+    alternatives: list[AiPlanAlternative] = Field(default_factory=list)
     weather: str | None = None
     estimatedDistanceKm: float = 0.0
     intensity: Literal["轻松", "适中", "充实"] = "适中"
@@ -261,7 +316,22 @@ class AiPlanQuality(BaseModel):
     duplicatePlaceCount: int = 0
     totalPlaceCount: int = 0
     usedFallback: bool = False
-    dataSources: list[str] = Field(default_factory=lambda: ["AMAP", "ARK"])
+    dataSources: list[str] = Field(default_factory=lambda: ["AMAP", "DEEPSEEK"])
+    totalCommuteMinutes: int = Field(default=0, ge=0)
+    longestLegMinutes: int = Field(default=0, ge=0)
+    crossRegionTransferCount: int = Field(default=0, ge=0)
+    backtrackingLegCount: int = Field(default=0, ge=0)
+    longIdleGapCount: int = Field(default=0, ge=0)
+    estimatedWalkingKm: float = Field(default=0.0, ge=0)
+    mealWindowDeviationCount: int = Field(default=0, ge=0)
+    minimumClosingMarginMinutes: int | None = Field(default=None, ge=0)
+    requiredPlaceCoverage: float = Field(default=1.0, ge=0, le=1)
+    comfortScore: int = Field(default=100, ge=0, le=100)
+    mainVisitUnitCountByDay: list[int] = Field(default_factory=list)
+    scheduledVisitMinutesByDay: list[int] = Field(default_factory=list)
+    occupancyRatioByDay: list[float] = Field(default_factory=list)
+    underfilledDayIndexes: list[int] = Field(default_factory=list)
+    underfilledReasons: list[str] = Field(default_factory=list)
 
 
 class AiPlanGenerationResponse(BaseModel):
@@ -277,6 +347,7 @@ class AiPlanGenerationResponse(BaseModel):
     generatedAt: str
     model: str | None = None
     quality: AiPlanQuality = Field(default_factory=AiPlanQuality)
+    enrichmentBatchId: str | None = None
 
 
 AiPlanJobState = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
@@ -294,6 +365,7 @@ AiPlanProgressEventType = Literal[
     "PLACE_ADDED",
     "DAY_COMPLETED",
     "PLAN_REFINED",
+    "AI_REVIEW",
 ]
 
 

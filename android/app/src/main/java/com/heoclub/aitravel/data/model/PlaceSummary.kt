@@ -41,6 +41,26 @@ data class PlaceSummary(
     val businessArea: String? = null,
     val openingHoursToday: String? = null,
     val openingHoursWeek: String? = null,
+    val officialScenicGrade: String? = null,
+    val experienceEvidenceCount: Int = 0,
+    val officialReservationRequired: Boolean = false,
+    val officialReservationNote: String? = null,
+    val officialClosedDates: List<String> = emptyList(),
+    val officialClosureWarning: String? = null,
+    val officialOpeningHoursByDate: Map<String, String> = emptyMap(),
+    val officialAccessNote: String? = null,
+    val officialMaxDailyCapacity: Int? = null,
+    val officialCapacityNote: String? = null,
+    val officialTicketNote: String? = null,
+    val crowdRisk: Double = 0.0,
+    val contentUpdatedAt: String? = null,
+    val visitUnitId: String? = null,
+    val visitUnitName: String? = null,
+    val visitUnitPolicy: String? = null,
+    val visitUnitMemberOrder: Int? = null,
+    val visitUnitTransferMinutes: Int? = null,
+    val visitUnitSourceUrl: String? = null,
+    val recommendedVisitMinutes: Int? = null,
     val isFavorite: Boolean = false,
 ) {
     val categoryId: String
@@ -104,6 +124,19 @@ data class PlaceSuggestion(
     val latitude: Double? = null,
     val longitude: Double? = null,
     val hasLocation: Boolean = false,
+)
+
+data class ReverseGeocodePoint(
+    val name: String,
+    val formattedAddress: String,
+    val provinceName: String? = null,
+    val cityName: String? = null,
+    val districtName: String? = null,
+    val adCode: String? = null,
+    val latitude: Double,
+    val longitude: Double,
+    val matchedPoiWithin50m: Boolean = false,
+    val distanceMeters: Int? = null,
 )
 
 data class PaginatedPlaces(

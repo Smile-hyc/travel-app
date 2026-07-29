@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -44,8 +45,6 @@ import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Phone
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,13 +66,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.heoclub.aitravel.data.model.PlaceDetail
-import com.heoclub.aitravel.data.model.ReviewHighlight
+import com.heoclub.aitravel.data.model.ExperienceInsight
+import com.heoclub.aitravel.data.model.ExperienceInsightPoint
 import com.heoclub.aitravel.data.model.ReviewSource
 import com.heoclub.aitravel.data.model.TravelPlan
 import com.heoclub.aitravel.data.repository.AddPlaceResult
@@ -84,9 +82,9 @@ import com.heoclub.aitravel.ui.components.PlaceImageCarousel
 private val Ink = Color(0xFF171717)
 private val MutedInk = Color(0xFF737373)
 private val PageBackground = Color.White
-private val PositiveBackground = Color(0xFFF1F8E8)
-private val CautionBackground = Color(0xFFFFF1EC)
 private val XiaohongshuRed = Color(0xFFFF2442)
+private val InsightBackground = Color(0xFFFAF8F3)
+private val InsightAccent = Color(0xFF8A5A12)
 
 @Composable
 fun PlaceDetailScreen(
@@ -126,6 +124,15 @@ fun PlaceDetailScreen(
                     )
                 }
             }
+            if (detail.reviewStatus in setOf("PENDING", "STALE", "INSUFFICIENT")) {
+                item {
+                    EnrichmentNotice(
+                        status = detail.reviewStatus,
+                        evidenceCount = detail.experienceLayer.evidenceCount,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                }
+            }
             item {
                 OverviewSection(
                     detail,
@@ -135,7 +142,16 @@ fun PlaceDetailScreen(
             if (detail.relatedPlans.isNotEmpty()) {
                 item { RelatedPlansSection(detail) }
             }
-            if (detail.hasRealReviews && detail.reviewSources.isNotEmpty()) {
+            if (detail.officialLayer.status == "READY") {
+                item {
+                    OfficialNoticeSection(
+                        detail = detail,
+                        onOpenUrl = { openUrl(context, it) },
+                        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 28.dp),
+                    )
+                }
+            }
+            if (detail.experienceLayer.insights.isNotEmpty() || detail.reviewSources.isNotEmpty()) {
                 item {
                     ReviewSection(
                         detail = detail,
@@ -318,107 +334,238 @@ private fun ReviewSection(
     modifier: Modifier = Modifier,
 ) {
     var sourcesExpanded by remember(detail.summary.id) { mutableStateOf(true) }
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(
-            "真实评价",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = Ink,
-            modifier = Modifier.padding(horizontal = 24.dp),
-        )
+    val insights = detail.experienceLayer.insights
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 24.dp)) {
+            Text(
+                "旅行者真实体验",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = Ink,
+            )
+            Row(
+                modifier = Modifier.padding(top = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                XiaohongshuBadge(compact = false)
+                Text(
+                    "已整理 ${detail.experienceLayer.evidenceCount} 条可追溯笔记",
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    color = MutedInk,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
 
-        if (detail.positiveHighlights.isNotEmpty()) {
-            HighlightCard(
-                detail.positiveHighlights,
-                PositiveBackground,
-                Modifier.padding(horizontal = 24.dp),
-            )
-        }
-        if (detail.negativeHighlights.isNotEmpty()) {
-            HighlightCard(
-                detail.negativeHighlights,
-                CautionBackground,
-                Modifier.padding(horizontal = 24.dp),
-            )
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { sourcesExpanded = !sourcesExpanded }
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                if (sourcesExpanded) "收起来源" else "查看来源",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF9A9A9A),
-            )
-            Surface(
-                color = XiaohongshuRed,
-                shape = CircleShape,
-                modifier = Modifier.padding(start = 5.dp).size(16.dp),
+        if (insights.isNotEmpty()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("源", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                insights.sortedByDescending { it.mentionCount }.forEach { insight ->
+                    ExperienceInsightCard(
+                        insight = insight,
+                        sourcesByEvidenceId = detail.reviewSources
+                            .filter { !it.evidenceId.isNullOrBlank() }
+                            .associateBy { it.evidenceId.orEmpty() },
+                        onOpen = onOpen,
+                    )
                 }
             }
-            Icon(
-                if (sourcesExpanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
-                contentDescription = null,
-                tint = Color(0xFFAAAAAA),
-                modifier = Modifier.size(18.dp),
-            )
-        }
-        if (sourcesExpanded) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(detail.reviewSources, key = { it.id }) { source ->
-                    SourceCard(source = source, onClick = { onOpen(source) })
-                }
-            }
-        }
-        detail.reviewSubtitle?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFAAAAAA),
+        } else {
+            PendingConclusionCard(
+                evidenceCount = detail.experienceLayer.evidenceCount,
                 modifier = Modifier.padding(horizontal = 24.dp),
             )
+        }
+        ExperienceDisclaimer(modifier = Modifier.padding(horizontal = 24.dp))
+        if (detail.reviewSources.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { sourcesExpanded = !sourcesExpanded }
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (sourcesExpanded) "收起来源" else "查看来源",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF9A9A9A),
+                )
+                XiaohongshuBadge(
+                    compact = true,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+                Icon(
+                    if (sourcesExpanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                    contentDescription = if (sourcesExpanded) "收起小红书来源" else "展开小红书来源",
+                    tint = Color(0xFFAAAAAA),
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${detail.reviewSources.size} 篇",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color(0xFFAAAAAA),
+                )
+            }
+            if (sourcesExpanded) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(detail.reviewSources, key = { it.id }) { source ->
+                        SourceCard(source = source, onClick = { onOpen(source) })
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun HighlightCard(
-    highlights: List<ReviewHighlight>,
-    background: Color,
-    modifier: Modifier = Modifier,
+private fun ExperienceInsightCard(
+    insight: ExperienceInsight,
+    sourcesByEvidenceId: Map<String, ReviewSource>,
+    onOpen: (ReviewSource) -> Unit,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = background),
-        shape = RoundedCornerShape(22.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 17.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            highlights.forEach { highlight ->
-                Text(
-                    text = buildAnnotatedString {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Ink)) {
-                            append(highlight.title)
-                            append("：")
-                        }
-                        append(highlight.description)
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Color(0xFF555555),
+    val sampleLabel = when {
+        insight.mentionCount >= 2 -> "综合 ${insight.mentionCount} 篇相关笔记"
+        else -> "参考 1 篇相关笔记"
+    }
+    val points = remember(insight.summary, insight.points) {
+        insight.points.ifEmpty {
+            insightSummaryPoints(insight.summary).mapIndexed { index, text ->
+                ExperienceInsightPoint(
+                    text = text,
+                    evidenceIds = insight.evidenceIds.getOrNull(index)?.let(::listOf).orEmpty(),
                 )
             }
+        }
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = InsightBackground,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, Color(0xFFEDE8DC)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    insight.title,
+                    style = MaterialTheme.typography.titleMedium.copy(lineHeight = 24.sp),
+                    fontWeight = FontWeight.Bold,
+                    color = Ink,
+                    modifier = Modifier.weight(1f),
+                )
+                Surface(
+                    color = Color(0xFFF0E8D8),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(
+                        sampleLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(lineHeight = 16.sp),
+                        fontWeight = FontWeight.Medium,
+                        color = InsightAccent,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                points.forEach { point ->
+                    val pointSources = point.evidenceIds.mapNotNull(sourcesByEvidenceId::get)
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 4.dp, end = 11.dp)
+                                    .size(width = 3.dp, height = 19.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(InsightAccent.copy(alpha = 0.72f)),
+                            )
+                            Text(
+                                point.text,
+                                style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 25.sp),
+                                color = Color(0xFF353535),
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        pointSources.forEach { source ->
+                            Row(
+                                modifier = Modifier
+                                    .padding(start = 14.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { onOpen(source) }
+                                    .padding(horizontal = 7.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "来源：${source.title}",
+                                    style = MaterialTheme.typography.labelMedium.copy(lineHeight = 18.sp),
+                                    color = XiaohongshuRed,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
+                                Icon(
+                                    Icons.AutoMirrored.Outlined.OpenInNew,
+                                    contentDescription = "打开对应小红书笔记",
+                                    tint = XiaohongshuRed,
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .size(15.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (insight.mentionCount < 3) {
+                Text(
+                    if (insight.mentionCount == 1) {
+                        "单一来源，建议结合原文判断"
+                    } else {
+                        "样本较少，建议结合原文判断"
+                    },
+                    style = MaterialTheme.typography.labelSmall.copy(lineHeight = 17.sp),
+                    color = MutedInk,
+                )
+            }
+        }
+    }
+}
+
+private fun insightSummaryPoints(summary: String): List<String> = summary
+    .split('；', '\n')
+    .map { it.trim().trimEnd('。', '；') }
+    .filter { it.isNotBlank() }
+    .ifEmpty { listOf(summary.trim()) }
+
+@Composable
+private fun ExperienceDisclaimer(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = Color(0xFFF7F7F7),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 15.dp, vertical = 13.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "仅供参考",
+                style = MaterialTheme.typography.labelMedium.copy(lineHeight = 18.sp),
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF555555),
+            )
+            Text(
+                "内容由公开笔记自动提炼，可能包含个人偏好、时效差异或信息误差。营业时间、票价和预约规则请以高德及景区官方信息为准。",
+                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 20.sp),
+                color = MutedInk,
+            )
         }
     }
 }
@@ -427,41 +574,227 @@ private fun HighlightCard(
 private fun SourceCard(source: ReviewSource, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
-            .size(width = 276.dp, height = 92.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .size(width = 280.dp, height = 124.dp)
+            .clip(RoundedCornerShape(18.dp))
             .clickable(onClick = onClick),
-        color = Color(0xFFF7F7F7),
-        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFFF8F8F8),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, Color(0xFFF0F0F0)),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 15.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Text(
                     source.title,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.titleSmall.copy(lineHeight = 21.sp),
                     fontWeight = FontWeight.Medium,
                     color = Ink,
-                    maxLines = 2,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 Icon(
                     Icons.AutoMirrored.Outlined.KeyboardArrowRight,
-                    contentDescription = "查看原文",
+                    contentDescription = "在小红书查看原文",
                     tint = Color(0xFFB7B7B7),
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(20.dp),
                 )
             }
             Spacer(Modifier.weight(1f))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = XiaohongshuRed, shape = CircleShape, modifier = Modifier.size(15.dp)) {}
+                XiaohongshuBadge(compact = true)
                 Text(
-                    "来自${source.platform}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFFAAAAAA),
-                    modifier = Modifier.padding(start = 5.dp),
+                    "来自${source.platform} · 查看原文",
+                    style = MaterialTheme.typography.labelSmall.copy(lineHeight = 16.sp),
+                    color = MutedInk,
+                    modifier = Modifier.padding(start = 7.dp),
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun XiaohongshuBadge(
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        color = XiaohongshuRed,
+        shape = RoundedCornerShape(if (compact) 6.dp else 8.dp),
+    ) {
+        Text(
+            text = if (compact) "小红书" else "小红书灵感",
+            color = Color.White,
+            style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(
+                horizontal = if (compact) 6.dp else 8.dp,
+                vertical = if (compact) 3.dp else 4.dp,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun PendingConclusionCard(
+    evidenceCount: Int,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = Color(0xFFF7F7F7),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, Color(0xFFECECEC)),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+            Text(
+                "暂未提取到具体体验",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = Ink,
+            )
+            Text(
+                if (evidenceCount > 0) {
+                    "已收录 $evidenceCount 条可追溯内容，但暂未识别出明确的拍照、排队、步行或预约信息；仍可查看下方来源原文。"
+                } else {
+                    "暂未收录可追溯体验内容，地点事实信息仍可正常使用。"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MutedInk,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun EnrichmentNotice(
+    status: String,
+    evidenceCount: Int,
+    modifier: Modifier = Modifier,
+) {
+    val text = when (status) {
+        "INSUFFICIENT" -> "已找到 $evidenceCount 条可追溯来源，但暂未提取到明确体验；可查看原文，内容仅供参考。"
+        "STALE" -> "已有体验摘要正在后台核验，事实信息仍以高德和景区官方为准。"
+        else -> "正在后台汇总地点体验；高德地址、营业时间和电话可先正常使用。"
+    }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = Color(0xFFF3F7FF),
+        shape = RoundedCornerShape(16.dp),
+    ) {
+        Text(text, style = MaterialTheme.typography.bodySmall, color = MutedInk, modifier = Modifier.padding(14.dp))
+    }
+}
+
+@Composable
+private fun OfficialNoticeSection(
+    detail: PlaceDetail,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("景区官方信息", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
+        val official = detail.officialLayer
+        if (!official.officialName.isNullOrBlank()) {
+            Surface(color = Color(0xFFF2F8EE), shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(official.officialName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
+                    official.scenicGrade?.let {
+                        Text("国家 $it 级旅游景区", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF54804A))
+                    }
+                    official.maxDailyCapacity?.let {
+                        Text("最大承载量：${it} 人次/日", style = MaterialTheme.typography.bodyMedium, color = MutedInk)
+                    }
+                    val channels = listOfNotNull(
+                        official.wechatName?.let { "公众号：$it" },
+                        official.miniProgramName?.let { "小程序：$it" },
+                        official.websiteUrl?.let { "官方页面已收录" },
+                        official.ticketingUrl?.let { "官方票务入口已收录" },
+                    )
+                    if (channels.isNotEmpty()) {
+                        Text(channels.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MutedInk)
+                    }
+                    official.websiteUrl?.takeIf(String::isNotBlank)?.let { url ->
+                        val label = when (official.sourceType) {
+                            "GOVERNMENT_DIRECTORY" -> "查看政府官方页面"
+                            "ASSOCIATION_DIRECTORY" -> "查看权威协会页面"
+                            else -> "访问景区官网"
+                        }
+                        OfficialLinkRow(label, url, onOpenUrl)
+                    }
+                    official.ticketingUrl?.takeIf(String::isNotBlank)?.let { url ->
+                        OfficialLinkRow("打开官方预约/票务", url, onOpenUrl)
+                    }
+                }
+            }
+        }
+        detail.officialLayer.notices.forEach { notice ->
+            val sourceUrl = notice.sourceUrl?.takeIf(String::isNotBlank)
+            Surface(
+                color = Color(0xFFFFF7E9),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (sourceUrl != null) Modifier.clickable { onOpenUrl(sourceUrl) } else Modifier),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(notice.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Ink)
+                    Text(
+                        notice.detail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MutedInk,
+                        modifier = Modifier.padding(top = 5.dp),
+                    )
+                    if (sourceUrl != null) {
+                        Row(
+                            modifier = Modifier.padding(top = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "查看官方原文",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Icon(
+                                Icons.AutoMirrored.Outlined.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.padding(start = 5.dp).size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfficialLinkRow(label: String, url: String, onOpenUrl: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onOpenUrl(url) }
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Icon(
+            Icons.AutoMirrored.Outlined.OpenInNew,
+            contentDescription = "在浏览器打开$label",
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
     }
 }
 
@@ -490,7 +823,11 @@ private fun InformationSection(
             InfoRow(Icons.Outlined.Phone, "电话", it, onClick = onCall)
             HorizontalDivider(color = Color(0xFFEDF0F4))
         }
-        val provider = listOf("高德地点信息") + detail.sourceLabels.filterNot { it.equals("AMAP", true) }
+        val provider = buildList {
+            add("高德事实信息")
+            if (detail.officialLayer.status == "READY") add("景区官方")
+            if (detail.experienceLayer.evidenceCount > 0) add("授权UGC/自有评价")
+        } + detail.sourceLabels.filterNot { it.equals("AMAP", true) }
         InfoRow(Icons.Outlined.CheckCircle, "内容来源", provider.distinct().joinToString(" · "))
         HorizontalDivider(color = Color(0xFFEDF0F4))
         InfoRow(Icons.Outlined.Flag, "反馈问题", "信息有误？告诉我们", onClick = onFeedback)

@@ -29,11 +29,75 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 
 private val BOLD_PATTERN = Regex("""\*\*(.+?)\*\*""")
 private val ITALIC_PATTERN = Regex("""(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)""")
 private val CODE_PATTERN = Regex("""`(.+?)`""")
 private val LINK_PATTERN = Regex("""\[(.+?)]\((.+?)\)""")
+private val BOLD_CONTAINING_INTERNAL_LINK_PATTERN = Regex(
+    """\*\*([^\n]*?\[[^\]\n]+]\(aitravel://place/[^)\s]+\)[^\n]*?)\*\*""",
+)
+private val UNDERSCORE_CONTAINING_INTERNAL_LINK_PATTERN = Regex(
+    """__([^\n]*?\[[^\]\n]+]\(aitravel://place/[^)\s]+\)[^\n]*?)__""",
+)
+private val INTERNAL_PLACE_LINK_PATTERN = Regex(
+    """\[([^\]\n]+)]\((aitravel://place/[^)\s]+)\)""",
+)
+private const val INTERNAL_PLACE_PREFIX = "aitravel://place/"
+
+internal fun internalPlaceId(url: String): String? {
+    if (!url.startsWith(INTERNAL_PLACE_PREFIX)) return null
+    return URLDecoder.decode(
+        url.removePrefix(INTERNAL_PLACE_PREFIX),
+        StandardCharsets.UTF_8.name(),
+    ).takeIf { it.isNotBlank() }
+}
+
+internal fun normalizeInternalPlaceLinks(text: String): String {
+    val withoutOuterEmphasis = UNDERSCORE_CONTAINING_INTERNAL_LINK_PATTERN.replace(
+        BOLD_CONTAINING_INTERNAL_LINK_PATTERN.replace(text, "$1"),
+        "$1",
+    )
+    return withoutOuterEmphasis.lines().joinToString("\n", transform = ::dedupeInternalLinksOnLine)
+}
+
+private fun dedupeInternalLinksOnLine(line: String): String {
+    val links = INTERNAL_PLACE_LINK_PATTERN.findAll(line)
+        .map { match -> Triple(match.value, match.groupValues[1], match.groupValues[2]) }
+        .distinctBy { it.first }
+        .toList()
+    if (links.isEmpty()) return line
+
+    var normalized = line
+    val tokens = links.mapIndexed { index, (markdown, _, _) ->
+        val token = "\uE000PLACE_LINK_$index\uE001"
+        normalized = normalized.replace(markdown, token)
+        token
+    }
+
+    links.forEachIndexed { index, (_, label, url) ->
+        normalized = normalized
+            .replace("**$label**", "")
+            .replace("__${label}__", "")
+            .replace(label, "")
+        normalized = Regex("""\(?${Regex.escape(url)}\)?""").replace(normalized, "")
+
+        val token = tokens[index]
+        val firstToken = normalized.indexOf(token)
+        if (firstToken >= 0) {
+            val afterFirst = firstToken + token.length
+            normalized = normalized.substring(0, afterFirst) +
+                normalized.substring(afterFirst).replace(token, "")
+        }
+    }
+
+    tokens.forEachIndexed { index, token ->
+        normalized = normalized.replace(token, links[index].first)
+    }
+    return normalized.trim()
+}
 
 @Composable
 fun MarkdownText(
@@ -41,9 +105,10 @@ fun MarkdownText(
     modifier: Modifier = Modifier,
     style: TextStyle = MaterialTheme.typography.bodyLarge,
     color: Color = Color(0xFF162235),
+    onInternalPlaceClick: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
-    val lines = text.split("\n")
+    val lines = normalizeInternalPlaceLinks(text).split("\n")
     val baseStyle = style.copy(color = color)
     val headingStyle = baseStyle.copy(fontWeight = FontWeight.Bold)
     val codeBg = Color(0xFFF0F0F0)
@@ -60,6 +125,7 @@ fun MarkdownText(
                             baseStyle = headingStyle.copy(fontSize = (style.fontSize.value + 2).sp),
                             linkColor = linkColor,
                         ),
+                        onInternalPlaceClick = onInternalPlaceClick,
                     )
                 }
                 line.startsWith("## ") -> {
@@ -69,6 +135,7 @@ fun MarkdownText(
                             baseStyle = headingStyle.copy(fontSize = (style.fontSize.value + 4).sp),
                             linkColor = linkColor,
                         ),
+                        onInternalPlaceClick = onInternalPlaceClick,
                     )
                 }
                 line.startsWith("# ") -> {
@@ -78,6 +145,7 @@ fun MarkdownText(
                             baseStyle = headingStyle.copy(fontSize = (style.fontSize.value + 6).sp),
                             linkColor = linkColor,
                         ),
+                        onInternalPlaceClick = onInternalPlaceClick,
                     )
                 }
                 // Unordered list items
@@ -95,6 +163,7 @@ fun MarkdownText(
                                 baseStyle = baseStyle,
                                 linkColor = linkColor,
                             ),
+                            onInternalPlaceClick = onInternalPlaceClick,
                         )
                     }
                 }
@@ -114,6 +183,7 @@ fun MarkdownText(
                                 baseStyle = baseStyle,
                                 linkColor = linkColor,
                             ),
+                            onInternalPlaceClick = onInternalPlaceClick,
                         )
                     }
                 }
@@ -125,6 +195,7 @@ fun MarkdownText(
                 else -> {
                     MarkdownLine(
                         text = parseInlineMarkdown(line, baseStyle = baseStyle, linkColor = linkColor),
+                        onInternalPlaceClick = onInternalPlaceClick,
                     )
                 }
             }
@@ -136,6 +207,7 @@ fun MarkdownText(
 private fun MarkdownLine(
     text: AnnotatedString,
     modifier: Modifier = Modifier,
+    onInternalPlaceClick: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val linkAnnotations = text.getStringAnnotations("URL", 0, text.length)
@@ -148,8 +220,13 @@ private fun MarkdownLine(
             modifier = modifier,
             onClick = { offset ->
                 linkAnnotations.firstOrNull { offset in it.start until it.end }?.let { annotation ->
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(annotation.item))
-                    context.startActivity(intent)
+                    val placeId = internalPlaceId(annotation.item)
+                    if (placeId != null && onInternalPlaceClick != null) {
+                        onInternalPlaceClick(placeId)
+                    } else {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(annotation.item))
+                        context.startActivity(intent)
+                    }
                 }
             },
         )
@@ -260,6 +337,7 @@ private fun parseInlineMarkdown(
                     withStyle(
                         baseStyle.toSpanStyle().copy(
                             color = linkColor,
+                            fontWeight = FontWeight.SemiBold,
                             textDecoration = TextDecoration.Underline,
                         )
                     ) {
